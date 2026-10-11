@@ -1,3 +1,3 @@
-// Where the relay lives. Leave empty and people can paste a relay URL in the game instead.
-// After deploying the relay (see relay/README.md), put its URL here, e.g. 'https://sector-relay.your-name.workers.dev'
-window.RELAY_URL = '';
+// The shared key/value store the games keep their online state in (see elf-punch/README.md).
+// It has no accounts: a game's data is only protected by its long random name, so nothing private belongs in it.
+window.KV_URL = 'https://elf-castle-wood-puncher.fly.dev';

@@ -102,11 +102,11 @@
 
 <dialog id="d-online">
   <h2>Play online, any time</h2>
-  <p class="fine">Everyone keeps their own copy of the game in their browser. You send your orders to a tiny relay, and when everyone's orders are in, each browser plays the turn itself. No one has to be online at the same time, and you can come back from any device with your invite code.</p>
+  <p class="fine">Everyone keeps their own copy of the game in their browser. You send your orders to a small shared storage server, and when everyone's orders are in, each browser plays the turn itself. No one has to be online at the same time, and you can come back from any device with your invite code. Each game lives under a long random name that only your invite codes contain. There are no accounts, so only play with friends.</p>
   <h3>Start a game</h3>
   <form id="f-online" method="dialog">
-    <label>Relay address (your deployed relay, see relay/README.md)
-      <input name="relay" type="url" placeholder="https://sector-relay.your-name.workers.dev" autocomplete="off">
+    <label>Storage server (the default is fine)
+      <input name="server" type="url" placeholder="https://elf-castle-wood-puncher.fly.dev" autocomplete="off">
     </label>
     <label>Human players (including you)
       <select name="humans"><option>2</option><option selected>3</option><option>4</option></select>
@@ -148,7 +148,7 @@
 </dialog>
 
 <script src="../shared/config.js"></script>
-<script src="../shared/relay.js"></script>
+<script src="../shared/store.js"></script>
 <script src="../shared/p2p.js"></script>
 <script src="../shared/lobby.js"></script>
 <script src="game.js"></script>

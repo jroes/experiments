@@ -4,7 +4,7 @@
   const SAVE_KEY = 'sectordominion-save-v1';
   const MAIL_KEY = 'sectordominion-mail-v1';
   const ONLINE_KEY = 'sectordominion-online-v1';
-  const RELAY_KEY = 'sectordominion-relay';
+  const SERVER_KEY = 'sectordominion-server';
   const COLORS = ['#6b7a94', '#5ee0b0', '#ffb454', '#ff6b6b', '#b48cff'];
 
   const $ = id => document.getElementById(id);
@@ -22,7 +22,7 @@
     net: null,      // P2P link when playing with friends
     seats: {},      // host only: peer id -> empire id
     started: false, // multiplayer game running
-    online: null,   // relay-based async session (online.js)
+    online: null,   // async session through the shared store (online.js)
     onlineMsg: '',
     mailMsg: '',    // last message in the mail panel
     mail: null,     // play-by-mail session: { role: 'host'|'guest', cmds: [], sent: bool }
@@ -667,7 +667,7 @@
     toast('Mail game started. Download a turn file for each friend from the Mail panel.');
   });
 
-  // ---------- online (relay) ----------
+  // ---------- online (shared store) ----------
 
   function adoptSession() {
     const turnChanged = ui.state && ui.online.working.turn !== ui.state.turn;
@@ -725,7 +725,7 @@
       h += '<div style="color:' + COLORS[e.id] + '">' + (e.id === ui.me ? 'You' : 'Seat ' + e.id) + '</div><div>' + status +
         (o.isHost && e.id !== ui.me && e.human && e.alive && !entry ? ' <button class="small" data-act="skip" data-e="' + e.id + '" title="Play the turn without them">skip</button> <button class="small" data-act="skip-ai" data-e="' + e.id + '" title="Give this empire to the AI for good">AI</button>' : '') + '</div>';
     }
-    h += '</div><div class="btns"><button data-act="osync">Check for news</button><button data-act="orebuild" title="Replay the whole game from the relay">Rebuild</button>';
+    h += '</div><div class="btns"><button data-act="osync">Check for news</button><button data-act="orebuild" title="Replay the whole game from its log">Rebuild</button>';
     if (o.isHost && g.invites) h += '<button data-act="oinvites">Invite codes</button>';
     h += '<button data-act="oleave">Leave game</button></div>';
     if (ui.showInvites && g.invites) {
@@ -741,7 +741,7 @@
     if (!b || !ui.online) return;
     const a = b.dataset.act, o = ui.online;
     if (a === 'osync') { ui.onlineMsg = 'Checking...'; refresh(); await syncOnline(false); refresh(); }
-    else if (a === 'orebuild') { ui.onlineMsg = 'Rebuilding...'; refresh(); const r = await o.rebuild(); adoptSession(); ui.onlineMsg = r.error || 'Rebuilt from the relay. Turn ' + r.turn + '.'; save(); refresh(); }
+    else if (a === 'orebuild') { ui.onlineMsg = 'Rebuilding...'; refresh(); const r = await o.rebuild(); adoptSession(); ui.onlineMsg = r.error || 'Rebuilt from the log. Turn ' + r.turn + '.'; save(); refresh(); }
     else if (a === 'oinvites') { ui.showInvites = !ui.showInvites; refresh(); }
     else if (a === 'skip' || a === 'skip-ai') {
       const ai = a === 'skip-ai';
@@ -749,14 +749,14 @@
       const r = await o.hostSkip(+b.dataset.e, ai);
       adoptSession(); ui.onlineMsg = r.ok ? '' : r.msg; save(); refresh();
     } else if (a === 'oleave') {
-      if (!confirm('Leave this game on this device? The game stays on the relay. You can come back with your invite code.')) return;
+      if (!confirm('Leave this game on this device? The game stays on the server. You can come back with your invite code.')) return;
       clearOnline(); ui.online = null; ui.showInvites = false;
       const solo = load();
       setState(solo || G.newGame({}));
     }
   });
 
-  // Poll while waiting on others. Slow down after a while so a forgotten tab costs the relay almost nothing.
+  // Poll while waiting on others. Slow down after a while so a forgotten tab costs the server almost nothing.
   let lastPoll = 0, waitStart = 0;
   setInterval(() => {
     const o = ui.online;
@@ -772,7 +772,7 @@
   $('b-online').onclick = () => {
     $('d-mp').close();
     const f = $('f-online');
-    try { f.relay.value = localStorage.getItem(RELAY_KEY) || window.RELAY_URL || ''; } catch (e) { f.relay.value = window.RELAY_URL || ''; }
+    try { f.server.value = localStorage.getItem(SERVER_KEY) || window.KV_URL || ''; } catch (e) { f.server.value = window.KV_URL || ''; }
     $('online-msg').textContent = '';
     $('d-online').showModal();
   };
@@ -783,9 +783,9 @@
     setTimeout(() => $('d-online').open || $('d-online').showModal(), 0);
     msg.textContent = 'Creating...';
     try {
-      const relay = String(fd.get('relay') || '').trim();
-      try { localStorage.setItem(RELAY_KEY, relay); } catch (err) { /* ignore */ }
-      const session = await Online.Session.create({ relay, humans: +fd.get('humans'), difficulty: fd.get('difficulty'), worlds: +fd.get('worlds') });
+      const server = String(fd.get('server') || '').trim();
+      try { localStorage.setItem(SERVER_KEY, server); } catch (err) { /* ignore */ }
+      const session = await Online.Session.create({ server, humans: +fd.get('humans'), difficulty: fd.get('difficulty'), worlds: +fd.get('worlds') });
       ui.showInvites = true;
       startOnline(session);
       $('d-online').close();

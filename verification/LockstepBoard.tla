@@ -1,12 +1,13 @@
 ---------------------------- MODULE LockstepBoard ----------------------------
 (*
-  Model of online play through the relay (a write-once message board per game).
+  Model of online play through the shared key/value store (elf-punch). Each game keeps one write-once key per turn and seat.
 
   Every player's browser holds its own copy of the game. A player posts orders for the turn they are on. The host may
   post "skip" for a player who has not answered. A browser plays a turn once the board holds an entry for every seat, using
   exactly the entries on the board at that moment, and then moves to the next turn.
 
-  Atomic = TRUE : the board is write-once (a Durable Object: requests to a room are serialized).
+  Atomic = TRUE : a key can only be created once. The store does this with `PUT` + `If-None-Match: *`, and it applies requests
+                  one at a time on a single machine, so exactly one writer wins.
   Atomic = FALSE: a write can overwrite an existing entry, like two racing writes to an eventually consistent store.
 
   Property that matters: two browsers never play the same turn from different entries (Agreement).
@@ -23,7 +24,7 @@ Snapshot == [Seats -> Entry]
 Unset == [s \in Seats |-> "none"]   \* "not played yet" (a played turn never has a "none" in it)
 
 VARIABLES
-  board,    \* board[t][s]: what the relay holds for turn t, seat s
+  board,    \* board[t][s]: what the store holds for turn t, seat s
   view,     \* view[c]: the turn browser c is on
   applied   \* applied[c][t]: the entries browser c used to play turn t, or Unset
 
