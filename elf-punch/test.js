@@ -2,7 +2,7 @@
 const WebSocket = require("ws");
 const { spawn } = require("child_process");
 const assert = require("assert");
-const bin = process.env.BIN || "target/x86_64-unknown-linux-musl/release/elf-punch";
+const bin = process.env.BIN || ["target/release/elf-punch", "target/x86_64-unknown-linux-musl/release/elf-punch"].find((p) => require("fs").existsSync(p));
 const PORT = 8123;
 const fs = require("fs");
 const WORLD = "/tmp/elf-punch-test-world.json";
