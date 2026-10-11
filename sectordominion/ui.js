@@ -1,7 +1,7 @@
 (function () {
   'use strict';
   const G = window.Game;
-  const SAVE_KEY = 'anacreon-browser-save-v1';
+  const SAVE_KEY = 'sectordominion-save-v1';
   const COLORS = ['#6b7a94', '#5ee0b0', '#ffb454', '#ff6b6b', '#b48cff'];
 
   const $ = id => document.getElementById(id);
@@ -393,9 +393,9 @@
   setState(saved || G.newGame({}));
   if (!saved) {
     try {
-      if (!localStorage.getItem('anacreon-help-seen')) {
+      if (!localStorage.getItem('sectordominion-help-seen')) {
         $('d-help').showModal();
-        localStorage.setItem('anacreon-help-seen', '1');
+        localStorage.setItem('sectordominion-help-seen', '1');
       }
     } catch (e) { $('d-help').showModal(); }
   }
