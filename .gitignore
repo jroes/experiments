@@ -1,3 +1,8 @@
 verification/.cache/
 states/
 *.bin
+node_modules/
+.wrangler/
+relay-data.json
+relay-data.json.tmp
+*_TTrace_*

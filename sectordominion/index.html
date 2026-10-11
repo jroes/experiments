@@ -91,12 +91,38 @@
     </label>
     <div class="row">
       <button value="cancel" formnovalidate>Cancel</button>
+      <button value="online" type="button" id="b-online">Play online (async)</button>
       <button value="mail" type="button" id="b-mail">Play by mail</button>
       <button value="join">Join a game</button>
       <button value="host" class="primary">Host a game</button>
     </div>
   </form>
   <p class="fine">Friends-only trust: the host's browser sends everyone the full game state, so anyone who opens dev tools could peek at hidden info.</p>
+</dialog>
+
+<dialog id="d-online">
+  <h2>Play online, any time</h2>
+  <p class="fine">Everyone keeps their own copy of the game in their browser. You send your orders to a tiny relay, and when everyone's orders are in, each browser plays the turn itself. No one has to be online at the same time, and you can come back from any device with your invite code.</p>
+  <h3>Start a game</h3>
+  <form id="f-online" method="dialog">
+    <label>Relay address (your deployed relay, see relay/README.md)
+      <input name="relay" type="url" placeholder="https://sector-relay.your-name.workers.dev" autocomplete="off">
+    </label>
+    <label>Human players (including you)
+      <select name="humans"><option>2</option><option selected>3</option><option>4</option></select>
+    </label>
+    <label>Difficulty
+      <select name="difficulty"><option value="easy">Easy</option><option value="normal" selected>Normal</option><option value="hard">Hard</option></select>
+    </label>
+    <label>Worlds
+      <select name="worlds"><option value="30">30</option><option value="40" selected>40</option><option value="60">60</option></select>
+    </label>
+    <div class="row"><button value="cancel" formnovalidate>Cancel</button><button value="create" class="primary">Create game</button></div>
+  </form>
+  <h3>Join a game</h3>
+  <textarea id="t-invite" rows="3" placeholder="Paste your invite code (SDO-...)" style="width:100%;background:#060b16;color:inherit;border:1px solid var(--line);border-radius:4px;font:11px monospace"></textarea>
+  <div class="row"><button type="button" id="b-join-online">Join</button></div>
+  <p class="hint" id="online-msg"></p>
 </dialog>
 
 <dialog id="d-mail">
@@ -121,9 +147,12 @@
   <p class="hint" id="mail-msg"></p>
 </dialog>
 
+<script src="../shared/config.js"></script>
+<script src="../shared/relay.js"></script>
 <script src="../shared/p2p.js"></script>
 <script src="../shared/lobby.js"></script>
 <script src="game.js"></script>
+<script src="online.js"></script>
 <script src="ui.js"></script>
 </body>
 </html>

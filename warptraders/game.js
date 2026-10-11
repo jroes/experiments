@@ -28,7 +28,8 @@
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   }
 
-  const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  // exact arithmetic only: Math.hypot may differ in the last bit between browsers, and a seed must give the same galaxy everywhere
+  const dist = (a, b) => { const dx = a.x - b.x, dy = a.y - b.y; return Math.sqrt(dx * dx + dy * dy); };
   const cargoUsed = s => GOODS.reduce((n, g) => n + s.cargo[g], 0);
 
   function log(s, text, kind) {
@@ -152,7 +153,9 @@
       if (sec.id === 0 || rnd() > 0.65) continue;
       const mode = {}, stock = {}, max = {};
       const sells = 1 + (rnd() < 0.4 ? 1 : 0);
-      const order = GOODS.slice().sort(() => rnd() - 0.5);
+      // Fisher-Yates: a random sort comparator gives different results in different browsers
+      const order = GOODS.slice();
+      for (let i = order.length - 1; i > 0; i--) { const j = (rnd() * (i + 1)) | 0; [order[i], order[j]] = [order[j], order[i]]; }
       order.forEach((g, i) => { mode[g] = i < sells ? 'sell' : 'buy'; });
       for (const g of GOODS) {
         max[g] = Math.round((600 + rnd() * 1400) * (g === 'equipment' ? 0.6 : 1));

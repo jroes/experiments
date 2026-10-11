@@ -16,6 +16,11 @@ jobs:
         with:
           node-version: 22
       - run: npm test
+      - name: Lockstep tests against a real relay over HTTP
+        run: |
+          node relay/src/node-server.js &
+          sleep 2
+          RELAY_URL=http://localhost:8787 node --test tests/lockstep.test.mjs
 
   tlc:
     runs-on: ubuntu-latest
