@@ -15,11 +15,22 @@
     view: { scale: 1, ox: 0, oy: 0 },
     send: G.SHIP_ORDER.reduce((o, t) => (o[t] = 0, o), {}),
     targeting: false,
+    me: G.PLAYER,   // which empire this browser controls
+    net: null,      // P2P link when playing with friends
+    seats: {},      // host only: peer id -> empire id
+    started: false, // multiplayer game running
   };
 
-  // ---------- save / load ----------
+  const esc = x => String(x).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const isGuest = () => !!ui.net && ui.net.role === 'guest';
+  const multi = () => !!ui.net;
+  const meEmp = () => G.empire(ui.state, ui.me);
+  const mem = () => ui.state.known[ui.me] || {};
+
+  // ---------- save / load (single player only) ----------
 
   function save() {
+    if (multi()) return;
     try { localStorage.setItem(SAVE_KEY, JSON.stringify(ui.state)); } catch (e) { /* storage blocked, fine */ }
   }
   function load() {
@@ -27,7 +38,7 @@
       const raw = localStorage.getItem(SAVE_KEY);
       if (!raw) return null;
       const s = JSON.parse(raw);
-      return s && s.version === 1 ? s : null;
+      return s && s.version === 2 ? s : null;
     } catch (e) { return null; }
   }
   function clearSave() {
@@ -36,11 +47,12 @@
 
   // ---------- state ----------
 
-  function setState(s) {
+  function setState(s, seat) {
     ui.state = s;
-    ui.vis = G.visibleWorlds(s, G.PLAYER);
-    ui.selected = s.worlds.find(w => w.owner === G.PLAYER)?.id ?? null;
+    ui.me = seat || G.PLAYER;
+    ui.selected = s.worlds.find(w => w.owner === ui.me)?.id ?? null;
     ui.targeting = false;
+    canvas.classList.remove('targeting');
     resetSend();
     fitView();
     refresh();
@@ -49,42 +61,67 @@
   function resetSend() { for (const t of G.SHIP_ORDER) ui.send[t] = 0; }
 
   function refresh() {
-    ui.vis = G.visibleWorlds(ui.state, G.PLAYER);
+    ui.vis = G.visibleWorlds(ui.state, ui.me);
     renderTop(); renderWorld(); renderEmpire(); renderLog(); draw();
-    const b = $('banner');
-    if (ui.state.over) {
+    const s = ui.state, b = $('banner'), alive = meEmp().alive;
+    if (s.over) {
       b.hidden = false;
-      b.innerHTML = (ui.state.over === 'won' ? '<b class="good">Victory.</b><br>The sector is yours.' :
-        '<b class="bad">Defeat.</b><br>Your empire is gone.') +
-        '<br><button class="primary" id="b-again">New game</button>';
-      $('b-again').onclick = openNew;
+      b.innerHTML = (s.winner === ui.me ? '<b class="good">Victory.</b><br>The sector is yours.' :
+        s.winner ? '<b class="bad">Defeat.</b><br>' + esc(G.empire(s, s.winner).name) + ' won.' :
+          '<b class="bad">Defeat.</b><br>Your empire is gone.') +
+        (multi() ? '' : '<br><button class="primary" id="b-again">New game</button>');
+      if (!multi()) $('b-again').onclick = openNew;
+    } else if (!alive) {
+      b.hidden = false;
+      b.innerHTML = '<b class="bad">Your empire is gone.</b><br><span class="dim">Spectating until the game ends.</span>';
     } else b.hidden = true;
   }
 
-  // what the player is allowed to know about a world
+  // what this player is allowed to know about a world
   function info(w) {
-    if (w.owner === G.PLAYER || ui.vis.has(w.id)) return { live: true, owner: w.owner, pop: Math.floor(w.pop), fort: w.fort, natives: w.natives };
-    const k = ui.state.known[w.id];
+    if (w.owner === ui.me || ui.vis.has(w.id)) return { live: true, owner: w.owner, pop: Math.floor(w.pop), fort: w.fort, natives: w.natives };
+    const k = mem()[w.id];
     return k ? { live: false, owner: k.owner, pop: k.pop, fort: k.fort, natives: k.natives, seen: k.seen } : null;
   }
 
-  function fleetVisible(f) {
-    if (f.owner === G.PLAYER) return true;
+  const fleetVisible = f => G.fleetVisibleTo(ui.state, ui.me, f);
+
+  // ---------- orders: local apply for solo/host, message to host for guests ----------
+
+  function act(cmd) {
     const s = ui.state;
-    return s.worlds.some(w => w.owner === G.PLAYER && G.dist(w, f) <= 30) ||
-      s.fleets.some(g => g.owner === G.PLAYER && G.dist(g, f) <= 20);
+    cmd = { ...cmd, turn: s.turn };
+    if (isGuest()) {
+      if (!ui.net.send({ t: 'cmd', cmd })) return { ok: false, msg: 'Not connected to the host.' };
+      return { ok: true, pending: true };
+    }
+    const res = G.apply(s, ui.me, cmd);
+    if (res.ok && cmd.op !== 'unready') G.refreshKnown(s);
+    if (res.ok && ui.net) broadcastState();
+    save();
+    return res;
+  }
+
+  function broadcastState() {
+    ui.net.broadcast({ t: 'state', state: ui.state });
   }
 
   // ---------- top bar / panels ----------
 
   function renderTop() {
-    const s = ui.state, e = s.empires[0];
+    const s = ui.state, e = meEmp();
     $('s-turn').textContent = s.turn;
     $('s-credits').textContent = Math.floor(e.credits);
-    $('s-income').textContent = '+' + G.empireIncome(s, G.PLAYER) + '/turn';
+    $('s-income').textContent = '+' + G.empireIncome(s, ui.me) + '/turn';
     $('s-tech').textContent = e.tech;
-    $('s-worlds').textContent = s.worlds.filter(w => w.owner === G.PLAYER).length;
-    $('b-end').disabled = !!s.over;
+    $('s-worlds').textContent = s.worlds.filter(w => w.owner === ui.me).length;
+    const end = $('b-end');
+    end.disabled = !!s.over || !e.alive;
+    if (multi() && !s.over && e.alive) {
+      const people = s.empires.filter(x => x.human && x.alive);
+      const ready = people.filter(x => s.ready[x.id]).length;
+      end.textContent = s.ready[ui.me] ? 'Waiting (' + ready + '/' + people.length + ')' : 'End turn (' + ready + '/' + people.length + ')';
+    } else end.textContent = 'End turn';
   }
 
   function shipLine(ships) {
@@ -92,38 +129,38 @@
     return parts.length ? parts.join(', ') : 'none';
   }
 
-  function ownerLabel(id) { return id ? ui.state.empires[id - 1].name : 'Unclaimed'; }
+  function ownerLabel(id) { return id ? esc(ui.state.empires[id - 1].name) + (id === ui.me ? ' (you)' : '') : 'Unclaimed'; }
 
   function renderWorld() {
     const el = $('p-world'), s = ui.state;
     if (ui.selected == null) { el.innerHTML = '<h3>No world selected</h3><p class="dim">Click a world on the map.</p>'; return; }
     const w = s.worlds[ui.selected], i = info(w);
     if (!i) { el.innerHTML = '<h3>Unexplored</h3>'; return; }
-    const type = G.WORLD_TYPES[w.type].label;
-    let h = '<h2>' + w.name + '<small>' + type + '</small></h2><div class="kv">';
+    const type = G.WORLD_TYPES[w.type].label, mine = w.owner === ui.me, frozen = s.over || !meEmp().alive;
+    let h = '<h2>' + esc(w.name) + '<small>' + type + '</small></h2><div class="kv">';
     h += '<div>Owner</div><div style="color:' + COLORS[i.owner] + '">' + (i.natives && !i.owner ? 'Natives' : ownerLabel(i.owner)) + '</div>';
     h += '<div>Population</div><div>' + i.pop + ' / ' + w.cap + '</div>';
-    h += '<div>Defense</div><div>' + (i.live || i.owner === G.PLAYER ? G.worldDefense(w) : '~' + (i.fort + Math.floor(i.pop / 25))) + '</div>';
+    h += '<div>Defense</div><div>' + (i.live || mine ? G.worldDefense(w) : '~' + (i.fort + Math.floor(i.pop / 25))) + '</div>';
     if (!i.live) h += '<div>Intel</div><div class="dim">Last seen turn ' + i.seen + '</div>';
     if (i.live && w.owner) h += '<div>Troops</div><div>' + w.troops + '</div>';
-    if (w.owner === G.PLAYER) h += '<div>Income</div><div class="good">+' + Math.floor(G.worldIncome(s, w)) + '</div>';
+    if (mine) h += '<div>Income</div><div class="good">+' + Math.floor(G.worldIncome(s, w)) + '</div>';
     h += '</div>';
 
-    if (i.live && w.owner !== G.PLAYER && w.garrison && G.shipCount(w.garrison)) {
+    if (i.live && !mine && w.garrison && G.shipCount(w.garrison)) {
       h += '<p>Garrison: ' + shipLine(w.garrison) + '</p>';
     }
 
-    if (w.owner === G.PLAYER) {
-      const e = s.empires[0];
+    if (mine) {
+      const e = meEmp();
       h += '<p>Garrison: ' + shipLine(w.garrison) + '</p>';
       if (w.queue.length) h += '<p class="dim">Building: ' + shipLine(w.queue.reduce((o, t) => (o[t] = (o[t] || 0) + 1, o), {})) + '</p>';
       h += '<h3>Build</h3><div class="btns">';
       for (const t of G.SHIP_ORDER) {
         const sh = G.SHIPS[t];
-        h += '<button data-act="build" data-t="' + t + '" ' + (e.credits < sh.cost || s.over ? 'disabled' : '') +
+        h += '<button data-act="build" data-t="' + t + '" ' + (e.credits < sh.cost || frozen ? 'disabled' : '') +
           ' title="atk ' + sh.atk + ' hp ' + sh.hp + ' speed ' + sh.speed + '">' + sh.name + ' ' + sh.cost + '</button>';
       }
-      h += '</div><div class="btns"><button data-act="fortify" ' + (w.fort >= 5 || e.credits < G.fortifyCost(w) || s.over ? 'disabled' : '') + '>' +
+      h += '</div><div class="btns"><button data-act="fortify" ' + (w.fort >= 5 || e.credits < G.fortifyCost(w) || frozen ? 'disabled' : '') + '>' +
         (w.fort >= 5 ? 'Fully fortified' : 'Fortify ' + G.fortifyCost(w)) + '</button></div>';
 
       if (G.shipCount(w.garrison)) {
@@ -137,41 +174,45 @@
             '<button class="small" data-act="all" data-t="' + t + '">all</button></div>';
         }
         const n = G.shipCount(ui.send);
-        h += '<div class="btns"><button class="primary" data-act="target" ' + (n && !s.over ? '' : 'disabled') + '>' +
+        h += '<div class="btns"><button class="primary" data-act="target" ' + (n && !frozen ? '' : 'disabled') + '>' +
           (ui.targeting ? 'Click a world on the map...' : 'Choose destination') + '</button></div>';
         if (ui.targeting) h += '<p class="hint">Esc to cancel.</p>';
       }
     } else if (ui.vis.size) {
-      const near = s.worlds.filter(x => x.owner === G.PLAYER).sort((a, b) => G.dist(a, w) - G.dist(b, w))[0];
-      if (near) h += '<p class="dim">' + Math.round(G.dist(near, w)) + ' units from ' + near.name + '.</p>';
+      const near = s.worlds.filter(x => x.owner === ui.me).sort((a, b) => G.dist(a, w) - G.dist(b, w))[0];
+      if (near) h += '<p class="dim">' + Math.round(G.dist(near, w)) + ' units from ' + esc(near.name) + '.</p>';
     }
     el.innerHTML = h;
   }
 
   function renderEmpire() {
-    const s = ui.state, e = s.empires[0], el = $('p-empire');
-    const cost = G.researchCost(s, G.PLAYER);
+    const s = ui.state, e = meEmp(), el = $('p-empire');
+    const cost = G.researchCost(s, ui.me), frozen = s.over || !e.alive;
     let h = '<h3>Empire</h3><div class="btns"><button data-act="research" ' +
-      (e.tech >= G.MAX_TECH || e.credits < cost || s.over ? 'disabled' : '') + '>' +
+      (e.tech >= G.MAX_TECH || e.credits < cost || frozen ? 'disabled' : '') + '>' +
       (e.tech >= G.MAX_TECH ? 'Tech maxed' : 'Research tech ' + (e.tech + 1) + ' (' + cost + ')') + '</button></div>';
     h += '<div class="kv">';
-    for (const r of s.empires.slice(1)) {
-      h += '<div style="color:' + COLORS[r.id] + '">' + r.name.split(' ')[0] + '</div><div>' + (r.alive ? 'active' : 'eliminated') + '</div>';
+    for (const r of s.empires) {
+      if (r.id === ui.me) continue;
+      const tag = r.human ? 'player' : 'AI';
+      const state = !r.alive ? 'eliminated' : (r.human && s.ready[r.id] ? 'ready' : 'active');
+      h += '<div style="color:' + COLORS[r.id] + '">' + esc(r.name.split(' ')[0]) + '</div><div>' + tag + ', ' + state +
+        (r.human && r.alive && ui.net && ui.net.role === 'host' ? ' <button class="small" data-act="drop" data-e="' + r.id + '" title="Hand this empire to the AI">drop</button>' : '') + '</div>';
     }
     h += '</div>';
-    const mine = s.fleets.filter(f => f.owner === G.PLAYER);
+    const mine = s.fleets.filter(f => f.owner === ui.me);
     if (mine.length) {
       h += '<h3 style="margin-top:8px">Fleets in transit</h3>';
       for (const f of mine) {
-        h += '<div class="dim">' + G.shipCount(f.ships) + ' ships to ' + s.worlds[f.to].name + ', ' + G.eta(s, f) + ' turn' + (G.eta(s, f) > 1 ? 's' : '') + '</div>';
+        h += '<div class="dim">' + G.shipCount(f.ships) + ' ships to ' + esc(s.worlds[f.to].name) + ', ' + G.eta(s, f) + ' turn' + (G.eta(s, f) > 1 ? 's' : '') + '</div>';
       }
     }
     el.innerHTML = h;
   }
 
   function renderLog() {
-    $('log').innerHTML = ui.state.log.slice(0, 60).map(l =>
-      '<li class="' + l.kind + '"><b>T' + l.turn + '</b>' + l.text + '</li>').join('');
+    $('log').innerHTML = ui.state.log.filter(l => !l.to || l.to.includes(ui.me)).slice(0, 60).map(l =>
+      '<li class="' + esc(l.kind) + '"><b>T' + l.turn + '</b>' + esc(l.text) + '</li>').join('');
   }
 
   // ---------- map ----------
@@ -203,19 +244,16 @@
     ctx.clearRect(0, 0, r.width, r.height);
     const sc = ui.view.scale;
 
-    // map bounds
     ctx.strokeStyle = '#142038'; ctx.lineWidth = 1;
     ctx.strokeRect(sx(0), sy(0), s.width * sc, s.height * sc);
     ctx.strokeStyle = '#0c1526';
     for (let x = 10; x < s.width; x += 10) { ctx.beginPath(); ctx.moveTo(sx(x), sy(0)); ctx.lineTo(sx(x), sy(s.height)); ctx.stroke(); }
     for (let y = 10; y < s.height; y += 10) { ctx.beginPath(); ctx.moveTo(sx(0), sy(y)); ctx.lineTo(sx(s.width), sy(y)); ctx.stroke(); }
 
-    // sight radii
     ctx.fillStyle = 'rgba(94,224,176,0.04)';
-    for (const w of s.worlds) if (w.owner === G.PLAYER) { ctx.beginPath(); ctx.arc(sx(w.x), sy(w.y), 30 * sc, 0, 7); ctx.fill(); }
-    for (const f of s.fleets) if (f.owner === G.PLAYER) { ctx.beginPath(); ctx.arc(sx(f.x), sy(f.y), 20 * sc, 0, 7); ctx.fill(); }
+    for (const w of s.worlds) if (w.owner === ui.me) { ctx.beginPath(); ctx.arc(sx(w.x), sy(w.y), 30 * sc, 0, 7); ctx.fill(); }
+    for (const f of s.fleets) if (f.owner === ui.me) { ctx.beginPath(); ctx.arc(sx(f.x), sy(f.y), 20 * sc, 0, 7); ctx.fill(); }
 
-    // fleet routes
     for (const f of s.fleets) {
       if (!fleetVisible(f)) continue;
       const t = s.worlds[f.to];
@@ -224,7 +262,6 @@
       ctx.setLineDash([]); ctx.globalAlpha = 1;
     }
 
-    // worlds
     ctx.textAlign = 'center';
     ctx.font = Math.max(10, Math.min(13, sc * 1.3)) + 'px ui-monospace, Menlo, Consolas, monospace';
     for (const w of s.worlds) {
@@ -236,12 +273,7 @@
       ctx.fillStyle = COLORS[i.owner];
       ctx.beginPath(); ctx.arc(x, y, rad, 0, 7); ctx.fill();
       if (i.natives && !i.owner) { ctx.strokeStyle = '#ff6b6b'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(x, y, rad + 2, 0, 7); ctx.stroke(); }
-      if (i.owner && i.live || i.owner === G.PLAYER) {
-        const f = G.shipCount(w.garrison);
-        if (f && (w.owner === G.PLAYER || ui.vis.has(w.id))) {
-          ctx.fillStyle = '#cfe3ff'; ctx.fillRect(x - 2, y - rad - 6, 4, 3);
-        }
-      }
+      if (i.live && G.shipCount(w.garrison)) { ctx.fillStyle = '#cfe3ff'; ctx.fillRect(x - 2, y - rad - 6, 4, 3); }
       ctx.fillStyle = i.live ? '#cfe3ff' : '#7d90b0';
       ctx.fillText(w.name, x, y + rad + 12);
       ctx.globalAlpha = 1;
@@ -249,7 +281,6 @@
       if (ui.hover === w.id && ui.targeting) { ctx.strokeStyle = '#ffb454'; ctx.beginPath(); ctx.arc(x, y, rad + 8, 0, 7); ctx.stroke(); }
     }
 
-    // fleets
     for (const f of s.fleets) {
       if (!fleetVisible(f)) continue;
       const t = s.worlds[f.to], a = Math.atan2(t.y - f.y, t.x - f.x), x = sx(f.x), y = sy(f.y);
@@ -291,7 +322,7 @@
     else {
       const w = ui.state.worlds[id], i = info(w);
       tip.hidden = false;
-      tip.textContent = w.name + ' - ' + (i.natives && !i.owner ? 'Natives' : ownerLabel(i.owner)) + ', pop ' + i.pop;
+      tip.textContent = w.name + ' - ' + (i.natives && !i.owner ? 'Natives' : i.owner ? ui.state.empires[i.owner - 1].name : 'Unclaimed') + ', pop ' + i.pop;
       tip.style.left = (px + 14) + 'px'; tip.style.top = (py + 14) + 'px';
     }
   });
@@ -318,20 +349,17 @@
     draw();
   }, { passive: false });
 
-  function dispatchTo(toId) {
-    const s = ui.state;
-    if (toId === ui.selected) { toast('Pick a different world.'); return; }
-    const res = G.sendFleet(s, G.PLAYER, ui.selected, toId, ui.send);
-    if (!res.ok) { toast(res.msg); return; }
-    G.refreshKnown(s);
-    s.log.unshift({ turn: s.turn, text: 'Fleet sent to ' + s.worlds[toId].name + ', ' + res.eta + ' turn' + (res.eta > 1 ? 's' : '') + '.', kind: 'info' });
-    ui.targeting = false; resetSend(); save(); refresh();
+  function toast(msg) {
+    ui.state.log.unshift({ turn: ui.state.turn, text: msg, kind: 'bad', to: [ui.me] });
+    renderLog();
   }
 
-  function toast(msg) {
-    const s = ui.state;
-    s.log.unshift({ turn: s.turn, text: msg, kind: 'bad' });
-    renderLog();
+  function dispatchTo(toId) {
+    if (toId === ui.selected) { toast('Pick a different world.'); return; }
+    const res = act({ op: 'send', from: ui.selected, to: toId, ships: { ...ui.send } });
+    if (!res.ok) { toast(res.msg); return; }
+    if (res.eta) ui.state.log.unshift({ turn: ui.state.turn, text: 'Fleet sent to ' + ui.state.worlds[toId].name + ', ' + res.eta + ' turn' + (res.eta > 1 ? 's' : '') + '.', kind: 'info', to: [ui.me] });
+    ui.targeting = false; canvas.classList.remove('targeting'); resetSend(); refresh();
   }
 
   // ---------- sidebar actions ----------
@@ -339,33 +367,46 @@
   $('side').addEventListener('click', e => {
     const b = e.target.closest('button[data-act]');
     if (!b || ui.state.over) return;
-    const s = ui.state, act = b.dataset.act, t = b.dataset.t, w = s.worlds[ui.selected];
+    const s = ui.state, a = b.dataset.act, t = b.dataset.t, w = s.worlds[ui.selected];
     let res = { ok: true };
-    if (act === 'build') res = G.build(s, w.id, t);
-    else if (act === 'fortify') res = G.fortify(s, w.id);
-    else if (act === 'research') res = G.research(s, G.PLAYER);
-    else if (act === 'inc') ui.send[t] = Math.min(w.garrison[t], ui.send[t] + 1);
-    else if (act === 'dec') ui.send[t] = Math.max(0, ui.send[t] - 1);
-    else if (act === 'all') ui.send[t] = w.garrison[t];
-    else if (act === 'target') ui.targeting = !ui.targeting;
+    if (a === 'drop') {
+      if (ui.net && ui.net.role === 'host') {
+        const id = +b.dataset.e;
+        G.dropPlayer(s, id); G.refreshKnown(s);
+        for (const [pid, seat] of Object.entries(ui.seats)) if (seat === id) ui.net.kick(+pid);
+        broadcastState(); refresh();
+      }
+      return;
+    }
+    if (a === 'build') res = act({ op: 'build', world: w.id, type: t });
+    else if (a === 'fortify') res = act({ op: 'fortify', world: w.id });
+    else if (a === 'research') res = act({ op: 'research' });
+    else if (a === 'inc') ui.send[t] = Math.min(w.garrison[t], ui.send[t] + 1);
+    else if (a === 'dec') ui.send[t] = Math.max(0, ui.send[t] - 1);
+    else if (a === 'all') ui.send[t] = w.garrison[t];
+    else if (a === 'target') ui.targeting = !ui.targeting;
     canvas.classList.toggle('targeting', ui.targeting);
     if (!res.ok) toast(res.msg);
-    if (act === 'build' || act === 'fortify' || act === 'research') save();
     refresh();
   });
 
   // ---------- turn / new game ----------
 
   function endTurn() {
-    if (ui.state.over) return;
+    const s = ui.state;
+    if (s.over || !meEmp().alive) return;
     ui.targeting = false;
     canvas.classList.remove('targeting');
-    G.endTurn(ui.state);
-    save();
+    if (multi() && s.ready[ui.me]) { const r = act({ op: 'unready' }); if (!r.ok) toast(r.msg); refresh(); return; }
+    const r = act({ op: 'ready' });
+    if (!r.ok) toast(r.msg);
     refresh();
   }
 
-  function openNew() { $('d-new').showModal(); }
+  function openNew() {
+    if (multi()) { toast('Leave the multiplayer game first (reload the page).'); return; }
+    $('d-new').showModal();
+  }
 
   $('b-end').onclick = endTurn;
   $('b-help').onclick = () => $('d-help').showModal();
@@ -385,6 +426,67 @@
     else if (e.key === 'Escape' && ui.targeting) { ui.targeting = false; canvas.classList.remove('targeting'); refresh(); }
   });
   window.addEventListener('resize', resize);
+
+  // ---------- multiplayer ----------
+
+  function validState(s, seat) {
+    return s && s.version === 2 && Array.isArray(s.worlds) && Array.isArray(s.empires) && s.empires.length === 4 &&
+      Number.isInteger(seat) && seat >= 1 && seat <= 4 && s.empires[seat - 1] && s.known && s.ready && Array.isArray(s.log) && Array.isArray(s.fleets);
+  }
+
+  function startHosting() {
+    const fd = new FormData($('f-mp'));
+    const opts = { difficulty: fd.get('difficulty'), worlds: +fd.get('worlds') };
+    const net = P2P.host({ maxGuests: 3 });
+    ui.net = net;
+    net.on('close', id => {
+      const seat = ui.seats[id];
+      if (seat && ui.started) { G.dropPlayer(ui.state, seat); G.refreshKnown(ui.state); broadcastState(); refresh(); }
+    });
+    net.on('message', (id, m) => {
+      const seat = ui.seats[id];
+      if (!seat || !m || m.t !== 'cmd') return;
+      const res = G.apply(ui.state, seat, m.cmd);
+      if (res.ok) G.refreshKnown(ui.state);
+      net.send(id, { t: 'ack', ok: !!res.ok, msg: res.msg || null });
+      if (res.ok) { broadcastState(); refresh(); }
+    });
+    Lobby.showHost(net, {
+      title: 'Host a game', startLabel: 'Start game',
+      onStart() {
+        const open = [...net.peers.values()].filter(p => p.state === 'open');
+        const s = G.newGame({ ...opts, humans: 1 + open.length });
+        open.forEach((p, i) => { ui.seats[p.id] = i + 2; s.empires[i + 1].player = 'Friend ' + p.id; });
+        ui.started = true;
+        setState(s, 1);
+        for (const p of open) net.send(p.id, { t: 'start', seat: ui.seats[p.id], state: s });
+        toast('Game started with ' + (open.length + 1) + ' players. The rest are AI.');
+      },
+    });
+  }
+
+  function joinGame() {
+    const net = P2P.guest();
+    ui.net = net;
+    net.on('message', m => {
+      if (!m) return;
+      if (m.t === 'start' || m.t === 'state') {
+        const seat = m.t === 'start' ? m.seat : ui.me;
+        if (!validState(m.state, seat)) return;
+        if (m.t === 'start') { ui.started = true; setState(m.state, seat); document.querySelectorAll('dialog.lobby').forEach(d => d.close()); }
+        else { ui.state = m.state; if (ui.selected == null || !ui.state.worlds[ui.selected]) ui.selected = ui.state.worlds.find(w => w.owner === ui.me)?.id ?? null; refresh(); }
+      } else if (m.t === 'ack' && !m.ok && m.msg) toast(String(m.msg).slice(0, 80));
+    });
+    net.on('close', () => { if (ui.started) toast('Lost connection to the host.'); });
+    Lobby.showJoin(net, { title: 'Join a game' });
+  }
+
+  $('b-mp').onclick = () => $('d-mp').showModal();
+  $('f-mp').addEventListener('submit', e => {
+    const v = e.submitter && e.submitter.value;
+    if (v === 'host') startHosting();
+    else if (v === 'join') joinGame();
+  });
 
   // ---------- boot ----------
 

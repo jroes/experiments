@@ -5,10 +5,12 @@
   const $ = id => document.getElementById(id);
   const canvas = $('map'), ctx = canvas.getContext('2d');
   let s, view = { sc: 1, ox: 0, oy: 0 }, hover = null, qty = {};
+  let net = null, race = null; // race: { me, players: {id: {name, credits, turnsLeft, done}} }
+  const esc = x => String(x).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-  function save() { try { localStorage.setItem(KEY, JSON.stringify(s)); } catch (e) { /* ignore */ } }
+  function save() { if (race) return; try { localStorage.setItem(KEY, JSON.stringify(s)); } catch (e) { /* ignore */ } }
   function load() {
-    try { const o = JSON.parse(localStorage.getItem(KEY)); return o && o.version === 1 ? o : null; } catch (e) { return null; }
+    try { const o = JSON.parse(localStorage.getItem(KEY)); return o && o.version === 2 ? o : null; } catch (e) { return null; }
   }
   function best() { try { return +localStorage.getItem(BEST) || 0; } catch (e) { return 0; } }
 
@@ -31,7 +33,8 @@
         '</span><br><button class="primary" id="b-again">New game</button>';
       $('b-again').onclick = newGame;
     } else b.hidden = true;
-    save();
+    if (!race) save();
+    sendScore();
   }
 
   function renderSector() {
@@ -77,7 +80,7 @@
   }
 
   function renderLog() {
-    $('log').innerHTML = s.log.slice(0, 50).map(l => '<li class="' + l.kind + '"><b>T' + l.turn + '</b>' + l.text + '</li>').join('');
+    $('log').innerHTML = s.log.slice(0, 50).map(l => '<li class="' + esc(l.kind) + '"><b>T' + l.turn + '</b>' + esc(l.text) + '</li>').join('');
   }
 
   function msg(r) { if (r && !r.ok && r.msg) { s.log.unshift({ turn: G.START_TURNS - s.turnsLeft, text: r.msg, kind: 'bad' }); } }
@@ -182,8 +185,101 @@
     msg(G.travel(s, id)); qty = {}; refresh();
   });
 
+
+  // ---------- race mode (friends over P2P) ----------
+
+  function standing() {
+    return Object.entries(race.players).map(([id, p]) => ({ id: +id, ...p })).sort((a, b) => b.credits - a.credits);
+  }
+
+  function renderRace() {
+    const el = $('p-race');
+    el.hidden = !race;
+    if (!race) return;
+    const rows = standing(), allDone = rows.every(r => r.done || r.left);
+    el.innerHTML = '<h3>Race' + (allDone ? ' - final' : '') + '</h3><table class="port-table">' +
+      '<tr><th>#</th><th>Player</th><th>Credits</th><th>Turns</th></tr>' +
+      rows.map((r, i) => '<tr><td>' + (i + 1) + '</td><td>' + esc(r.name) + (r.id === race.me ? ' (you)' : '') + (r.left ? ' <span class="dim">left</span>' : '') +
+        '</td><td>' + num(r.credits) + '</td><td>' + (r.done ? 'done' : r.turnsLeft) + '</td></tr>').join('') + '</table>';
+  }
+
+  let lastSent = '';
+  function sendScore() {
+    if (!race || !net) return;
+    race.players[race.me] = { ...race.players[race.me], credits: Math.floor(s.credits), turnsLeft: s.turnsLeft, done: s.over };
+    const m = { t: 'score', credits: Math.floor(s.credits), turnsLeft: s.turnsLeft, done: s.over };
+    const key = JSON.stringify(m);
+    if (key !== lastSent) {
+      lastSent = key;
+      if (net.role === 'host') net.broadcast({ t: 'scores', players: race.players });
+      else net.send(m);
+    }
+    renderRace();
+  }
+
+  function startRace(seed, me, players) {
+    race = { me, players };
+    s = G.newGame({ seed });
+    qty = {}; lastSent = '';
+    fit(); refresh();
+  }
+
+  function hostRace() {
+    net = P2P.host({ maxGuests: 3 });
+    const names = {};
+    net.on('message', (id, m) => {
+      if (!race || !m || m.t !== 'score') return;
+      const p = race.players[id + 1];
+      if (!p) return;
+      if (Number.isFinite(m.credits)) p.credits = Math.floor(m.credits);
+      if (Number.isFinite(m.turnsLeft)) p.turnsLeft = m.turnsLeft;
+      p.done = !!m.done;
+      net.broadcast({ t: 'scores', players: race.players });
+      renderRace();
+    });
+    net.on('close', id => {
+      if (race && race.players[id + 1]) { race.players[id + 1].left = true; net.broadcast({ t: 'scores', players: race.players }); renderRace(); }
+    });
+    Lobby.showHost(net, {
+      title: 'Host a race', startLabel: 'Start race',
+      onStart() {
+        const open = [...net.peers.values()].filter(p => p.state === 'open');
+        const seed = (Math.random() * 1e9) | 0;
+        const players = { 1: { name: 'Host', credits: 1000, turnsLeft: G.START_TURNS, done: false } };
+        for (const p of open) players[p.id + 1] = { name: 'Friend ' + p.id, credits: 1000, turnsLeft: G.START_TURNS, done: false };
+        startRace(seed, 1, players);
+        for (const p of open) net.send(p.id, { t: 'start', seed, me: p.id + 1, players });
+      },
+    });
+  }
+
+  function joinRace() {
+    net = P2P.guest();
+    net.on('message', m => {
+      if (!m) return;
+      if (m.t === 'start' && Number.isInteger(m.seed) && Number.isInteger(m.me) && m.players && typeof m.players === 'object') {
+        startRace(m.seed, m.me, m.players);
+        document.querySelectorAll('dialog.lobby').forEach(d => d.close());
+      } else if (m.t === 'scores' && race && m.players && typeof m.players === 'object') {
+        for (const [id, p] of Object.entries(m.players)) {
+          if (+id === race.me) continue;
+          if (p && typeof p.name === 'string') race.players[id] = { name: p.name.slice(0, 20), credits: +p.credits || 0, turnsLeft: +p.turnsLeft || 0, done: !!p.done, left: !!p.left };
+        }
+        renderRace();
+      }
+    });
+    net.on('close', () => { if (race) { for (const p of Object.values(race.players)) p.left = p.left || false; renderRace(); } });
+    Lobby.showJoin(net, { title: 'Join a race' });
+  }
+
+  $('b-mp').onclick = () => $('d-mp').showModal();
+  $('f-mp').addEventListener('submit', e => {
+    const v = e.submitter && e.submitter.value;
+    if (v === 'host') hostRace(); else if (v === 'join') joinRace();
+  });
+
   function newGame() { s = G.newGame({}); qty = {}; fit(); refresh(); }
-  $('b-new').onclick = () => { if (s.over || confirm('Start a new game? Current run is lost.')) newGame(); };
+  $('b-new').onclick = () => { if (race) { alert('Reload the page to leave the race.'); return; } if (s.over || confirm('Start a new game? Current run is lost.')) newGame(); };
   $('b-retire').onclick = () => { if (!s.over && confirm('Retire and bank your credits?')) { G.retire(s); refresh(); } };
   $('b-help').onclick = () => $('d-help').showModal();
   window.addEventListener('resize', resize);

@@ -1,0 +1,8 @@
+{
+  "name": "experiments",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "tlc": "verification/run-tlc.sh"
+  }
+}

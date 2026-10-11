@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sector Dominion</title>
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="../shared/lobby.css">
 </head>
 <body>
 <header id="topbar">
@@ -15,6 +16,7 @@
   <div class="stat">Worlds <b id="s-worlds">1</b></div>
   <div class="spacer"></div>
   <button id="b-help">Help</button>
+  <button id="b-mp">Multiplayer</button>
   <button id="b-new">New game</button>
   <button id="b-end" class="primary">End turn</button>
 </header>
@@ -76,6 +78,27 @@
   </form>
 </dialog>
 
+<dialog id="d-mp">
+  <h2>Multiplayer</h2>
+  <p class="fine">Play with up to 3 friends, directly browser to browser. No server. One person hosts and sends each friend an invite code. Empires nobody takes are run by the AI. Everyone ends their turn, then the turn plays out.</p>
+  <form method="dialog" id="f-mp">
+    <label>Difficulty (host decides)
+      <select name="difficulty"><option value="easy">Easy</option><option value="normal" selected>Normal</option><option value="hard">Hard</option></select>
+    </label>
+    <label>Worlds (host decides)
+      <select name="worlds"><option value="30">30</option><option value="40" selected>40</option><option value="60">60</option></select>
+    </label>
+    <div class="row">
+      <button value="cancel" formnovalidate>Cancel</button>
+      <button value="join">Join a game</button>
+      <button value="host" class="primary">Host a game</button>
+    </div>
+  </form>
+  <p class="fine">Friends-only trust: the host's browser sends everyone the full game state, so anyone who opens dev tools could peek at hidden info.</p>
+</dialog>
+
+<script src="../shared/p2p.js"></script>
+<script src="../shared/lobby.js"></script>
 <script src="game.js"></script>
 <script src="ui.js"></script>
 </body>

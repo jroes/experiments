@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Warp Traders</title>
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="../shared/lobby.css">
 </head>
 <body>
 <header id="topbar">
@@ -15,6 +16,7 @@
   <div class="stat">Fighters <b id="s-fighters"></b></div>
   <div class="spacer"></div>
   <button id="b-help">Help</button>
+  <button id="b-mp">Race friends</button>
   <button id="b-retire">Retire</button>
   <button id="b-new">New game</button>
 </header>
@@ -26,6 +28,7 @@
   </div>
   <aside id="side">
     <section id="p-sector"></section>
+    <section id="p-race" hidden></section>
     <section id="p-log"><h3>Log</h3><ul id="log"></ul></section>
   </aside>
 </main>
@@ -43,6 +46,21 @@
   <p class="fine">Inspired by the classic BBS space trading games. Original code and text.</p>
   <form method="dialog"><button class="primary">Got it</button></form>
 </dialog>
+<dialog id="d-mp">
+  <h2>Race friends</h2>
+  <p class="fine">Everyone gets the same galaxy and the same number of turns. Highest credits wins. Connects browser to browser, no server. One person hosts and sends each friend an invite code.</p>
+  <form method="dialog" id="f-mp">
+    <div class="row">
+      <button value="cancel" formnovalidate>Cancel</button>
+      <button value="join">Join a race</button>
+      <button value="host" class="primary">Host a race</button>
+    </div>
+  </form>
+  <p class="fine">Scores are reported by each player's own browser, so this is friends-only: nothing stops someone from editing theirs.</p>
+</dialog>
+
+<script src="../shared/p2p.js"></script>
+<script src="../shared/lobby.js"></script>
 <script src="game.js"></script>
 <script src="ui.js"></script>
 </body>
