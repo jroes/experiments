@@ -38,6 +38,10 @@ fly volumes create world --size 1 -a <app>
 fly deploy --ha=false
 ```
 
+Pushes to `main` that touch `elf-punch/` deploy themselves (`.github/workflows/deploy-elf-punch.yml`: tests, then `flyctl deploy`),
+using the repo secret `FLY_API_TOKEN`, a deploy token for this one app. It expires 2027-10-11; renew with
+`fly tokens create deploy -a elf-castle-wood-puncher -x 8760h | gh secret set FLY_API_TOKEN -R jroes/experiments`.
+
 Keep it to one machine: both the world and the store are in that machine's memory and volume.
 
 ## Key/value store
