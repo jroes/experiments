@@ -1,5 +1,5 @@
 /*
- * Game logic for the browser Anacreon-style 4X.
+ * Game logic for the browser space 4X.
  * No DOM in here, so it can be tested under node.
  * State is plain JSON so it can be saved to localStorage.
  */
