@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Warp Traders</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="topbar">
+  <div class="brand">WARP TRADERS<span>browser edition</span></div>
+  <div class="stat">Turns <b id="s-turns"></b></div>
+  <div class="stat">Credits <b id="s-credits"></b></div>
+  <div class="stat">Holds <b id="s-holds"></b></div>
+  <div class="stat">Fighters <b id="s-fighters"></b></div>
+  <div class="spacer"></div>
+  <button id="b-help">Help</button>
+  <button id="b-retire">Retire</button>
+  <button id="b-new">New game</button>
+</header>
+<main>
+  <div id="mapwrap">
+    <canvas id="map"></canvas>
+    <div id="banner" hidden></div>
+    <div id="tip" hidden></div>
+  </div>
+  <aside id="side">
+    <section id="p-sector"></section>
+    <section id="p-log"><h3>Log</h3><ul id="log"></ul></section>
+  </aside>
+</main>
+
+<dialog id="d-help">
+  <h2>How to play</h2>
+  <p>You fly a freighter around a network of sectors. Every warp costs a turn. Make as many credits as you can before turns run out.</p>
+  <ul>
+    <li>Ports <b>sell</b> or <b>buy</b> fuel ore, organics and equipment. A port with lots in stock sells cheap. A port that is running low pays well.</li>
+    <li>Buy where it is cheap, sell where it is dear. Every unit you trade moves the price, so big loads cost more per unit.</li>
+    <li>Click a sector on the map to fly there (known routes only). Ports you have visited show the last prices you saw, which go stale.</li>
+    <li><b>Stardock</b> (sector 1, the gold one) sells extra holds and fighters.</li>
+    <li>Pirates ambush you at random, more often far from Stardock. Fight (needs fighters), pay a toll, or flee.</li>
+  </ul>
+  <p class="fine">Inspired by the classic BBS space trading games. Original code and text.</p>
+  <form method="dialog"><button class="primary">Got it</button></form>
+</dialog>
+<script src="game.js"></script>
+<script src="ui.js"></script>
+</body>
+</html>
