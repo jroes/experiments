@@ -262,3 +262,66 @@ test('fog of war: each player remembers only what they saw', () => {
   assert.ok(!k1.includes(cap2) || G.visibleWorlds(s, 1).has(cap2), 'player 1 knows player 2 capital without seeing it');
   assert.ok(k1.length < s.worlds.length && k2.length < s.worlds.length);
 });
+
+// ---------- play by mail ----------
+
+test('mail orders: replaying a friend\'s orders on the host matches what the friend previewed', () => {
+  for (let seed = 1; seed <= 40; seed++) {
+    const rnd = driver(seed * 13);
+    const host = G.newGame({ seed, humans: 3, worlds: 30 });
+    for (let turn = 0; turn < 8 && !host.over; turn++) {
+      // each guest plays on their own copy and records what was accepted
+      const sent = [];
+      for (const seat of [2, 3]) {
+        const local = clone(host), cmds = [];
+        if (!G.empire(local, seat).alive) continue;
+        for (let k = 0; k < 4; k++) {
+          const before = JSON.stringify(local);
+          const mine = local.worlds.filter(w => w.owner === seat);
+          const w = mine[(rnd() * mine.length) | 0];
+          if (!w) break;
+          const cmd = rnd() < 0.5 ? { op: 'build', world: w.id, type: G.SHIP_ORDER[(rnd() * 4) | 0] }
+            : { op: 'send', from: w.id, to: (rnd() * local.worlds.length) | 0, ships: { frigate: 1, transport: 1, scout: 1, cruiser: 0 } };
+          const r = G.apply(local, seat, { ...cmd, turn: local.turn });
+          if (r.ok) cmds.push(cmd); else assert.equal(JSON.stringify(local), before);
+        }
+        sent.push({ seat, local, code: G.encodeOrders({ v: 1, seat, turn: host.turn, cmds }) });
+      }
+      for (const { seat, local, code } of sent) {
+        const o = G.decodeOrders(code);
+        assert.ok(o);
+        const r = G.applyOrders(host, o);
+        assert.ok(r.ok, r.msg);
+        assert.deepEqual(r.rejected, [], 'orders the friend could give were refused on the host');
+        // the host's copy of this empire matches the friend's preview
+        assert.equal(host.empires[seat - 1].credits, local.empires[seat - 1].credits);
+        assert.deepEqual(host.worlds.filter(w => w.owner === seat).map(w => [w.id, w.queue, w.garrison, w.fort]),
+          local.worlds.filter(w => w.owner === seat).map(w => [w.id, w.queue, w.garrison, w.fort]));
+      }
+      G.apply(host, 1, { op: 'ready', turn: host.turn });
+      checkInvariants(host, 'mail seed ' + seed);
+    }
+  }
+});
+
+test('mail orders: wrong turn, repeats, bad seats and junk codes are refused', () => {
+  const s = G.newGame({ seed: 5, humans: 3 });
+  const good = { v: 1, seat: 2, turn: 1, cmds: [{ op: 'build', world: s.worlds.find(w => w.owner === 2).id, type: 'scout' }] };
+  assert.equal(G.applyOrders(s, { ...good, turn: 9 }).ok, false);
+  assert.equal(G.applyOrders(s, { ...good, seat: 4 }).ok, false);   // AI seat
+  assert.equal(G.applyOrders(s, { ...good, seat: 99 }).ok, false);
+  assert.equal(G.applyOrders(s, good).ok, true);
+  assert.equal(G.applyOrders(s, good).ok, false, 'second copy must be refused');
+  // cannot give orders for someone else's world
+  const t = G.newGame({ seed: 5, humans: 3 });
+  const steal = { v: 1, seat: 2, turn: 1, cmds: [{ op: 'build', world: t.worlds.find(w => w.owner === 3).id, type: 'scout' }] };
+  const r = G.applyOrders(t, steal);
+  assert.equal(r.applied, 0);
+  const rnd = driver(3);
+  for (let i = 0; i < 300; i++) {
+    const junkCode = ['', 'SDO1.', 'SDO1.@@@', 'x', 'SDO1.' + Buffer.from(String(rnd())).toString('base64'), null, undefined, 42][(rnd() * 8) | 0];
+    assert.equal(G.decodeOrders(junkCode), null);
+  }
+  assert.equal(G.decodeOrders(G.encodeOrders({ v: 1, seat: 2, turn: 1, cmds: new Array(500).fill({ op: 'research' }) })), null);
+  assert.ok(G.decodeOrders(G.encodeOrders(good)));
+});

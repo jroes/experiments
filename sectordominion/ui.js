@@ -2,6 +2,7 @@
   'use strict';
   const G = window.Game;
   const SAVE_KEY = 'sectordominion-save-v1';
+  const MAIL_KEY = 'sectordominion-mail-v1';
   const COLORS = ['#6b7a94', '#5ee0b0', '#ffb454', '#ff6b6b', '#b48cff'];
 
   const $ = id => document.getElementById(id);
@@ -19,6 +20,8 @@
     net: null,      // P2P link when playing with friends
     seats: {},      // host only: peer id -> empire id
     started: false, // multiplayer game running
+    mailMsg: '',    // last message in the mail panel
+    mail: null,     // play-by-mail session: { role: 'host'|'guest', cmds: [], sent: bool }
   };
 
   const esc = x => String(x).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -31,8 +34,18 @@
 
   function save() {
     if (multi()) return;
-    try { localStorage.setItem(SAVE_KEY, JSON.stringify(ui.state)); } catch (e) { /* storage blocked, fine */ }
+    try {
+      if (ui.mail) localStorage.setItem(MAIL_KEY, JSON.stringify({ v: 1, mail: ui.mail, me: ui.me, state: ui.state }));
+      else localStorage.setItem(SAVE_KEY, JSON.stringify(ui.state));
+    } catch (e) { /* storage blocked, fine */ }
   }
+  function loadMail() {
+    try {
+      const o = JSON.parse(localStorage.getItem(MAIL_KEY));
+      return o && o.v === 1 && validState(o.state, o.me) && o.mail && (o.mail.role === 'host' || o.mail.role === 'guest') ? o : null;
+    } catch (e) { return null; }
+  }
+  function clearMail() { try { localStorage.removeItem(MAIL_KEY); } catch (e) { /* ignore */ } }
   function load() {
     try {
       const raw = localStorage.getItem(SAVE_KEY);
@@ -62,7 +75,7 @@
 
   function refresh() {
     ui.vis = G.visibleWorlds(ui.state, ui.me);
-    renderTop(); renderWorld(); renderEmpire(); renderLog(); draw();
+    renderTop(); renderMail(); renderWorld(); renderEmpire(); renderLog(); draw();
     const s = ui.state, b = $('banner'), alive = meEmp().alive;
     if (s.over) {
       b.hidden = false;
@@ -91,6 +104,12 @@
   function act(cmd) {
     const s = ui.state;
     cmd = { ...cmd, turn: s.turn };
+    if (ui.mail && ui.mail.role === 'guest') {
+      if (ui.mail.sent) return { ok: false, msg: 'Orders already sent. Load the next turn file.' };
+      const r = G.apply(s, ui.me, cmd);
+      if (r.ok) { G.refreshKnown(s); ui.mail.cmds.push(stripTurn(cmd)); save(); }
+      return r;
+    }
     if (isGuest()) {
       if (!ui.net.send({ t: 'cmd', cmd })) return { ok: false, msg: 'Not connected to the host.' };
       return { ok: true, pending: true };
@@ -101,6 +120,8 @@
     save();
     return res;
   }
+
+  const stripTurn = c => { const o = { ...c }; delete o.turn; return o; };
 
   function broadcastState() {
     ui.net.broadcast({ t: 'state', state: ui.state });
@@ -121,6 +142,12 @@
       const people = s.empires.filter(x => x.human && x.alive);
       const ready = people.filter(x => s.ready[x.id]).length;
       end.textContent = s.ready[ui.me] ? 'Waiting (' + ready + '/' + people.length + ')' : 'End turn (' + ready + '/' + people.length + ')';
+    } else if (ui.mail && ui.mail.role === 'guest') {
+      end.textContent = ui.mail.sent ? 'Orders sent' : 'Send orders';
+      end.disabled = end.disabled || ui.mail.sent;
+    } else if (ui.mail) {
+      const people = s.empires.filter(x => x.human && x.alive), ready = people.filter(x => s.ready[x.id]).length;
+      end.textContent = s.ready[ui.me] ? 'Ready (' + ready + '/' + people.length + ')' : 'End turn (' + ready + '/' + people.length + ')';
     } else end.textContent = 'End turn';
   }
 
@@ -397,14 +424,19 @@
     if (s.over || !meEmp().alive) return;
     ui.targeting = false;
     canvas.classList.remove('targeting');
+    if (ui.mail && ui.mail.role === 'guest') { if (!ui.mail.sent) showOrders(); return; }
+    if (ui.mail && s.ready[ui.me]) { return; }
     if (multi() && s.ready[ui.me]) { const r = act({ op: 'unready' }); if (!r.ok) toast(r.msg); refresh(); return; }
+    const turnBefore = s.turn;
     const r = act({ op: 'ready' });
     if (!r.ok) toast(r.msg);
+    if (ui.mail && s.turn !== turnBefore) mailAdvanced();
     refresh();
   }
 
   function openNew() {
     if (multi()) { toast('Leave the multiplayer game first (reload the page).'); return; }
+    if (ui.mail) { toast('You are in a mail game. Use Leave mail game in the Mail panel first.'); return; }
     $('d-new').showModal();
   }
 
@@ -488,12 +520,141 @@
     else if (v === 'join') joinGame();
   });
 
+
+  // ---------- play by mail ----------
+
+  function download(name, text) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+    a.download = name; document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  }
+
+  function turnFile(seat) {
+    return JSON.stringify({ v: 1, kind: 'sector-dominion-turn', seat, state: ui.state });
+  }
+
+  function mailAdvanced() {
+    ui.state.log.unshift({ turn: ui.state.turn, text: 'Turn ' + ui.state.turn + ' is ready. Download a turn file for each friend (Mail panel).', kind: 'good', to: [ui.me] });
+    save();
+  }
+
+  function renderMail() {
+    const el = $('p-mail');
+    el.hidden = !ui.mail;
+    if (!ui.mail) return;
+    const s = ui.state;
+    let h = '<h3>Mail game</h3>';
+    if (ui.mail.role === 'host') {
+      h += '<p class="dim">You are the host. Turn ' + s.turn + '. Friends send you orders codes; paste them here.</p><div class="kv">';
+      for (const e of s.empires) {
+        if (!e.human || e.id === ui.me) continue;
+        h += '<div style="color:' + COLORS[e.id] + '">Seat ' + e.id + '</div><div>' +
+          (!e.alive ? 'eliminated' : s.ready[e.id] ? '<span class="good">orders in</span>' : 'waiting') +
+          ' <button class="small" data-act="dl" data-e="' + e.id + '">turn file</button></div>';
+      }
+      h += '</div><textarea id="mail-in" rows="3" placeholder="Paste an orders code (SDO1...)" style="width:100%;margin-top:6px;background:#060b16;color:inherit;border:1px solid var(--line);border-radius:4px;font:11px monospace"></textarea>' +
+        '<div class="btns"><button data-act="import">Add orders</button>' +
+        '<button data-act="force" title="Play the turn now. Anyone who has not sent orders does nothing this turn.">Play turn without waiting</button>' +
+        '<button data-act="leave">Leave mail game</button></div><p class="hint" id="mail-msg2">' + esc(ui.mailMsg || '') + '</p>';
+    } else {
+      h += '<p class="dim">Seat ' + ui.me + ', turn ' + s.turn + '. Give your orders as usual, then Send orders.</p>';
+      if (ui.mail.sent) {
+        h += '<p class="good">Orders sent for this turn.</p>' + ordersBox();
+      } else h += '<p>' + ui.mail.cmds.length + ' order' + (ui.mail.cmds.length === 1 ? '' : 's') + ' so far.</p>';
+      h += '<div class="btns"><button data-act="send-orders" ' + (ui.mail.sent ? 'disabled' : '') + '>Send orders</button>' +
+        '<button data-act="load-turn">Load next turn file</button><button data-act="leave">Leave mail game</button></div>' +
+        '<input type="file" id="i-next" accept=".json,application/json" hidden>';
+    }
+    el.innerHTML = h;
+  }
+
+  function ordersCode() {
+    return G.encodeOrders({ v: 1, seat: ui.me, turn: ui.state.turn, cmds: ui.mail.cmds });
+  }
+
+  function ordersBox() {
+    return '<textarea readonly rows="3" id="mail-out" style="width:100%;background:#060b16;color:inherit;border:1px solid var(--line);border-radius:4px;font:11px monospace">' +
+      esc(ordersCode()) + '</textarea><div class="btns"><button data-act="copy-orders">Copy code</button></div>';
+  }
+
+  function showOrders() {
+    ui.mail.sent = true; save(); refresh();
+  }
+
+  $('p-mail').addEventListener('click', async e => {
+    const b = e.target.closest('button[data-act]');
+    if (!b || !ui.mail) return;
+    const a = b.dataset.act, s = ui.state, say = t => { ui.mailMsg = t; const m = $('mail-msg2'); if (m) m.textContent = t; };
+    if (a === 'dl') download('sector-dominion-seat' + b.dataset.e + '-turn' + s.turn + '.json', turnFile(+b.dataset.e));
+    else if (a === 'import') {
+      const o = G.decodeOrders($('mail-in').value);
+      if (!o) return say('That does not look like an orders code. Copy it again in full.');
+      const turnBefore = s.turn, r = G.applyOrders(s, o);
+      if (!r.ok) return say(r.msg);
+      G.refreshKnown(s);
+      say('Orders from seat ' + o.seat + ': ' + r.applied + ' applied' + (r.rejected.length ? ', ' + r.rejected.length + ' refused (' + r.rejected[0] + ')' : '') + '.');
+      if (s.turn !== turnBefore) mailAdvanced();
+      save(); refresh();
+    } else if (a === 'force') {
+      if (!confirm('Play the turn now? Anyone who has not sent orders does nothing this turn.')) return;
+      const turnBefore = s.turn;
+      for (const x of s.empires) if (x.human && x.alive && !s.ready[x.id]) G.apply(s, x.id, { op: 'ready', turn: s.turn });
+      G.refreshKnown(s);
+      if (s.turn !== turnBefore) mailAdvanced();
+      save(); refresh();
+    } else if (a === 'send-orders') showOrders();
+    else if (a === 'copy-orders') {
+      const t = $('mail-out');
+      try { await navigator.clipboard.writeText(t.value); b.textContent = 'Copied'; } catch (err) { t.select(); }
+    } else if (a === 'load-turn') $('i-next').click();
+    else if (a === 'leave') {
+      if (!confirm('Leave this mail game? Your saved copy in this browser is deleted. The host still has the game.')) return;
+      clearMail(); ui.mail = null;
+      const solo = load();
+      setState(solo || G.newGame({}));
+    }
+  });
+  $('p-mail').addEventListener('change', e => {
+    if (e.target.id === 'i-next' && e.target.files[0]) readTurnFile(e.target.files[0], false);
+  });
+
+  function readTurnFile(file, fromDialog) {
+    const say = t => { const m = $('mail-msg'); if (m && fromDialog) m.textContent = t; else toast(t); };
+    const r = new FileReader();
+    r.onload = () => {
+      try {
+        const o = JSON.parse(r.result);
+        if (!o || o.v !== 1 || o.kind !== 'sector-dominion-turn' || !validState(o.state, o.seat)) throw new Error('bad file');
+        if (ui.mail && ui.mail.role === 'guest' && o.seat !== ui.me) return say('That file is for seat ' + o.seat + ', you are seat ' + ui.me + '.');
+        if (ui.mail && ui.mail.role === 'guest' && o.state.turn <= ui.state.turn && !ui.mail.sent) return say('That is not a newer turn than the one you are on.');
+        ui.mail = { role: 'guest', cmds: [], sent: false };
+        setState(o.state, o.seat); save();
+        const d = $('d-mail'); if (d.open) d.close();
+      } catch (err) { say('Could not read that file.'); }
+    };
+    r.readAsText(file);
+  }
+
+  $('b-mail').onclick = () => { $('d-mp').close(); $('d-mail').showModal(); };
+  $('i-turnfile').addEventListener('change', e => { if (e.target.files[0]) readTurnFile(e.target.files[0], true); });
+  $('f-mail').addEventListener('submit', e => {
+    if (!e.submitter || e.submitter.value !== 'start') return;
+    const fd = new FormData($('f-mail'));
+    const s = G.newGame({ difficulty: fd.get('difficulty'), worlds: +fd.get('worlds'), humans: +fd.get('humans') });
+    ui.mail = { role: 'host' };
+    setState(s, 1); save();
+    toast('Mail game started. Download a turn file for each friend from the Mail panel.');
+  });
+
   // ---------- boot ----------
 
   resize();
-  const saved = load();
-  setState(saved || G.newGame({}));
-  if (!saved) {
+  const savedMail = loadMail();
+  if (savedMail) { ui.mail = savedMail.mail; setState(savedMail.state, savedMail.me); }
+  const saved = savedMail ? null : load();
+  if (!savedMail) setState(saved || G.newGame({}));
+  if (!saved && !savedMail) {
     try {
       if (!localStorage.getItem('sectordominion-help-seen')) {
         $('d-help').showModal();

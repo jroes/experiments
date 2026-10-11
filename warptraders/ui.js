@@ -23,6 +23,7 @@
     $('s-credits').textContent = num(s.credits);
     $('s-holds').textContent = G.cargoUsed(s) + '/' + s.holds;
     $('s-fighters').textContent = s.fighters;
+    $('s-seed').textContent = s.seed;
     renderSector(); renderLog(); draw();
     const b = $('banner');
     if (s.over) {
@@ -30,8 +31,13 @@
       if (s.score > hi) { hi = s.score; try { localStorage.setItem(BEST, String(hi)); } catch (e) { /* ignore */ } }
       b.hidden = false;
       b.innerHTML = '<b class="good">Run over</b><br>Final credits ' + num(s.score) + '<br><span class="dim">Best ' + num(hi) +
-        '</span><br><button class="primary" id="b-again">New game</button>';
+        '</span><br><button id="b-share">Copy result to share</button> <button class="primary" id="b-again">New game</button>';
       $('b-again').onclick = newGame;
+      $('b-share').onclick = async () => {
+        const text = 'Warp Traders, seed ' + s.seed + ': ' + num(s.score) + ' credits. Same galaxy, beat it: ' +
+          location.origin + location.pathname + ' (New game, seed ' + s.seed + ')';
+        try { await navigator.clipboard.writeText(text); $('b-share').textContent = 'Copied'; } catch (e) { prompt('Copy this:', text); }
+      };
     } else b.hidden = true;
     if (!race) save();
     sendScore();
@@ -278,7 +284,13 @@
     if (v === 'host') hostRace(); else if (v === 'join') joinRace();
   });
 
-  function newGame() { s = G.newGame({}); qty = {}; fit(); refresh(); }
+  function newGame() {
+    const raw = prompt('Galaxy seed (a number). Friends who use the same seed get the same galaxy, so you can compare scores. Leave blank for a random one.', '');
+    if (raw === null) return;
+    const n = raw.trim() === '' ? undefined : Math.floor(Number(raw));
+    if (n !== undefined && (!Number.isFinite(n) || Math.abs(n) > 2147483647)) { alert('Seed must be a whole number.'); return; }
+    s = G.newGame({ seed: n }); qty = {}; fit(); refresh();
+  }
   $('b-new').onclick = () => { if (race) { alert('Reload the page to leave the race.'); return; } if (s.over || confirm('Start a new game? Current run is lost.')) newGame(); };
   $('b-retire').onclick = () => { if (!s.over && confirm('Retire and bank your credits?')) { G.retire(s); refresh(); } };
   $('b-help').onclick = () => $('d-help').showModal();
