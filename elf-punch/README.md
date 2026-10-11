@@ -48,25 +48,29 @@ Keep it to one machine: both the world and the store are in that machine's memor
 
 `/kv/<namespace>/<key>` holds one JSON value. **There are no accounts and no keys.** Anyone who knows a namespace can read,
 overwrite and delete it, so store nothing private, and treat what you read back as untrusted input. Pick a namespace per
-experiment (and a random suffix if you want it hard to stumble on).
+experiment, and give it a long random suffix when you want it to be hard to find: **the server will not list keys**, so a
+namespace name is the only way in. Per-namespace write keys would be the next step for an experiment that needs real protection.
 
 | | |
 | --- | --- |
-| `GET /kv/<ns>` | list keys: `{"keys":[{"key","rev","bytes","t"}]}`, optional `?prefix=`, at most 1000 |
 | `GET /kv/<ns>/<key>` | `{"value": <json>, "rev": 12, "t": 1760000000}` or `404` |
+| `GET /kv/<ns>?keys=a,b,c` | several keys by exact name in one request (at most 60): `{"values": {"a": {"value","rev","t"}, ...}}`. Missing keys are left out. |
 | `PUT /kv/<ns>/<key>` | body is any JSON value; `201 {"rev","created":true}` or `200 {"rev","created":false}` |
 | `DELETE /kv/<ns>/<key>` | `{"deleted": true|false}` |
+| `GET /kv/<ns>` or `?prefix=` | `404 no_listing` unless the operator sets `KV_ALLOW_LIST=1` |
 
 - Namespace: 1-40 chars of `a-z 0-9 _ -`. Key: 1-100 chars of `A-Z a-z 0-9 _ - . :`.
 - `rev` is a number that increases on every write anywhere in the store. Send `If-Match: <rev>` on a PUT to overwrite only if
-  nobody changed the key since you read it (`412` otherwise), or `If-None-Match: *` to create only.
-- Responses are JSON, never cached (`Cache-Control: no-store`), and CORS is open (`Access-Control-Allow-Origin: *`) so pages on
-  `jroes.github.io` and `localhost` can call it directly.
-- Errors look like `{"error": "...", "code": "too_large"}`. Codes: `bad_namespace`, `bad_key`, `bad_json`, `too_large` (413),
-  `namespace_full` (413), `store_full` (507), `rev_mismatch` / `exists` (412), `rate_limited` (429, with `Retry-After`).
+  nobody changed the key since you read it (`412` otherwise), or `If-None-Match: *` to create only. Create-only is atomic, so
+  when two writers race for a key exactly one wins; the games use it for "first write wins".
+- Responses are JSON, never cached (`Cache-Control: no-store`), and CORS is open (`Access-Control-Allow-Origin: *`, and
+  `Retry-After` is exposed so a page can read it) so pages on `jroes.github.io` and `localhost` can call it directly.
+- Errors look like `{"error": "...", "code": "too_large"}`. Codes: `bad_namespace`, `bad_key`, `too_many_keys`, `bad_json`,
+  `no_listing` (404), `too_large` (413), `namespace_full` (413), `store_full` (507), `rev_mismatch` / `exists` (412),
+  `rate_limited` (429, with `Retry-After`).
 
 ```js
-const KV = "https://elf-castle-wood-puncher.fly.dev/kv/my-experiment";
+const KV = "https://elf-castle-wood-puncher.fly.dev/kv/my-experiment-k7q2m9x4h8wz";
 await fetch(`${KV}/best`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "ann", pts: 12 }) });
 const { value, rev } = await (await fetch(`${KV}/best`)).json();
 ```
@@ -75,7 +79,8 @@ Send `Content-Type: application/json` on a PUT from a browser; the preflight is 
 
 ### Limits
 
-Every limit has a default and an environment variable (Fly: `[env]` in `fly.toml`).
+Every limit has a default and an environment variable (Fly: `[env]` in `fly.toml`). When one is hit the answer is `429` (or `413` /
+`507`) with a plain JSON error, and `Retry-After` says how long to wait. Clients should back off and keep working offline.
 
 | What | Default | Variable |
 | --- | --- | --- |
@@ -87,5 +92,15 @@ Every limit has a default and an environment variable (Fly: `[env]` in `fly.toml
 | Requests per address per minute | 300 | `KV_IP_REQ_PER_MIN` |
 | Writes per address per minute | 60 | `KV_IP_WRITE_PER_MIN` |
 | New namespaces per address per hour | 10 | `KV_IP_NEW_NS_PER_HOUR` |
+| Requests per namespace per minute, everyone together | 240 | `KV_NS_REQ_PER_MIN` |
+| Writes per namespace per minute, everyone together | 90 | `KV_NS_WRITE_PER_MIN` |
+| New namespaces per day, everyone together (kept across restarts) | 100 | `KV_NEW_NS_PER_DAY` |
+| Key listing | off | `KV_ALLOW_LIST=1` turns it on |
+| Namespaces that expire: `prefix:days,...`, deleted after that many days with no write | `sdo-:60` | `KV_EXPIRE` |
+
+The per-namespace limits mean a flood on one game never slows another, and they are counted before any data is touched. The
+daily cap on new namespaces is what stops someone from filling the 200 slots with junk in a day, and namespaces that match
+`KV_EXPIRE` clean themselves up (an active one never expires; anything with no matching prefix is kept forever). A namespace is
+only deleted by the hourly sweep, which also runs when the machine starts.
 
 The address comes from the `Fly-Client-IP` header (set by Fly's proxy), and from the socket when that header is absent.

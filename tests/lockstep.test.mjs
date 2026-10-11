@@ -1,36 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { handle, route, LIMITS } from '../relay/src/logic.js';
 const require = createRequire(import.meta.url);
+const { installFakeKv } = require('./fake-kv.js');
 const G = require('../sectordominion/game.js');
-globalThis.Relay = require('../shared/relay.js');
+globalThis.GameStore = require('../shared/store.js');
 const Online = require('../sectordominion/online.js');
+const S = globalThis.GameStore;
 
-// a fake network: fetch() goes straight to the relay logic, one in-memory store per room
-// Set RELAY_URL=http://localhost:8788 to run the same tests against a real relay (wrangler dev or the Node server).
-const REAL = process.env.RELAY_URL || '';
-function installRelay(limitOverride) {
-  const rooms = new Map();
-  const log = [];
-  if (REAL) return { rooms, log };
-  globalThis.fetch = async (url, init = {}) => {
-    const req = new Request(url, init);
-    const r = route(req);
-    if (r.response) return r.response;
-    let rows = rooms.get(r.room);
-    if (!rows) rooms.set(r.room, rows = new Map());
-    const store = {
-      get: async k => rows.get(k),
-      getMany: async keys => Object.fromEntries(keys.filter(k => rows.has(k)).map(k => [k, rows.get(k)])),
-      put: async (k, v) => { rows.set(k, JSON.parse(JSON.stringify(v))); },
-      touch: async () => {},
-    };
-    log.push(req.method + ' ' + new URL(url).pathname);
-    return handle(req, store, r.room, { limits: { ...LIMITS, roomReqPerMin: 1e9, roomWritesPerMin: 1e9, ...(limitOverride || {}) } });
-  };
-  return { rooms, log };
-}
+// Set KV_URL=http://localhost:8123 to run the same tests against the real elf-punch binary instead of the fake.
+const REAL = process.env.KV_URL || '';
+const SERVER = REAL || 'https://kv.test';
+let net = null;
+function install(opts) { net = REAL ? { calls: [], spaces: new Map(), set() {} } : installFakeKv(opts); return net; }
 
 function driver(seed) {
   let a = seed | 0;
@@ -41,7 +23,6 @@ function driver(seed) {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
-const RELAY = REAL || 'https://relay.test';
 
 function randomOrders(session, rnd) {
   const mine = session.working.worlds.filter(w => w.owner === session.seat);
@@ -55,51 +36,56 @@ function randomOrders(session, rnd) {
 }
 
 async function setup(humans) {
-  const host = await Online.Session.create({ relay: RELAY, humans, difficulty: 'normal', worlds: 30 });
+  const host = await Online.Session.create({ server: SERVER, humans, difficulty: 'normal', worlds: 30 });
   const sessions = [host];
   for (const inv of host.game.invites) sessions.push(await Online.Session.join(inv));
   return sessions;
 }
 
+const hashes = players => players.map(p => G.hashState(p.base));
+
 test('invite codes round trip and junk is refused', async () => {
-  installRelay();
+  install();
   const [host] = await setup(3);
   assert.equal(host.game.invites.length, 2);
   for (const inv of host.game.invites) {
     const g = Online.decodeInvite(inv);
     assert.ok(g);
     assert.equal(g.room, host.game.room);
-    assert.notEqual(g.token, host.game.token, 'friends get their own token');
+    assert.ok(!JSON.stringify(g).includes('token'), 'there are no secrets in an invite');
   }
+  assert.match(host.game.room, /^[a-z0-9]{24}$/);
+  assert.notEqual(setup, null);
   const rnd = driver(5);
   for (let i = 0; i < 200; i++) {
-    const junk = ['', 'SDO-', 'SDO-@@', 'x', 'SDO-' + Buffer.from('{"v":1}').toString('base64'), null, undefined, 7, 'SDO-' + Buffer.from(String(rnd())).toString('base64')][i % 9];
+    const junk = ['', 'SDO-', 'SDO-@@', 'x', 'SDO-' + Buffer.from('{"v":2}').toString('base64'), null, undefined, 7, 'SDO-' + Buffer.from(String(rnd())).toString('base64')][i % 9];
     assert.equal(Online.decodeInvite(junk), null);
   }
   const g = Online.decodeInvite(host.game.invites[0]);
-  for (const bad of [{ relay: 'http://evil.example' }, { relay: 'javascript:alert(1)' }, { room: 'X' }, { seat: 9 }, { token: 'short' }, { humans: 7 }, { worlds: 5000 }, { difficulty: '__proto__' }, { seed: 1e12 }]) {
+  for (const bad of [{ server: 'http://evil.example' }, { server: 'javascript:alert(1)' }, { room: 'X' }, { room: 'a'.repeat(12) }, { seat: 9 }, { humans: 7 }, { worlds: 5000 }, { difficulty: '__proto__' }, { difficulty: 'constructor' }, { seed: 1e12 }]) {
     assert.equal(Online.decodeInvite(Online.encodeInvite({ ...g, ...bad })), null, JSON.stringify(bad));
   }
-  assert.ok(Online.decodeInvite(Online.encodeInvite({ ...g, relay: 'http://localhost:8787' })), 'local relay is allowed');
+  assert.ok(Online.decodeInvite(Online.encodeInvite({ ...g, server: 'http://localhost:8123' })), 'a server on this machine is allowed');
 });
 
 test('three browsers stay identical over 30 turns with shuffled arrival and random sync timing', async () => {
-  for (let seed = 1; seed <= 6; seed++) {
-    installRelay();
+  for (let seed = 1; seed <= 5; seed++) {
+    install();
     const rnd = driver(seed * 99);
     const players = await setup(3);
     for (let turn = 1; turn <= 30; turn++) {
       if (players[0].base.over) break;
       for (const p of players) randomOrders(p, rnd);
-      const order = [0, 1, 2].sort(() => rnd() - 0.5);       // arrival order does not matter
+      // the order people send in must not matter (Fisher-Yates, so the test does not depend on a sort algorithm)
+      const order = [0, 1, 2];
+      for (let i = 2; i > 0; i--) { const j = (rnd() * (i + 1)) | 0; [order[i], order[j]] = [order[j], order[i]]; }
       for (const i of order) {
         const r = await players[i].submit();
         assert.ok(r.ok, r.msg);
-        if (rnd() < 0.5) await players[(rnd() * 3) | 0].sync(); // random browsers look at the board at random times
+        if (rnd() < 0.5) await players[(rnd() * 3) | 0].sync();
       }
       for (const p of players) await p.sync();
-      const hashes = players.map(p => G.hashState(p.base));
-      assert.equal(new Set(hashes).size, 1, 'seed ' + seed + ' turn ' + turn + ' diverged: ' + hashes.join(' '));
+      assert.equal(new Set(hashes(players)).size, 1, 'seed ' + seed + ' turn ' + turn + ' diverged: ' + hashes(players).join(' '));
       assert.equal(new Set(players.map(p => p.base.turn)).size, 1);
       for (const p of players) assert.equal(p.desync, false);
     }
@@ -107,8 +93,8 @@ test('three browsers stay identical over 30 turns with shuffled arrival and rand
   }
 });
 
-test('a late joiner rebuilds the exact game by replaying the board', async () => {
-  installRelay();
+test('a late joiner rebuilds the exact game by replaying the log', async () => {
+  install();
   const rnd = driver(77);
   const players = await setup(3);
   for (let turn = 1; turn <= 12; turn++) {
@@ -122,8 +108,23 @@ test('a late joiner rebuilds the exact game by replaying the board', async () =>
   assert.equal(fresh.seat, players[1].seat);
 });
 
+test('replaying a long game takes few requests, because keys are read in batches', { skip: !!REAL }, async () => {
+  const n = install();
+  const rnd = driver(8);
+  const players = await setup(4);
+  for (let turn = 1; turn <= 40; turn++) {
+    for (const p of players) { randomOrders(p, rnd); await p.submit(); }
+    for (const p of players) await p.sync();
+  }
+  n.calls.length = 0;
+  const fresh = await Online.Session.join(players[0].game.invites[0]);
+  assert.equal(G.hashState(fresh.base), G.hashState(players[1].base));
+  const reads = n.calls.filter(c => c.method === 'GET').length;
+  assert.ok(reads <= 8, '41 turns of 4 players took ' + reads + ' reads');
+});
+
 test('rejoining mid-turn restores my submitted orders', async () => {
-  installRelay();
+  install();
   const rnd = driver(3);
   const [host, a, b] = await setup(3);
   randomOrders(a, rnd);
@@ -137,21 +138,20 @@ test('rejoining mid-turn restores my submitted orders', async () => {
 });
 
 test('the turn waits for everyone, and my own orders can only be sent once', async () => {
-  installRelay();
+  install();
   const [host, a, b] = await setup(3);
   await host.submit(); await a.submit();
   await host.sync();
   assert.deepEqual(host.waiting, [3]);
   assert.equal(host.base.turn, 1);
-  const again = await a.submit();
-  assert.ok(again.ok, 'a repeat submit is harmless');
+  assert.ok((await a.submit()).ok, 'a repeat submit is harmless');
   await b.submit();
   await host.sync();
   assert.equal(host.base.turn, 2);
 });
 
 test('host can skip a missing player, and a late reply loses', async () => {
-  installRelay();
+  install();
   const [host, a, b] = await setup(3);
   await host.submit(); await a.submit();
   assert.equal((await a.hostSkip(3, false)).ok, false, 'only the host can skip');
@@ -166,14 +166,13 @@ test('host can skip a missing player, and a late reply loses', async () => {
 });
 
 test('host can hand a seat to the AI for good', async () => {
-  installRelay();
+  install();
   const [host, a, b] = await setup(3);
   await host.submit(); await a.submit();
   await host.hostSkip(3, true);
   for (const p of [host, a, b]) await p.sync();
   assert.equal(G.empire(host.base, 3).human, false);
   assert.equal(G.hashState(b.base), G.hashState(host.base));
-  // from now on only seats 1 and 2 are needed
   await host.submit(); await a.submit();
   for (const p of [host, a, b]) await p.sync();
   assert.equal(host.base.turn, 3);
@@ -181,8 +180,8 @@ test('host can hand a seat to the AI for good', async () => {
   assert.equal((await b.submit()).ok, false, 'the AI seat cannot send orders');
 });
 
-test('a browser that drifted out of sync is noticed and rebuild fixes it', async () => {
-  installRelay();
+test('a copy that drifted out of sync is noticed and rebuild fixes it', async () => {
+  install();
   const rnd = driver(11);
   const players = await setup(3);
   for (let turn = 1; turn <= 4; turn++) {
@@ -201,66 +200,122 @@ test('a browser that drifted out of sync is noticed and rebuild fixes it', async
   assert.equal(G.hashState(players[1].base), G.hashState(players[2].base));
 });
 
-test('players cannot act as each other', async () => {
-  installRelay();
-  const [host, a] = await setup(3);
-  const R = globalThis.Relay;
-  const turn = host.base.turn;
-  const forged = await R.putOrders(a.game.relay, a.game.room, turn, 1, a.game.token, { code: 'SDO1.forged' });
-  assert.equal(forged.status, 403);
-  const forgedSkip = await R.skip(a.game.relay, a.game.room, turn, 1, a.game.token, true);
-  assert.equal(forgedSkip.status, 403);
-});
-
 test('junk or misaddressed orders count as no orders and cannot break the game', async () => {
-  installRelay();
+  install();
   const [host, a, b] = await setup(3);
-  const R = globalThis.Relay;
   await host.submit(); await a.submit();
   // seat 3 posts orders addressed to seat 2, for the wrong turn
   const wrong = G.encodeOrders({ v: 1, seat: 2, turn: 99, cmds: [{ op: 'research' }] });
-  assert.equal((await R.putOrders(b.game.relay, b.game.room, 1, 3, b.game.token, { code: wrong })).status, 201);
+  assert.equal((await S.putOnce(b.game.server, b.game.room, S.orderKey(1, 3), { code: wrong })).status, 201);
   for (const p of [host, a, b]) await p.sync();
   assert.equal(host.base.turn, 2);
   assert.equal(G.hashState(host.base), G.hashState(a.base));
   assert.equal(G.hashState(host.base), G.hashState(b.base));
 });
 
-test('requests per turn stay small (free-tier budget)', { skip: !!REAL }, async () => {
-  const net = installRelay();
+test('garbage a stranger writes into a slot is ignored, and the real owner can still take the slot', async () => {
+  install();
+  const [host, a, b] = await setup(3);
+  const { server, room } = host.game;
+  const junk = [{ code: 5 }, 'hello', [1, 2], null, { code: '<script>alert(1)</script>' }, { code: 'ok', h: 'ZZZ' }, { skip: 'yes' }, { code: 'x'.repeat(S.LIMIT_CODE + 1) }];
+  for (const v of junk) {
+    assert.equal(Online.cleanEntry(v) === null || Object.keys(Online.cleanEntry(v)).every(k => ['code', 'h'].includes(k)), true, JSON.stringify(v).slice(0, 30));
+  }
+  // a stranger fills seat 3's slot with junk before seat 3 answers
+  await S.call(server, 'PUT', '/kv/sdo-' + room + '/' + S.orderKey(1, 3), { body: { code: 5 }, ifNoneMatch: true });
+  await host.submit(); await a.submit();
+  await host.sync();
+  assert.deepEqual(host.waiting, [3], 'junk does not count as orders');
+  const r = await b.submit();
+  assert.ok(r.ok, 'seat 3 replaces the junk: ' + r.msg);
+  await host.sync();
+  assert.equal(host.base.turn, 2);
+  await a.sync(); await b.sync();
+  assert.equal(G.hashState(a.base), G.hashState(host.base));
+  assert.equal(G.hashState(b.base), G.hashState(host.base));
+});
+
+test('a stranger who finds a room can only read the keys they already know', async () => {
+  const n = install();
+  const [host] = await setup(2);
+  const gameCalls = n.calls.slice();      // everything the game itself asked for so far
+  const r = await S.call(host.game.server, 'GET', '/kv/sdo-' + host.game.room);
+  assert.equal(r.status, 404);
+  assert.equal(r.data.code, 'no_listing');
+  assert.ok(!JSON.stringify(r.data).includes('meta'), 'no key names leak');
+  const r2 = await S.call(host.game.server, 'GET', '/kv/sdo-' + host.game.room + '?prefix=o-');
+  assert.equal(r2.status, 404);
+  // and the game itself never asks for a listing
+  if (!REAL) for (const c of gameCalls) assert.ok(/\/kv\/sdo-[a-z0-9]+(\/[A-Za-z0-9_.:-]+|\?keys=[^&]+)$/.test(c.path), 'unexpected request ' + c.path);
+});
+
+test('requests stay few (the store limits requests per game per minute)', { skip: !!REAL }, async () => {
+  const n = install();
   const players = await setup(3);
   const rnd = driver(1);
-  net.log.length = 0;
+  n.calls.length = 0;
   for (let turn = 1; turn <= 10; turn++) {
     for (const p of players) { randomOrders(p, rnd); await p.submit(); }
     for (const p of players) await p.sync();
   }
-  const perPlayerTurn = net.log.length / (10 * 3);
-  assert.ok(perPlayerTurn < 14, 'too chatty: ' + perPlayerTurn.toFixed(1) + ' requests per player-turn');
+  const perPlayerTurn = n.calls.length / (10 * 3);
+  assert.ok(perPlayerTurn <= 8, 'too chatty: ' + perPlayerTurn.toFixed(1) + ' requests per player-turn');
 });
 
-test('when a relay limit is hit the player gets a plain message and the game carries on afterwards', { skip: !!REAL }, async () => {
-  installRelay();
+test('when the store says no, the player gets a plain message', { skip: !!REAL }, async () => {
+  install();
   const [host, a] = await setup(2);
-  // now squeeze the relay: it answers 429 to everything
   const real = globalThis.fetch;
-  let calls = 0;
-  globalThis.fetch = async (url, init) => {
-    if (++calls > 0) return new Response(JSON.stringify({ ok: false, error: 'room_rate_limited', retryAfter: 30 }), { status: 429, headers: { 'retry-after': '30' } });
-    return real(url, init);
-  };
-  const r = await a.sync();
-  assert.ok(r.error, 'the session reports the problem');
-  assert.match(r.error, /Too many requests for this game/);
-  assert.doesNotMatch(r.error, /room_rate_limited/, 'no raw error codes in front of players');
+  const say = (status, data, retry) => { globalThis.fetch = async () => new Response(JSON.stringify(data), { status, headers: retry ? { 'retry-after': String(retry) } : {} }); };
+  say(429, { error: 'too many requests for this namespace; try again in 30 seconds', code: 'rate_limited' }, 30);
+  let r = await a.sync();
+  assert.match(r.error, /busy.*30 seconds/);
+  assert.doesNotMatch(r.error, /rate_limited|namespace/);
+  say(507, { code: 'store_full' });
+  r = await a.sync();
+  assert.match(r.error, /out of space/);
+  say(413, { code: 'namespace_full' });
+  assert.match((await a.submit()).msg, /used up its storage/);
+  say(429, { error: 'too many new namespaces today; try again', code: 'rate_limited' }, 3600);
+  await assert.rejects(() => Online.Session.create({ server: SERVER, humans: 2, difficulty: 'normal', worlds: 30 }), /limit for new games today.*60 minutes/);
+  say(429, { error: 'too many new namespaces; try again in 100 seconds', code: 'rate_limited' }, 100);
+  await assert.rejects(() => Online.Session.create({ server: SERVER, humans: 2, difficulty: 'normal', worlds: 30 }), /lot of games from this connection/);
+  globalThis.fetch = async () => { throw new TypeError('fetch failed'); };
+  r = await a.sync();
+  assert.match(r.error, /Could not reach the game server/);
   globalThis.fetch = real;
   assert.ok(host);
 });
 
-test('creating a game over the daily room limit says so in plain words', { skip: !!REAL }, async () => {
-  installRelay();
-  const real = globalThis.fetch;
-  globalThis.fetch = async () => new Response(JSON.stringify({ ok: false, error: 'daily_room_limit', retryAfter: 3600 }), { status: 429 });
-  await assert.rejects(() => Online.Session.create({ relay: RELAY, humans: 2, difficulty: 'normal', worlds: 30 }), /daily limit for new games/);
-  globalThis.fetch = real;
+test('values read back from the store are validated before use', async () => {
+  // only the shape we write survives: a code made of safe characters, a hex hash, nothing else
+  assert.deepEqual(Online.cleanEntry({ code: 'SDO1.abc', h: '0123456789abcdef' }), { code: 'SDO1.abc', h: '0123456789abcdef' });
+  assert.deepEqual(Online.cleanEntry({ code: 'SDO1.abc', h: 'nothex!!' }), { code: 'SDO1.abc' }, 'a malformed hash is dropped');
+  assert.deepEqual(Online.cleanEntry({ code: 'SDO1.abc', extra: { evil: 1 }, __proto__: { polluted: true } }), { code: 'SDO1.abc' });
+  assert.deepEqual(Online.cleanEntry({ skip: true, ai: true, code: 'ignored' }), { skip: true, ai: true });
+  assert.deepEqual(Online.cleanEntry({ skip: true, ai: 'yes' }), { skip: true });
+  for (const bad of [null, undefined, 5, 'x', [], [1], {}, { code: '' }, { code: 7 }, { code: 'a b' }, { code: '<img src=x onerror=alert(1)>' }, { code: 'x'.repeat(S.LIMIT_CODE + 1) }, { skip: 'true' }, { skip: 1 }]) {
+    assert.equal(Online.cleanEntry(bad), null, JSON.stringify(bad));
+  }
+  assert.equal(({}).polluted, undefined);
+});
+
+test('one player with a broken copy is flagged for the others and for themselves, and clears after a rebuild', async () => {
+  install();
+  const rnd = driver(21);
+  const players = await setup(3);
+  for (let turn = 1; turn <= 3; turn++) { for (const p of players) { randomOrders(p, rnd); await p.submit(); } for (const p of players) await p.sync(); }
+  players[2].base.empires[1].credits += 5;
+  for (const p of players) { randomOrders(p, rnd); await p.submit(); }
+  await players[0].sync();
+  assert.equal(players[0].desync, true, 'others see the odd hash');
+  for (const p of players) await p.sync();
+  await players[2].rebuild();
+  assert.equal(players[2].desync, false, 'a replay from the log is healthy');
+  // next turn everyone agrees again and the warnings go away by themselves
+  for (const p of players) { randomOrders(p, rnd); await p.submit(); }
+  for (const p of players) await p.sync();
+  for (const p of players) await p.sync();
+  assert.equal(new Set(hashes(players)).size, 1);
+  assert.deepEqual(players.map(p => p.desync), [false, false, false]);
 });

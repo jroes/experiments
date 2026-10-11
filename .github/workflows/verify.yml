@@ -16,13 +16,6 @@ jobs:
         with:
           node-version: 22
       - run: npm test
-      - name: Lockstep tests against a real relay over HTTP
-        run: |
-          # the suite plays many games from one address, so lift the rate limits for this run
-          export RELAY_ROOM_REQ_PER_MIN=1000000 RELAY_ROOM_WRITES_PER_MIN=1000000 RELAY_IP_REQ_PER_MIN=1000000 RELAY_IP_CREATE_PER_HOUR=100000 RELAY_GLOBAL_CREATE_PER_DAY=1000000
-          node relay/src/node-server.js &
-          sleep 2
-          RELAY_URL=http://localhost:8787 node --test tests/lockstep.test.mjs
 
   tlc:
     runs-on: ubuntu-latest
@@ -47,3 +40,10 @@ jobs:
       - run: cargo test --release
       - run: cargo build --release
       - run: npm ci && npm test
+      - name: Lockstep tests (online play) against the real server
+        run: |
+          # the suite plays many games from one address, so lift the per-address and per-game limits for this run
+          export PORT=8135 WORLD_FILE=/tmp/world.json KV_DIR=/tmp/kv KV_IP_REQ_PER_MIN=1000000 KV_IP_WRITE_PER_MIN=1000000 KV_NS_REQ_PER_MIN=1000000 KV_NS_WRITE_PER_MIN=1000000 KV_IP_NEW_NS_PER_HOUR=1000000 KV_NEW_NS_PER_DAY=1000000 KV_NS_COUNT=100000 KV_TOTAL_BYTES=2000000000 KV_NS_BYTES=500000000
+          target/release/elf-punch &
+          sleep 2
+          KV_URL=http://127.0.0.1:8135 node --test ../tests/lockstep.test.mjs

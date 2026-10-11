@@ -20,11 +20,11 @@ could have a second `ready` still in flight when the turn advanced, and the host
 `TurnSyncUntagged.cfg` reproduces that counterexample and is expected to fail. `TurnSync.cfg` is the fix (orders carry the turn
 they were issued in, the host rejects stale ones) and passes. The real code does the same in `Game.apply`.
 
-## 1b. TLA+ model of online play through the relay (`LockstepBoard.tla`)
+## 1b. TLA+ model of online play through the shared store (`LockstepBoard.tla`)
 
 Checks the design of Sector Dominion's online mode: each player's browser holds its own game, players post orders to a
-write-once board, the host can post a skip for someone who has not answered, and a browser plays a turn once every seat
-has an entry.
+key that can only be created once, the host can post a skip for someone who has not answered, and a browser plays a turn once
+every seat has an entry.
 
 - `Agreement`: two browsers that both played turn t played it from identical entries.
 - `NoGaps`: a turn is only played when every seat had an entry.
@@ -32,9 +32,14 @@ has an entry.
 - `EveryoneFinishes` (liveness): if players keep answering and browsers keep checking, everyone reaches the end.
 
 `LockstepBoardNonAtomic.cfg` models a store where writes can overwrite each other (an eventually consistent key-value
-store). TLC finds the race: the host skips a player, one browser plays the turn with the skip, then the player's late orders
-overwrite it and another browser plays the turn with the orders. That is why the relay uses a Durable Object per room, which
-serializes requests, and not KV.
+store, or a client that does not use create-only). TLC finds the race: the host skips a player, one browser plays the turn with
+the skip, then the player's late orders overwrite it and another browser plays the turn with the orders. That is why every
+write to a turn's key uses `If-None-Match: *`, and why the elf-punch server has to stay on one machine.
+
+What the model leaves out: the store has no accounts, so anyone who knows a game's name can write to it. Entries are validated when
+read (`cleanEntry`), orders that do not match their seat and turn count as no orders, and a stranger's junk in a slot is replaced by
+the real owner, but a determined player who knows the name could still post a valid set of orders for someone else. It is built for
+friends. See `sectordominion/README.md`.
 
 Run both models: `verification/run-tlc.sh` (needs Java).
 

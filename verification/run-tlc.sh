@@ -31,7 +31,7 @@ must_fail() { # spec cfg expected-text
 must_pass TurnSync.tla TurnSync.cfg
 must_fail TurnSync.tla TurnSyncUntagged.cfg "Invariant ReadyIsFresh is violated"
 
-# Sector Dominion online play through the relay: all browsers play each turn from the same orders
+# Sector Dominion online play through the shared store: all browsers play each turn from the same orders
 must_pass LockstepBoard.tla LockstepBoard.cfg
 must_fail LockstepBoard.tla LockstepBoardNonAtomic.cfg "Invariant Agreement is violated"
 echo OK
