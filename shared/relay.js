@@ -5,7 +5,7 @@
 (function (root) {
   'use strict';
 
-  const LIMIT_CODE = 15000;
+  const LIMIT_CODE = 8000;
   const ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789';
 
   function randomId(len, alphabet) {

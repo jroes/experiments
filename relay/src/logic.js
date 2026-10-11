@@ -18,7 +18,9 @@
 // read-then-write below can't interleave with another request. Keep awaits that are not storage calls
 // (hashing the token) BEFORE the first storage call so Durable Object input gates stay closed.
 
-export const LIMITS = { body: 16384, turn: 5000, rows: 6000, range: 30, codeLen: 15000 };
+import { DEFAULT_LIMITS, Windows } from './limits.js';
+export const LIMITS = DEFAULT_LIMITS;
+const defaultWindows = new Windows();
 
 const HEX64 = /^[0-9a-f]{64}$/;
 const HASH = /^[0-9a-f]{8,64}$/;
@@ -29,6 +31,7 @@ const CORS = {
   'access-control-allow-methods': 'GET,PUT,POST,OPTIONS',
   'access-control-allow-headers': 'content-type,x-seat',
   'access-control-max-age': '86400',
+  'access-control-expose-headers': 'retry-after',
 };
 
 export function reply(obj, status = 200) {
@@ -38,6 +41,11 @@ export function reply(obj, status = 200) {
   });
 }
 const fail = (status, error) => reply({ ok: false, error }, status);
+export function tooMany(retryAfter, error) {
+  const r = reply({ ok: false, error, retryAfter }, 429);
+  r.headers.set('retry-after', String(retryAfter));
+  return r;
+}
 
 export async function sha256hex(s) {
   const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
@@ -46,9 +54,9 @@ export async function sha256hex(s) {
 
 const int = (s, lo, hi) => (/^\d{1,5}$/.test(String(s)) && +s >= lo && +s <= hi ? +s : null);
 
-async function readJson(request) {
+async function readJson(request, L) {
   const text = await request.text();
-  if (text.length > LIMITS.body) return { error: 'too_big' };
+  if (new TextEncoder().encode(text).length > L.body) return { error: 'too_big' };
   try {
     const v = text === '' ? {} : JSON.parse(text);
     return v && typeof v === 'object' && !Array.isArray(v) ? { value: v } : { error: 'bad_json' };
@@ -56,16 +64,23 @@ async function readJson(request) {
 }
 
 // what we are willing to store as orders: a code string, or a skip marker from the host
-function normalizeOrders(v) {
+function normalizeOrders(v, L) {
   if (v.skip === true) {
     return v.ai === true ? { skip: true, ai: true } : { skip: true };
   }
-  if (typeof v.code === 'string' && v.code.length > 0 && v.code.length <= LIMITS.codeLen && /^[A-Za-z0-9._-]+$/.test(v.code)) return { code: v.code };
+  if (typeof v.code === 'string' && v.code.length > 0 && v.code.length <= L.codeLen && /^[A-Za-z0-9._-]+$/.test(v.code)) return { code: v.code };
   return null;
 }
 
-export async function handle(request, store, roomId) {
+// opts: { limits, windows, now } (all optional; tests pass them in)
+export async function handle(request, store, roomId, opts) {
   if (request.method === 'OPTIONS') return reply(null, 204);
+  opts = opts || {};
+  const L = opts.limits || DEFAULT_LIMITS, windows = opts.windows || defaultWindows, now = opts.now !== undefined ? opts.now : Date.now();
+
+  // refuse big bodies before reading them
+  const declared = Number(request.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > L.body) return fail(413, 'too_big');
 
   const url = new URL(request.url);
   // /v1/rooms/<room>/<action...>
@@ -73,14 +88,23 @@ export async function handle(request, store, roomId) {
   const action = parts.slice(3);
   const m = request.method;
 
+  // per-room rate limits: counted before any storage is touched, so a flood costs almost nothing
+  const roomKey = parts[2] || roomId || '';
+  let rl = windows.hit('room:' + roomKey, L.roomReqPerMin, 60000, now);
+  if (!rl.ok) return tooMany(rl.retryAfter, 'room_rate_limited');
+  if (m !== 'GET') {
+    rl = windows.hit('roomw:' + roomKey, L.roomWritesPerMin, 60000, now);
+    if (!rl.ok) return tooMany(rl.retryAfter, 'room_write_rate_limited');
+  }
+
   // hash the presented token first (non-storage await), see note at top
   const presented = request.headers.get('x-seat');
   const presentedHash = presented && TOKEN.test(presented) ? await sha256hex(presented) : null;
 
   // ----- create -----
   if (m === 'POST' && action.length === 0) {
-    const body = await readJson(request);
-    if (body.error) return fail(400, body.error);
+    const body = await readJson(request, L);
+    if (body.error) return fail(body.error === 'too_big' ? 413 : 400, body.error);
     const { humans, seats } = body.value;
     if (!Number.isInteger(humans) || humans < 2 || humans > 4) return fail(400, 'bad_humans');
     if (!seats || typeof seats !== 'object') return fail(400, 'bad_seats');
@@ -108,7 +132,7 @@ export async function handle(request, store, roomId) {
   }
 
   if (m === 'GET' && action[0] === 'sync') {
-    const t = int(action[1], 1, LIMITS.turn);
+    const t = int(action[1], 1, L.turn);
     if (t === null) return fail(400, 'bad_turn');
     const keys = [];
     for (let s = 1; s <= meta.humans; s++) keys.push('o:' + t + ':' + s, 'h:' + t + ':' + s);
@@ -122,8 +146,8 @@ export async function handle(request, store, roomId) {
   }
 
   if (m === 'GET' && action[0] === 'orders') {
-    const from = int(url.searchParams.get('from'), 1, LIMITS.turn), to = int(url.searchParams.get('to'), 1, LIMITS.turn);
-    if (from === null || to === null || to < from || to - from + 1 > LIMITS.range) return fail(400, 'bad_range');
+    const from = int(url.searchParams.get('from'), 1, L.turn), to = int(url.searchParams.get('to'), 1, L.turn);
+    if (from === null || to === null || to < from || to - from + 1 > L.range) return fail(400, 'bad_range');
     const keys = [];
     for (let t = from; t <= to; t++) for (let s = 1; s <= meta.humans; s++) keys.push('o:' + t + ':' + s, 'h:' + t + ':' + s);
     const got = await store.getMany(keys);
@@ -138,7 +162,7 @@ export async function handle(request, store, roomId) {
 
   // ----- write -----
   if (m === 'PUT' && ['orders', 'skip', 'hash'].includes(action[0])) {
-    const t = int(action[1], 1, LIMITS.turn), s = validSeat(action[2]);
+    const t = int(action[1], 1, L.turn), s = validSeat(action[2]);
     if (t === null || s === null) return fail(400, 'bad_turn_or_seat');
 
     if (action[0] === 'skip') {
@@ -146,15 +170,15 @@ export async function handle(request, store, roomId) {
       if (s === 1) return fail(400, 'cannot_skip_host');
     } else if (!authedSeat(s)) return fail(403, 'bad_token');
 
-    const body = await readJson(request);
-    if (body.error) return fail(400, body.error);
+    const body = await readJson(request, L);
+    if (body.error) return fail(body.error === 'too_big' ? 413 : 400, body.error);
 
     let key, value;
     if (action[0] === 'hash') {
       if (typeof body.value.h !== 'string' || !HASH.test(body.value.h)) return fail(400, 'bad_hash');
       key = 'h:' + t + ':' + s; value = body.value.h;
     } else {
-      value = action[0] === 'skip' ? (body.value.ai === true ? { skip: true, ai: true } : { skip: true }) : normalizeOrders(body.value);
+      value = action[0] === 'skip' ? (body.value.ai === true ? { skip: true, ai: true } : { skip: true }) : normalizeOrders(body.value, L);
       if (!value) return fail(400, 'bad_orders');
       key = 'o:' + t + ':' + s;
     }
@@ -171,10 +195,12 @@ export async function handle(request, store, roomId) {
       if (JSON.stringify(existing) === JSON.stringify(value)) return reply({ ok: true, existing: true });
       return reply({ ok: false, error: 'already_set', value: existing }, 409);
     }
-    const count = (await store.get('count')) || 0;
-    if (count >= LIMITS.rows) return fail(429, 'room_full');
+    const count = (await store.get('count')) || 0, used = (await store.get('bytes')) || 0;
+    const size = key.length + JSON.stringify(value).length;
+    if (count >= L.rows || used + size > L.bytes) return fail(429, 'room_full');
     await store.put(key, value);
     await store.put('count', count + 1);
+    await store.put('bytes', used + size);
     if (action[0] !== 'hash') {
       const latest = (await store.get('latest')) || 0;
       if (t > latest) await store.put('latest', t);

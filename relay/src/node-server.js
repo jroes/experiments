@@ -2,11 +2,23 @@
 // Rooms are kept in memory and saved to a JSON file (DATA_FILE, default ./relay-data.json) so a volume survives restarts.
 import http from 'node:http';
 import fs from 'node:fs';
-import { handle, route, reply } from './logic.js';
+import { handle, route, reply, tooMany } from './logic.js';
+import { readLimits, Windows, gateCheck } from './limits.js';
 
 const PORT = +process.env.PORT || 8787;
 const DATA_FILE = process.env.DATA_FILE || './relay-data.json';
 const TTL_MS = 1000 * 60 * 60 * 24 * 90;
+const LIMITS = readLimits(process.env);
+const windows = new Windows();
+// Behind a proxy the real address is in a header. Fly sets Fly-Client-IP. Only trust the header if it is configured,
+// otherwise anyone could claim to be anyone.
+const IP_HEADER = (process.env.CLIENT_IP_HEADER || '').toLowerCase();
+const clientIp = req => (IP_HEADER && req.headers[IP_HEADER]) || req.socket.remoteAddress || 'unknown';
+
+// room creation counters live in memory with the rest (same shape as the Cloudflare Gate)
+const gateRows = new Map();
+const gateStore = { get: async k => gateRows.get(k), put: async (k, v) => { gateRows.set(k, v); } };
+setInterval(() => { const day = Math.floor(Date.now() / 86400e3); for (const k of gateRows.keys()) if (k.startsWith('d:') && +k.slice(2) < day - 1) gateRows.delete(k); }, 3600e3).unref();
 
 let rooms = new Map(); // room -> { rows: Map, touched }
 try { for (const [k, v] of Object.entries(JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')))) rooms.set(k, { rows: new Map(Object.entries(v.rows)), touched: v.touched }); } catch (e) { /* first run */ }
@@ -47,12 +59,22 @@ const server = http.createServer(async (req, res) => {
   try {
     const chunks = [];
     let size = 0;
-    for await (const c of req) { size += c.length; if (size > 40000) { res.writeHead(413).end(); return; } chunks.push(c); }
+    for await (const c of req) { size += c.length; if (size > LIMITS.body * 2) { res.writeHead(413, { 'access-control-allow-origin': '*' }).end(); return; } chunks.push(c); }
     const request = new Request('http://relay' + req.url, {
       method: req.method, headers: req.headers, body: ['GET', 'HEAD', 'OPTIONS'].includes(req.method) ? undefined : Buffer.concat(chunks),
     });
     const r = route(request);
-    const response = r.response || await serialize(r.room, () => handle(request, storeFor(r.room), r.room));
+    const ip = clientIp(req);
+    let response = r.response;
+    if (!response && req.method !== 'OPTIONS') {
+      const hit = windows.hit('ip:' + ip, LIMITS.ipReqPerMin, 60000, Date.now());
+      if (!hit.ok) response = tooMany(hit.retryAfter, 'rate_limited');
+      else if (req.method === 'POST') {
+        const g = await gateCheck(gateStore, ip, Date.now(), LIMITS);
+        if (!g.ok) response = tooMany(g.retryAfter, g.reason);
+      }
+    }
+    response = response || await serialize(r.room, () => handle(request, storeFor(r.room), r.room, { limits: LIMITS, windows }));
     res.writeHead(response.status, Object.fromEntries(response.headers));
     res.end(Buffer.from(await response.arrayBuffer()));
   } catch (e) {
@@ -60,5 +82,5 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(500, Object.fromEntries(response.headers)).end(await response.text());
   }
 });
-server.listen(PORT, () => console.log('relay listening on ' + PORT));
+server.listen(PORT, () => console.log('relay listening on ' + PORT + (IP_HEADER ? ', client address from ' + IP_HEADER : '')));
 process.on('SIGTERM', () => { save(); process.exit(0); });

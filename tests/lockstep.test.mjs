@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { handle, route } from '../relay/src/logic.js';
+import { handle, route, LIMITS } from '../relay/src/logic.js';
 const require = createRequire(import.meta.url);
 const G = require('../sectordominion/game.js');
 globalThis.Relay = require('../shared/relay.js');
@@ -10,7 +10,7 @@ const Online = require('../sectordominion/online.js');
 // a fake network: fetch() goes straight to the relay logic, one in-memory store per room
 // Set RELAY_URL=http://localhost:8788 to run the same tests against a real relay (wrangler dev or the Node server).
 const REAL = process.env.RELAY_URL || '';
-function installRelay() {
+function installRelay(limitOverride) {
   const rooms = new Map();
   const log = [];
   if (REAL) return { rooms, log };
@@ -27,7 +27,7 @@ function installRelay() {
       touch: async () => {},
     };
     log.push(req.method + ' ' + new URL(url).pathname);
-    return handle(req, store, r.room);
+    return handle(req, store, r.room, { limits: { ...LIMITS, roomReqPerMin: 1e9, roomWritesPerMin: 1e9, ...(limitOverride || {}) } });
   };
   return { rooms, log };
 }
@@ -237,4 +237,30 @@ test('requests per turn stay small (free-tier budget)', { skip: !!REAL }, async 
   }
   const perPlayerTurn = net.log.length / (10 * 3);
   assert.ok(perPlayerTurn < 14, 'too chatty: ' + perPlayerTurn.toFixed(1) + ' requests per player-turn');
+});
+
+test('when a relay limit is hit the player gets a plain message and the game carries on afterwards', { skip: !!REAL }, async () => {
+  installRelay();
+  const [host, a] = await setup(2);
+  // now squeeze the relay: it answers 429 to everything
+  const real = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (url, init) => {
+    if (++calls > 0) return new Response(JSON.stringify({ ok: false, error: 'room_rate_limited', retryAfter: 30 }), { status: 429, headers: { 'retry-after': '30' } });
+    return real(url, init);
+  };
+  const r = await a.sync();
+  assert.ok(r.error, 'the session reports the problem');
+  assert.match(r.error, /Too many requests for this game/);
+  assert.doesNotMatch(r.error, /room_rate_limited/, 'no raw error codes in front of players');
+  globalThis.fetch = real;
+  assert.ok(host);
+});
+
+test('creating a game over the daily room limit says so in plain words', { skip: !!REAL }, async () => {
+  installRelay();
+  const real = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ ok: false, error: 'daily_room_limit', retryAfter: 3600 }), { status: 429 });
+  await assert.rejects(() => Online.Session.create({ relay: RELAY, humans: 2, difficulty: 'normal', worlds: 30 }), /daily limit for new games/);
+  globalThis.fetch = real;
 });
