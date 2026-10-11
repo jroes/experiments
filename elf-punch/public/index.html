@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#2a2638">
+<title>Elf Castle Wood Puncher 5000</title>
+<style>
+:root{--cream:#f7ecd4;--ink:#1d1628;--ember:#ff7a45;--glass:rgba(24,18,38,.38);--line:rgba(247,236,212,.55);--font:"Avenir Next",Futura,"Helvetica Neue",system-ui,sans-serif}
+*{touch-action:manipulation;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{-webkit-touch-callout:none;margin:0;height:100%;background:#1d1628;color:var(--cream);font:15px var(--font);overflow:hidden;touch-action:none;overscroll-behavior:none;user-select:none;-webkit-user-select:none}
+#gl,#gl canvas,#hud{position:fixed;inset:0;width:100vw;height:100dvh;display:block;touch-action:none}
+#hud{pointer-events:none}
+#grade{position:fixed;inset:0;pointer-events:none;background:linear-gradient(to top,rgba(255,150,70,.13),rgba(255,150,70,0) 38%),linear-gradient(to bottom,rgba(40,70,130,.12),rgba(40,70,130,0) 30%);mix-blend-mode:soft-light}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:linear-gradient(to bottom,rgba(40,30,70,.88),rgba(150,70,70,.82) 70%,rgba(255,140,80,.78));backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);text-align:center;padding:24px}
+.ov.hide{display:none}
+h1{margin:0;font:300 30px var(--font);text-transform:uppercase;letter-spacing:.32em;line-height:1.35;color:var(--cream);text-shadow:0 2px 18px rgba(20,10,30,.5)}
+h1 b{font-weight:700;color:#ffd9a0}
+input,button{font:inherit}
+input{padding:12px 16px;border-radius:999px;border:1.5px solid var(--line);background:rgba(20,14,34,.35);color:var(--cream);width:min(260px,80vw);text-align:center;font-size:16px;letter-spacing:.08em;outline:none}
+input::placeholder{color:rgba(247,236,212,.5)}
+.big{padding:13px 38px;border-radius:999px;border:0;background:linear-gradient(to bottom,#ff9a5a,#ff6a3a);color:#2a1020;font-weight:700;font-size:16px;letter-spacing:.3em;box-shadow:0 6px 24px rgba(255,100,50,.4)}
+.dim{opacity:.8;font-size:13px;max-width:440px;line-height:1.55;letter-spacing:.02em}
+#btns{position:fixed;right:max(16px,env(safe-area-inset-right));bottom:max(16px,env(safe-area-inset-bottom));display:flex;gap:10px;align-items:flex-end}
+.b{width:56px;height:56px;border-radius:50%;border:1.5px solid var(--line);background:var(--glass);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);color:var(--cream);font-weight:700;font-size:10px;letter-spacing:.12em;display:flex;flex-direction:column;align-items:center;justify-content:center;touch-action:none;box-shadow:0 4px 14px rgba(10,6,20,.25);text-align:center}
+.b small{font-weight:500;opacity:.65;font-size:8px;letter-spacing:.08em;text-transform:uppercase}
+#bp{width:90px;height:90px;background:linear-gradient(to bottom,rgba(255,130,80,.85),rgba(230,80,60,.85));border-color:rgba(255,220,190,.8);font-size:13px;letter-spacing:.18em}
+#bb{background:rgba(120,190,230,.35)}#bd{background:rgba(150,220,150,.3)}
+#btns.hide{display:none}
+#bar{position:fixed;left:50%;transform:translateX(-50%);bottom:max(150px,calc(env(safe-area-inset-bottom) + 140px));display:flex;gap:6px;z-index:5}
+#bar.hide,#bag.hide{display:none}
+#mute{position:fixed;left:16px;top:142px;width:32px;height:32px;border-radius:50%;border:1.5px solid var(--line);background:var(--glass);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;font-size:15px;color:var(--cream);z-index:4;cursor:pointer}
+#mute.off{opacity:.55}
+.slot{min-width:50px;padding:5px 7px;border-radius:12px;border:1.5px solid var(--line);background:var(--glass);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);color:var(--cream);font-weight:700;font-size:10px;text-align:center;line-height:1.2;touch-action:none;cursor:pointer;letter-spacing:.04em;transition:transform .12s,background .12s}
+.slot b{display:block;font-size:9px;opacity:.55;font-weight:600}
+.slot small{display:block;font-weight:500;opacity:.65;font-size:8.5px}
+.slot.on{background:rgba(247,236,212,.92);color:var(--ink);transform:translateY(-6px);border-color:#fff}
+.slot.no{opacity:.5}
+#bag{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:min(340px,92vw);background:rgba(28,20,44,.78);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1.5px solid var(--line);border-radius:20px;padding:20px;z-index:6;display:flex;flex-direction:column;gap:10px;box-shadow:0 12px 40px rgba(10,6,20,.5)}
+#bag h2{margin:0 0 4px;font:300 18px var(--font);letter-spacing:.35em;color:#ffd9a0}
+#bag .row{display:flex;justify-content:space-between;font-weight:600;font-size:14px;border-bottom:1px solid rgba(247,236,212,.15);padding-bottom:6px}
+#bag button{padding:11px 13px;border-radius:12px;border:1.5px solid var(--line);background:rgba(247,236,212,.1);color:var(--cream);font-weight:700;text-align:left;font-size:13px;letter-spacing:.04em}
+#bag button small{display:block;font-weight:500;opacity:.7;margin-top:3px;font-size:11px}
+#bag button:not(:disabled){background:rgba(255,154,90,.28);border-color:#ffb27a}
+#bag button:disabled{opacity:.45}
+#bag button.x{text-align:center;background:transparent;border-color:var(--line);letter-spacing:.3em;font-size:11px}
+#looks{display:flex;gap:8px}#looks button{padding:8px 14px;border-radius:999px;border:1.5px solid var(--line);background:transparent;color:var(--cream);font-weight:700;font-size:11px;letter-spacing:.14em}#looks button.on{background:rgba(247,236,212,.92);color:var(--ink)}
+#cams{position:fixed;left:16px;top:184px;display:flex;gap:8px;z-index:4}#cams .b{width:36px;height:36px;font-size:16px}
+.dim2{opacity:.65;font-size:11.5px;line-height:1.5}
+</style></head><body>
+<div id="gl"></div>
+<div id="grade"></div>
+<canvas id="hud"></canvas>
+<div id="btns" class="hide">
+  <div style="display:flex;flex-direction:column;gap:10px"><div class="b" id="bh" style="font-size:9px">HAMMER<small>build</small></div><div class="b" id="bg">BAG<small>craft</small></div></div>
+  <div style="display:flex;flex-direction:column;gap:10px"><div class="b" id="bb" >BLOCK<small>hold</small></div><div class="b" id="bd" >DODGE<small>roll</small></div></div>
+  <div class="b" id="bp">PUNCH</div>
+</div>
+<div id="cams"><div class="b" id="cl">↺</div><div class="b" id="cr">↻</div></div>
+<div id="mute" title="Sound (M)">♪</div>
+<div id="bar" class="hide"></div>
+<div id="bag" class="hide"></div>
+<div class="ov" id="start">
+  <h1>Elf Castle<br><b>Wood Puncher</b><br>5000</h1>
+  <div class="dim">Punch trees for wood. Eat mushrooms. Keep a fire lit at night: goblins come out, and the cold gets you. Other elves are in the same world.</div>
+  <div id="looks"><button data-look="0">CLASSIC ELF</button><button data-look="1">RUGGED ELF</button></div>
+  <input id="name" maxlength="12" placeholder="your elf name" autocomplete="off">
+  <button class="big" id="play">PLAY</button>
+  <div class="dim" id="msg"></div>
+  <div class="dim">Move: WASD or left thumb. Punch: space. Dodge roll: shift. Block: hold B. A block tapped just before a goblin swings parries it and stuns it; then punch for a crit. Hammer: E (or the HAMMER button) to build on a grid: 1-7 picks a piece, aim with the mouse or tap the ground, click or space places. Rotate camera: Z / C, right-drag, or the arrow buttons. Bag: I. Punch rocks for stone, craft tools in the bag. Quick wall: Q. Quick fire: F.</div>
+</div>
+<div class="ov hide" id="dead">
+  <h1>YOU DIED</h1>
+  <div id="deadmsg" class="dim" style="font-size:18px"></div>
+  <button class="big" id="again">TRY AGAIN</button>
+</div>
+<script type="importmap">{"imports":{"three":"/three.js"}}</script>
+<script type="module" src="/game.js"></script>
+</body></html>

@@ -1,0 +1,12 @@
+{
+  "name": "elf-punch-tests",
+  "private": true,
+  "description": "Integration test for the Rust server (node test.js after ./build.sh)",
+  "scripts": {
+    "test": "node test.js && node test-kv.js",
+    "test:kv": "node test-kv.js"
+  },
+  "devDependencies": {
+    "ws": "^8.18.0"
+  }
+}

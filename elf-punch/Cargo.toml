@@ -1,0 +1,15 @@
+[package]
+name = "elf-punch"
+version = "0.2.0"
+edition = "2021"
+
+[dependencies]
+tungstenite = { version = "0.26", default-features = false, features = ["handshake"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
