@@ -1,5 +1,9 @@
 # experiments
 
-- [anacreon/](anacreon/): browser-only space 4X game inspired by the old DOS Anacreon. Static files, no build step.
+Browser-only games. Static files, no build step. Original code, inspired by old classics.
 
-Live at https://jroes.github.io/experiments/anacreon/ once GitHub Pages is on (Settings > Pages > Source: GitHub Actions).
+- [anacreon/](anacreon/): space empire 4X.
+- [warptraders/](warptraders/): space trading.
+
+Live once GitHub Pages is on (Settings > Pages > Source: GitHub Actions):
+https://jroes.github.io/experiments/
