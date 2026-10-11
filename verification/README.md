@@ -22,6 +22,8 @@ they were issued in, the host rejects stale ones) and passes. The real code does
 
 Run it: `verification/run-tlc.sh` (needs Java).
 
+Play by mail is not in the TLA+ model. It has no concurrent messages to race: orders are replayed one code at a time through the same validated `Game.apply`, a repeated or wrong-turn code is refused, and `tests/` checks that the host's replay matches what the friend previewed.
+
 What this does not cover: the JavaScript itself, WebRTC, more than two guests or three turns (it is a bounded check),
 or cheating. A guest browser and the host both see the full game state, so this is built for friends, not for adversaries.
 

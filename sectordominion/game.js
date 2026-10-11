@@ -586,6 +586,47 @@
     }
   }
 
+  // ---------- play by mail ----------
+  // A friend plays their turn on their own copy, then sends back a short code with the orders they gave.
+  // The host replays those orders through apply(), so every rule above still decides what is allowed.
+
+  const MAX_ORDERS = 300;
+
+  function encodeOrders(o) {
+    return 'SDO1.' + btoa(unescape(encodeURIComponent(JSON.stringify(o)))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
+  function decodeOrders(code) {
+    try {
+      code = String(code).trim().replace(/\s+/g, '');
+      if (!code.startsWith('SDO1.')) throw new Error('prefix');
+      const o = JSON.parse(decodeURIComponent(escape(atob(code.slice(5).replace(/-/g, '+').replace(/_/g, '/')))));
+      if (!o || o.v !== 1 || !isInt(o.seat) || !isInt(o.turn) || !Array.isArray(o.cmds) || o.cmds.length > MAX_ORDERS) throw new Error('shape');
+      for (const c of o.cmds) if (!c || typeof c !== 'object' || Array.isArray(c)) throw new Error('cmd');
+      return o;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Applies a friend's orders for the current turn and marks them ready.
+  function applyOrders(state, orders) {
+    if (state.over) return { ok: false, msg: 'Game is over.' };
+    const e = empire(state, orders.seat);
+    if (!e || !e.human || !e.alive) return { ok: false, msg: 'That seat is not an active player.' };
+    if (orders.turn !== state.turn) return { ok: false, msg: 'Those orders are for turn ' + orders.turn + ' but the game is on turn ' + state.turn + '.' };
+    if (state.ready[orders.seat]) return { ok: false, msg: 'Orders for that player are already in.' };
+    const rejected = [];
+    let applied = 0;
+    for (const c of orders.cmds) {
+      if (c.op === 'ready' || c.op === 'unready') continue;
+      const r = apply(state, orders.seat, { ...c, turn: state.turn });
+      if (r.ok) applied++; else rejected.push(r.msg || 'rejected');
+    }
+    const done = apply(state, orders.seat, { op: 'ready', turn: state.turn });
+    return { ok: true, applied, rejected, advanced: !!done.advanced };
+  }
+
   // hand an empire over to the AI (player left or was dropped)
   function dropPlayer(state, empId) {
     const e = empire(state, empId);
@@ -602,7 +643,7 @@
 
   const api = {
     PLAYER, MAX_TECH, TROOPS_PER_TRANSPORT, WIN_SHARE, SHIPS, SHIP_ORDER, WORLD_TYPES, DIFFICULTY,
-    newGame, endTurn, apply, maybeAdvance, dropPlayer, build, fortify, research, sendFleet, eta,
+    newGame, endTurn, apply, maybeAdvance, dropPlayer, encodeOrders, decodeOrders, applyOrders, build, fortify, research, sendFleet, eta,
     visibleWorlds, refreshKnown, fleetVisibleTo, worldDefense, maxTroops, worldIncome, empireIncome,
     researchCost, fortifyCost, techMult, shipCount, shipValue, dist, empire,
   };

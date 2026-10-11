@@ -28,6 +28,7 @@
     <div id="tip" hidden></div>
   </div>
   <aside id="side">
+    <section id="p-mail" hidden></section>
     <section id="p-world"></section>
     <section id="p-empire"></section>
     <section id="p-log"><h3>Log</h3><ul id="log"></ul></section>
@@ -90,11 +91,34 @@
     </label>
     <div class="row">
       <button value="cancel" formnovalidate>Cancel</button>
+      <button value="mail" type="button" id="b-mail">Play by mail</button>
       <button value="join">Join a game</button>
       <button value="host" class="primary">Host a game</button>
     </div>
   </form>
   <p class="fine">Friends-only trust: the host's browser sends everyone the full game state, so anyone who opens dev tools could peek at hidden info.</p>
+</dialog>
+
+<dialog id="d-mail">
+  <h2>Play by mail</h2>
+  <p class="fine">Take turns on your own time. The host sends each friend a turn file (Discord, email, whatever). They play their turn, copy back a short orders code, and the host pastes it in. When everyone is in, the turn plays. Games are saved in your browser, so you can close the tab and come back.</p>
+  <h3>Host a new game</h3>
+  <form id="f-mail" method="dialog">
+    <label>Human players (including you)
+      <select name="humans"><option>2</option><option selected>3</option><option>4</option></select>
+    </label>
+    <label>Difficulty
+      <select name="difficulty"><option value="easy">Easy</option><option value="normal" selected>Normal</option><option value="hard">Hard</option></select>
+    </label>
+    <label>Worlds
+      <select name="worlds"><option value="30">30</option><option value="40" selected>40</option><option value="60">60</option></select>
+    </label>
+    <div class="row"><button value="cancel" formnovalidate>Cancel</button><button value="start" class="primary">Start mail game</button></div>
+  </form>
+  <h3>Join a game</h3>
+  <p class="fine">Got a turn file from your host? Load it here.</p>
+  <input type="file" id="i-turnfile" accept=".json,application/json">
+  <p class="hint" id="mail-msg"></p>
 </dialog>
 
 <script src="../shared/p2p.js"></script>
