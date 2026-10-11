@@ -162,3 +162,20 @@ test('turns never go below zero, including while fleeing pirates on the last tur
     assert.ok(s.turnsLeft >= 0, 'seed ' + seed + ' turnsLeft ' + s.turnsLeft);
   }
 });
+
+test('goods, choices and sectors taken from input are never read from inherited properties', () => {
+  const keys = ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf'];
+  const s = W.newGame({ seed: 2 });
+  s.sector = s.sectors.find(x => x.port).id;
+  const before = JSON.stringify(s);
+  for (const g of keys) for (const buying of [true, false]) {
+    assert.equal(W.trade(s, g, 5, buying).ok, false, g);
+    assert.equal(W.maxQty(s, g, buying), 0, g);
+  }
+  for (const to of keys) assert.equal(W.warp(s, to).ok, false);
+  assert.equal(JSON.stringify(s), before);
+  const e = W.newGame({ seed: 2 });
+  e.encounter = { strength: 5 };
+  for (const c of keys) assert.equal(W.resolve(e, c).ok, false);
+  assert.ok(e.encounter);
+});

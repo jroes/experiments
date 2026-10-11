@@ -11,6 +11,10 @@
   const TROOPS_PER_TRANSPORT = 5;
   const WIN_SHARE = 0.7;
 
+  // tech^1.6 as fixed literals (see note on dist)
+  const TECH_COST_FACTOR = [0, 1, 3.0314331330207964, 5.799546134795289, 9.18958683997628, 13.13263902201884, 17.580936309501134];
+  const RULES = 1; // bump when a rule change would make old games replay differently
+
   const SHIP_ORDER = ['scout', 'frigate', 'cruiser', 'transport'];
   const SHIPS = {
     scout:     { name: 'Scout',     cost: 20,  atk: 1,  hp: 4,  speed: 12 },
@@ -51,7 +55,12 @@
     };
   }
 
-  function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+  // Only exactly-rounded arithmetic in the rules (+ - * / sqrt): Math.hypot and Math.pow may differ in the last bit
+  // between browsers, and lockstep play needs every browser to compute the identical game.
+  // keys that come from players or from the network must never reach inherited properties like 'constructor'
+  const has = (obj, key) => typeof key === 'string' && Object.prototype.hasOwnProperty.call(obj, key);
+
+  function dist(a, b) { const dx = a.x - b.x, dy = a.y - b.y; return Math.sqrt(dx * dx + dy * dy); }
   function emptyShips() { return { scout: 0, frigate: 0, cruiser: 0, transport: 0 }; }
   function shipCount(s) { return SHIP_ORDER.reduce((n, t) => n + (s[t] || 0), 0); }
   function shipValue(s) { return SHIP_ORDER.reduce((n, t) => n + (s[t] || 0) * SHIPS[t].cost, 0); }
@@ -98,7 +107,7 @@
     const e = empire(state, id);
     const labs = state.worlds.filter(w => w.owner === id && w.type === 'research').length;
     const disc = Math.max(0.5, 1 - 0.1 * labs);
-    return Math.round(150 * Math.pow(e.tech, 1.6) * disc);
+    return Math.round(150 * TECH_COST_FACTOR[e.tech] * disc);
   }
 
   function fortifyCost(w) { return 40 * (w.fort + 1); }
@@ -108,7 +117,7 @@
   function newGame(opts) {
     opts = opts || {};
     const seed = opts.seed != null ? opts.seed : (Math.random() * 1e9) | 0;
-    const difficulty = DIFFICULTY[opts.difficulty] ? opts.difficulty : 'normal';
+    const difficulty = has(DIFFICULTY, opts.difficulty) ? opts.difficulty : 'normal';
     const count = Math.max(24, Math.min(80, opts.worlds || 40));
     const rnd = mulberry32(seed);
     const humans = Math.max(1, Math.min(4, opts.humans || 1));
@@ -216,7 +225,7 @@
   function build(state, worldId, type) {
     const w = state.worlds[worldId];
     if (!w || !w.owner) return { ok: false, msg: 'Not your world.' };
-    if (!SHIPS[type]) return { ok: false, msg: 'Unknown ship.' };
+    if (!has(SHIPS, type)) return { ok: false, msg: 'Unknown ship.' };
     const e = state.empires[w.owner - 1];
     const cost = SHIPS[type].cost;
     if (e.credits < cost) return { ok: false, msg: 'Not enough credits.' };
@@ -627,6 +636,52 @@
     return { ok: true, applied, rejected, advanced: !!done.advanced };
   }
 
+  // ---------- lockstep (play online without a game server) ----------
+  // Every player's browser holds the same game and plays the turn itself once everyone's orders are known.
+  // The game is deterministic (seeded rng, exact arithmetic), so the same orders give the same result everywhere.
+
+  // 64-bit-ish hash of everything that decides the game. The log is left out: it is only text for the people.
+  function hashState(state) {
+    const copy = { ...state }; delete copy.log;
+    const str = JSON.stringify(copy);
+    let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+    for (let i = 0; i < str.length; i++) {
+      const ch = str.charCodeAt(i);
+      h1 = Math.imul(h1 ^ ch, 2654435761);
+      h2 = Math.imul(h2 ^ ch, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return (h2 >>> 0).toString(16).padStart(8, '0') + (h1 >>> 0).toString(16).padStart(8, '0');
+  }
+
+  // Which living humans have not given orders for this turn (entries: seat -> {code} | {skip, ai})
+  function missingSeats(state, entries) {
+    return state.empires.filter(e => e.human && e.alive && !entries[e.id]).map(e => e.id);
+  }
+
+  // Plays the current turn from everyone's orders. Seats are processed in order, never in arrival order.
+  // Mutates state. Returns { ok:false } without touching anything if someone is still missing.
+  function advanceWith(state, entries) {
+    if (state.over) return { ok: false, msg: 'Game is over.' };
+    const missing = missingSeats(state, entries);
+    if (missing.length) return { ok: false, missing };
+    const turn = state.turn;
+    for (const e of state.empires) {
+      if (!e.human || !e.alive) continue;
+      const entry = entries[e.id];
+      if (entry.skip) {
+        if (entry.ai) dropPlayer(state, e.id);
+        else apply(state, e.id, { op: 'ready', turn });
+        continue;
+      }
+      const o = typeof entry.code === 'string' ? decodeOrders(entry.code) : null;
+      if (o && o.seat === e.id && o.turn === turn) applyOrders(state, o);
+      else apply(state, e.id, { op: 'ready', turn }); // unreadable or misaddressed orders count as no orders
+    }
+    return { ok: true, advanced: state.turn !== turn };
+  }
+
   // hand an empire over to the AI (player left or was dropped)
   function dropPlayer(state, empId) {
     const e = empire(state, empId);
@@ -642,8 +697,8 @@
   }
 
   const api = {
-    PLAYER, MAX_TECH, TROOPS_PER_TRANSPORT, WIN_SHARE, SHIPS, SHIP_ORDER, WORLD_TYPES, DIFFICULTY,
-    newGame, endTurn, apply, maybeAdvance, dropPlayer, encodeOrders, decodeOrders, applyOrders, build, fortify, research, sendFleet, eta,
+    has, PLAYER, MAX_TECH, TROOPS_PER_TRANSPORT, WIN_SHARE, SHIPS, SHIP_ORDER, WORLD_TYPES, DIFFICULTY,
+    RULES, newGame, endTurn, apply, maybeAdvance, dropPlayer, encodeOrders, decodeOrders, applyOrders, hashState, missingSeats, advanceWith, build, fortify, research, sendFleet, eta,
     visibleWorlds, refreshKnown, fleetVisibleTo, worldDefense, maxTroops, worldIncome, empireIncome,
     researchCost, fortifyCost, techMult, shipCount, shipValue, dist, empire,
   };

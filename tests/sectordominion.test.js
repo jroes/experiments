@@ -325,3 +325,48 @@ test('mail orders: wrong turn, repeats, bad seats and junk codes are refused', (
   assert.equal(G.decodeOrders(G.encodeOrders({ v: 1, seat: 2, turn: 1, cmds: new Array(500).fill({ op: 'research' }) })), null);
   assert.ok(G.decodeOrders(G.encodeOrders(good)));
 });
+
+test('keys like constructor and __proto__ are never treated as ships, difficulties or anything else', () => {
+  // regression: build with type 'constructor' used to turn credits into NaN (and then everything was free)
+  const keys = ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf', 'prototype'];
+  const s = G.newGame({ seed: 3, humans: 2 });
+  const w = s.worlds.find(x => x.owner === 1);
+  for (const type of keys) {
+    const before = clone(s);
+    const r = G.apply(s, 1, { op: 'build', world: w.id, type, turn: 1 });
+    assert.equal(r.ok, false, type);
+    assert.deepEqual(s, before, type);
+  }
+  for (const d of keys) {
+    const g = G.newGame({ seed: 3, difficulty: d });
+    assert.equal(g.difficulty, 'normal', d);
+    assert.ok(Number.isFinite(G.empireIncome(g, 2)));
+  }
+  // the same through mail orders
+  const t = G.newGame({ seed: 3, humans: 2 });
+  const r = G.applyOrders(t, { v: 1, seat: 2, turn: 1, cmds: keys.map(type => ({ op: 'build', world: t.worlds.find(x => x.owner === 2).id, type })) });
+  assert.equal(r.applied, 0);
+  assert.ok(Number.isFinite(t.empires[1].credits));
+});
+
+test('fuzz: ship type, difficulty and world fields drawn from prototype keys never corrupt a game', () => {
+  const keys = ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf', 'x', '', '1'];
+  const rnd = driver(2024);
+  for (let g = 1; g <= 30; g++) {
+    const s = G.newGame({ seed: g, humans: 3, worlds: 30 });
+    for (let i = 0; i < 300; i++) {
+      const actor = 1 + ((rnd() * 3) | 0);
+      const mine = s.worlds.filter(w => w.owner === actor);
+      const w = mine[(rnd() * mine.length) | 0];
+      if (!w) continue;
+      const k = () => keys[(rnd() * keys.length) | 0];
+      const cmds = [
+        { op: 'build', world: w.id, type: k(), turn: s.turn },
+        { op: 'send', from: w.id, to: (rnd() * s.worlds.length) | 0, turn: s.turn, ships: { [k()]: 5, scout: 1 } },
+        { op: k(), world: w.id, turn: s.turn },
+      ];
+      G.apply(s, actor, cmds[(rnd() * 3) | 0]);
+      checkInvariants(s, 'proto fuzz ' + g + '/' + i);
+    }
+  }
+});

@@ -3,6 +3,8 @@
   const G = window.Game;
   const SAVE_KEY = 'sectordominion-save-v1';
   const MAIL_KEY = 'sectordominion-mail-v1';
+  const ONLINE_KEY = 'sectordominion-online-v1';
+  const RELAY_KEY = 'sectordominion-relay';
   const COLORS = ['#6b7a94', '#5ee0b0', '#ffb454', '#ff6b6b', '#b48cff'];
 
   const $ = id => document.getElementById(id);
@@ -20,6 +22,8 @@
     net: null,      // P2P link when playing with friends
     seats: {},      // host only: peer id -> empire id
     started: false, // multiplayer game running
+    online: null,   // relay-based async session (online.js)
+    onlineMsg: '',
     mailMsg: '',    // last message in the mail panel
     mail: null,     // play-by-mail session: { role: 'host'|'guest', cmds: [], sent: bool }
   };
@@ -35,7 +39,8 @@
   function save() {
     if (multi()) return;
     try {
-      if (ui.mail) localStorage.setItem(MAIL_KEY, JSON.stringify({ v: 1, mail: ui.mail, me: ui.me, state: ui.state }));
+      if (ui.online) localStorage.setItem(ONLINE_KEY, JSON.stringify(ui.online));
+      else if (ui.mail) localStorage.setItem(MAIL_KEY, JSON.stringify({ v: 1, mail: ui.mail, me: ui.me, state: ui.state }));
       else localStorage.setItem(SAVE_KEY, JSON.stringify(ui.state));
     } catch (e) { /* storage blocked, fine */ }
   }
@@ -45,6 +50,10 @@
       return o && o.v === 1 && validState(o.state, o.me) && o.mail && (o.mail.role === 'host' || o.mail.role === 'guest') ? o : null;
     } catch (e) { return null; }
   }
+  function loadOnline() {
+    try { return Online.Session.fromSaved(JSON.parse(localStorage.getItem(ONLINE_KEY))); } catch (e) { return null; }
+  }
+  function clearOnline() { try { localStorage.removeItem(ONLINE_KEY); } catch (e) { /* ignore */ } }
   function clearMail() { try { localStorage.removeItem(MAIL_KEY); } catch (e) { /* ignore */ } }
   function load() {
     try {
@@ -103,6 +112,11 @@
 
   function act(cmd) {
     const s = ui.state;
+    if (ui.online) {
+      const r = ui.online.act(cmd);
+      if (r.ok) save();
+      return r;
+    }
     cmd = { ...cmd, turn: s.turn };
     if (ui.mail && ui.mail.role === 'guest') {
       if (ui.mail.sent) return { ok: false, msg: 'Orders already sent. Load the next turn file.' };
@@ -142,6 +156,9 @@
       const people = s.empires.filter(x => x.human && x.alive);
       const ready = people.filter(x => s.ready[x.id]).length;
       end.textContent = s.ready[ui.me] ? 'Waiting (' + ready + '/' + people.length + ')' : 'End turn (' + ready + '/' + people.length + ')';
+    } else if (ui.online) {
+      end.textContent = ui.online.sent ? 'Orders sent' : 'Send orders';
+      end.disabled = end.disabled || ui.online.sent || !!ui.onlineBusy;
     } else if (ui.mail && ui.mail.role === 'guest') {
       end.textContent = ui.mail.sent ? 'Orders sent' : 'Send orders';
       end.disabled = end.disabled || ui.mail.sent;
@@ -424,6 +441,7 @@
     if (s.over || !meEmp().alive) return;
     ui.targeting = false;
     canvas.classList.remove('targeting');
+    if (ui.online) { sendOnline(); return; }
     if (ui.mail && ui.mail.role === 'guest') { if (!ui.mail.sent) showOrders(); return; }
     if (ui.mail && s.ready[ui.me]) { return; }
     if (multi() && s.ready[ui.me]) { const r = act({ op: 'unready' }); if (!r.ok) toast(r.msg); refresh(); return; }
@@ -436,6 +454,7 @@
 
   function openNew() {
     if (multi()) { toast('Leave the multiplayer game first (reload the page).'); return; }
+    if (ui.online) { toast('You are in an online game. Use Leave game in the Online panel first.'); return; }
     if (ui.mail) { toast('You are in a mail game. Use Leave mail game in the Mail panel first.'); return; }
     $('d-new').showModal();
   }
@@ -462,7 +481,7 @@
   // ---------- multiplayer ----------
 
   function validState(s, seat) {
-    return s && s.version === 2 && Array.isArray(s.worlds) && Array.isArray(s.empires) && s.empires.length === 4 &&
+    return s && s.version === 2 && G.has(G.DIFFICULTY, s.difficulty) && Array.isArray(s.worlds) && Array.isArray(s.empires) && s.empires.length === 4 &&
       Number.isInteger(seat) && seat >= 1 && seat <= 4 && s.empires[seat - 1] && s.known && s.ready && Array.isArray(s.log) && Array.isArray(s.fleets);
   }
 
@@ -541,6 +560,7 @@
 
   function renderMail() {
     const el = $('p-mail');
+    if (ui.online) { renderOnline(el); return; }
     el.hidden = !ui.mail;
     if (!ui.mail) return;
     const s = ui.state;
@@ -647,14 +667,151 @@
     toast('Mail game started. Download a turn file for each friend from the Mail panel.');
   });
 
+  // ---------- online (relay) ----------
+
+  function adoptSession() {
+    const turnChanged = ui.state && ui.online.working.turn !== ui.state.turn;
+    ui.state = ui.online.working;
+    ui.me = ui.online.seat;
+    if (ui.selected == null || !ui.state.worlds[ui.selected]) ui.selected = ui.state.worlds.find(w => w.owner === ui.me)?.id ?? null;
+    if (turnChanged) resetSend();
+  }
+
+  function startOnline(session) {
+    ui.online = session; ui.mail = null; ui.net = null;
+    ui.state = null; ui.selected = null;
+    adoptSession();
+    ui.targeting = false; canvas.classList.remove('targeting');
+    fitView(); save(); refresh();
+  }
+
+  let polling = false;
+  async function syncOnline(quiet) {
+    if (!ui.online || polling) return;
+    polling = true;
+    const before = ui.online.base.turn;
+    try {
+      const r = await ui.online.sync();
+      adoptSession();
+      if (r.advanced) ui.state.log.unshift({ turn: ui.state.turn, text: 'Everyone is in. Turn ' + before + ' was played. It is now turn ' + ui.online.base.turn + '.', kind: 'good', to: [ui.me] });
+      if (!quiet && r.error) ui.onlineMsg = r.error; else if (!r.error) ui.onlineMsg = '';
+      save();
+    } finally { polling = false; }
+    refresh();
+  }
+
+  async function sendOnline() {
+    if (!ui.online || ui.online.sent) return;
+    ui.onlineBusy = true; refresh();
+    const r = await ui.online.submit();
+    ui.onlineBusy = false;
+    ui.onlineMsg = '';
+    adoptSession();
+    if (!r.ok) toast(r.msg);
+    save(); refresh();
+  }
+
+  function renderOnline(el) {
+    el.hidden = false;
+    const o = ui.online, s = ui.state, g = o.game;
+    let h = '<h3>Online game</h3>';
+    if (o.desync) h += '<p class="bad">This copy of the game has drifted from someone else\'s. Try Rebuild. If it keeps happening, make sure everyone uses the same browser type.</p>';
+    h += '<p class="dim">Seat ' + o.seat + ', turn ' + s.turn + '. ' + (o.sent ? 'Your orders are in.' : 'Give your orders, then Send orders.') + '</p><div class="kv">';
+    for (const e of s.empires) {
+      if (!e.human && !g.invites) continue;
+      if (e.id > g.humans) continue;
+      const entry = o.entries && o.entries[e.id];
+      const status = !e.alive ? 'eliminated' : !e.human ? 'AI' : entry ? '<span class="good">' + (entry.skip ? 'skipped' : 'orders in') + '</span>' : 'waiting';
+      h += '<div style="color:' + COLORS[e.id] + '">' + (e.id === ui.me ? 'You' : 'Seat ' + e.id) + '</div><div>' + status +
+        (o.isHost && e.id !== ui.me && e.human && e.alive && !entry ? ' <button class="small" data-act="skip" data-e="' + e.id + '" title="Play the turn without them">skip</button> <button class="small" data-act="skip-ai" data-e="' + e.id + '" title="Give this empire to the AI for good">AI</button>' : '') + '</div>';
+    }
+    h += '</div><div class="btns"><button data-act="osync">Check for news</button><button data-act="orebuild" title="Replay the whole game from the relay">Rebuild</button>';
+    if (o.isHost && g.invites) h += '<button data-act="oinvites">Invite codes</button>';
+    h += '<button data-act="oleave">Leave game</button></div>';
+    if (ui.showInvites && g.invites) {
+      h += g.invites.map((c, i) => '<p class="dim">Seat ' + (i + 2) + '</p><textarea readonly rows="3" style="width:100%;background:#060b16;color:inherit;border:1px solid var(--line);border-radius:4px;font:11px monospace">' + esc(c) + '</textarea>').join('');
+      h += '<p class="fine">Each code is for one friend. Anyone holding a code can play that seat, so send it privately.</p>';
+    }
+    if (ui.onlineMsg) h += '<p class="hint">' + esc(ui.onlineMsg) + '</p>';
+    el.innerHTML = h;
+  }
+
+  $('p-mail').addEventListener('click', async e => {
+    const b = e.target.closest('button[data-act]');
+    if (!b || !ui.online) return;
+    const a = b.dataset.act, o = ui.online;
+    if (a === 'osync') { ui.onlineMsg = 'Checking...'; refresh(); await syncOnline(false); refresh(); }
+    else if (a === 'orebuild') { ui.onlineMsg = 'Rebuilding...'; refresh(); const r = await o.rebuild(); adoptSession(); ui.onlineMsg = r.error || 'Rebuilt from the relay. Turn ' + r.turn + '.'; save(); refresh(); }
+    else if (a === 'oinvites') { ui.showInvites = !ui.showInvites; refresh(); }
+    else if (a === 'skip' || a === 'skip-ai') {
+      const ai = a === 'skip-ai';
+      if (ai && !confirm('Give this empire to the AI for the rest of the game?')) return;
+      const r = await o.hostSkip(+b.dataset.e, ai);
+      adoptSession(); ui.onlineMsg = r.ok ? '' : r.msg; save(); refresh();
+    } else if (a === 'oleave') {
+      if (!confirm('Leave this game on this device? The game stays on the relay. You can come back with your invite code.')) return;
+      clearOnline(); ui.online = null; ui.showInvites = false;
+      const solo = load();
+      setState(solo || G.newGame({}));
+    }
+  });
+
+  // Poll while waiting on others. Slow down after a while so a forgotten tab costs the relay almost nothing.
+  let lastPoll = 0, waitStart = 0;
+  setInterval(() => {
+    const o = ui.online;
+    if (!o || document.hidden) { waitStart = 0; return; }
+    const me = G.empire(o.base, o.seat), waiting = o.sent || !me.human || !me.alive;
+    if (!waiting) { waitStart = 0; return; }
+    if (!waitStart) waitStart = Date.now();
+    const every = Date.now() - waitStart > 20 * 60e3 ? 60e3 : 15e3;
+    if (Date.now() - lastPoll >= every - 500) { lastPoll = Date.now(); syncOnline(true); }
+  }, 5000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && ui.online) syncOnline(true); });
+
+  $('b-online').onclick = () => {
+    $('d-mp').close();
+    const f = $('f-online');
+    try { f.relay.value = localStorage.getItem(RELAY_KEY) || window.RELAY_URL || ''; } catch (e) { f.relay.value = window.RELAY_URL || ''; }
+    $('online-msg').textContent = '';
+    $('d-online').showModal();
+  };
+  $('f-online').addEventListener('submit', async e => {
+    if (!e.submitter || e.submitter.value !== 'create') return;
+    const fd = new FormData($('f-online')), msg = $('online-msg');
+    // the form dialog closes itself on submit; reopen to show progress or errors
+    setTimeout(() => $('d-online').open || $('d-online').showModal(), 0);
+    msg.textContent = 'Creating...';
+    try {
+      const relay = String(fd.get('relay') || '').trim();
+      try { localStorage.setItem(RELAY_KEY, relay); } catch (err) { /* ignore */ }
+      const session = await Online.Session.create({ relay, humans: +fd.get('humans'), difficulty: fd.get('difficulty'), worlds: +fd.get('worlds') });
+      ui.showInvites = true;
+      startOnline(session);
+      $('d-online').close();
+    } catch (err) { msg.textContent = err.message; }
+  });
+  $('b-join-online').onclick = async () => {
+    const msg = $('online-msg');
+    msg.textContent = 'Joining...';
+    try {
+      const session = await Online.Session.join($('t-invite').value);
+      ui.showInvites = false;
+      startOnline(session);
+      $('d-online').close();
+    } catch (err) { msg.textContent = err.message; }
+  };
+
   // ---------- boot ----------
 
   resize();
-  const savedMail = loadMail();
+  const savedOnline = loadOnline();
+  if (savedOnline) { ui.online = savedOnline; adoptSession(); fitView(); refresh(); setTimeout(() => syncOnline(true), 0); }
+  const savedMail = savedOnline ? null : loadMail();
   if (savedMail) { ui.mail = savedMail.mail; setState(savedMail.state, savedMail.me); }
-  const saved = savedMail ? null : load();
-  if (!savedMail) setState(saved || G.newGame({}));
-  if (!saved && !savedMail) {
+  const saved = savedMail || savedOnline ? null : load();
+  if (!savedMail && !savedOnline) setState(saved || G.newGame({}));
+  if (!saved && !savedMail && !savedOnline) {
     try {
       if (!localStorage.getItem('sectordominion-help-seen')) {
         $('d-help').showModal();
