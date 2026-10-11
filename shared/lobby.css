@@ -1,0 +1,10 @@
+dialog.lobby { width: min(560px, 94vw); }
+.lobby .dim { color: var(--dim); }
+.lobby .good { color: var(--accent); }
+.lobby .bad { color: var(--bad); }
+.lobby .hint { color: var(--warn); min-height: 1.4em; }
+.lobby textarea { width: 100%; background: #060b16; color: var(--text); border: 1px solid var(--line); border-radius: 4px; font: 11px/1.3 ui-monospace, Menlo, Consolas, monospace; word-break: break-all; }
+.lobby .lb-code { margin: 8px 0; }
+.lobby .lb-code label { display: block; margin-bottom: 4px; }
+.lobby .lb-slot { border: 1px solid var(--line); padding: 8px; margin: 8px 0; border-radius: 4px; }
+.lobby .lb-row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }

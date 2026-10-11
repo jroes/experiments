@@ -34,7 +34,7 @@
     hard:   { income: 1.25, attack: 1.2, range: 90 },
   };
 
-  const EMPIRE_NAMES = ['Your Dominion', 'Velari Concord', 'Hadrim League', 'Orzu Syndicate'];
+  const EMPIRE_NAMES = ['Solar Dominion', 'Velari Concord', 'Hadrim League', 'Orzu Syndicate'];
 
   const SYL_A = ['Ar', 'Bel', 'Cor', 'Dra', 'Eri', 'Fen', 'Gal', 'Hel', 'Ion', 'Jor', 'Kal', 'Lor', 'Mir',
     'Nev', 'Or', 'Pol', 'Quar', 'Rig', 'Syl', 'Tor', 'Ul', 'Vek', 'Wyn', 'Xan', 'Yar', 'Zeph', 'Ast', 'Bor', 'Cyr', 'Del'];
@@ -59,8 +59,19 @@
   function empire(state, id) { return state.empires.find(e => e.id === id); }
   function ownerTech(state, id) { const e = empire(state, id); return e ? e.tech : 1; }
 
-  function log(state, text, kind) {
-    state.log.unshift({ turn: state.turn, text, kind: kind || 'info' });
+  // game randomness comes from the state so a game can be replayed exactly
+  function rand(state) {
+    const a = (state.rng = (state.rng + 0x6D2B79F5) | 0);
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  }
+
+  // `to` is a list of empire ids who may see the entry; omitted means everyone
+  function log(state, text, kind, to) {
+    const entry = { turn: state.turn, text, kind: kind || 'info' };
+    if (to) entry.to = to;
+    state.log.unshift(entry);
     if (state.log.length > 200) state.log.length = 200;
   }
 
@@ -100,6 +111,7 @@
     const difficulty = DIFFICULTY[opts.difficulty] ? opts.difficulty : 'normal';
     const count = Math.max(24, Math.min(80, opts.worlds || 40));
     const rnd = mulberry32(seed);
+    const humans = Math.max(1, Math.min(4, opts.humans || 1));
     const W = 120, H = 80, MIN_D = 9;
 
     const worlds = [];
@@ -149,14 +161,16 @@
     }
 
     const empires = caps.map((c, i) => ({
-      id: i + 1, name: EMPIRE_NAMES[i], human: i === 0, credits: 300, tech: 1, alive: true,
+      id: i + 1, name: EMPIRE_NAMES[i], human: i < humans, player: null, credits: 300, tech: 1, alive: true,
     }));
 
     const state = {
-      version: 1, turn: 1, seed, difficulty, width: W, height: H,
-      worlds, fleets: [], empires, known: {}, log: [], nextFleetId: 1, over: null,
+      version: 2, turn: 1, seed, rng: (seed ^ 0x9E3779B9) | 0, difficulty, width: W, height: H,
+      worlds, fleets: [], empires, known: {}, ready: {}, log: [], nextFleetId: 1, over: false, winner: null,
     };
-    log(state, 'Your capital is ' + caps[0].name + '. Expand, build, conquer.', 'good');
+    for (const e of empires) if (e.human) {
+      log(state, 'Your capital is ' + caps[e.id - 1].name + '. Expand, build, conquer.', 'good', [e.id]);
+    }
     refreshKnown(state);
     return state;
   }
@@ -176,20 +190,34 @@
     return seen;
   }
 
+  // each human keeps their own memory of what they last saw
   function refreshKnown(state) {
-    const vis = visibleWorlds(state, PLAYER);
-    for (const id of vis) {
-      const w = state.worlds[id];
-      state.known[id] = { owner: w.owner, pop: Math.floor(w.pop), fort: w.fort, natives: w.natives, seen: state.turn };
+    const out = {};
+    for (const e of state.empires) {
+      if (!e.human) continue;
+      const vis = visibleWorlds(state, e.id), mem = state.known[e.id] || (state.known[e.id] = {});
+      for (const id of vis) {
+        const w = state.worlds[id];
+        mem[id] = { owner: w.owner, pop: Math.floor(w.pop), fort: w.fort, natives: w.natives, seen: state.turn };
+      }
+      out[e.id] = vis;
     }
-    return vis;
+    return out;
+  }
+
+  function fleetVisibleTo(state, id, f) {
+    if (f.owner === id) return true;
+    return state.worlds.some(w => w.owner === id && dist(w, f) <= WORLD_SIGHT) ||
+      state.fleets.some(g => g.owner === id && dist(g, f) <= FLEET_SIGHT);
   }
 
   // ---------- player/AI actions ----------
 
   function build(state, worldId, type) {
-    const w = state.worlds[worldId], e = state.empires[w.owner - 1];
-    if (!w.owner) return { ok: false, msg: 'Not your world.' };
+    const w = state.worlds[worldId];
+    if (!w || !w.owner) return { ok: false, msg: 'Not your world.' };
+    if (!SHIPS[type]) return { ok: false, msg: 'Unknown ship.' };
+    const e = state.empires[w.owner - 1];
     const cost = SHIPS[type].cost;
     if (e.credits < cost) return { ok: false, msg: 'Not enough credits.' };
     e.credits -= cost;
@@ -198,8 +226,9 @@
   }
 
   function fortify(state, worldId) {
-    const w = state.worlds[worldId], e = state.empires[w.owner - 1];
-    if (!w.owner) return { ok: false, msg: 'Not your world.' };
+    const w = state.worlds[worldId];
+    if (!w || !w.owner) return { ok: false, msg: 'Not your world.' };
+    const e = state.empires[w.owner - 1];
     if (w.fort >= 5) return { ok: false, msg: 'Fully fortified.' };
     const cost = fortifyCost(w);
     if (e.credits < cost) return { ok: false, msg: 'Not enough credits.' };
@@ -218,10 +247,14 @@
 
   function sendFleet(state, empId, fromId, toId, ships) {
     const from = state.worlds[fromId], to = state.worlds[toId];
+    if (!from || !to) return { ok: false, msg: 'No such world.' };
     if (from.owner !== empId) return { ok: false, msg: 'Not your world.' };
     if (fromId === toId) return { ok: false, msg: 'Pick another world.' };
     const sent = emptyShips();
-    for (const t of SHIP_ORDER) sent[t] = Math.max(0, Math.min(ships[t] || 0, from.garrison[t]));
+    for (const t of SHIP_ORDER) {
+      const n = Math.floor(Number(ships && ships[t]));
+      sent[t] = Number.isFinite(n) ? Math.max(0, Math.min(n, from.garrison[t])) : 0;
+    }
     if (!shipCount(sent)) return { ok: false, msg: 'No ships selected.' };
     for (const t of SHIP_ORDER) from.garrison[t] -= sent[t];
     const speed = Math.min(...SHIP_ORDER.filter(t => sent[t]).map(t => SHIPS[t].speed));
@@ -249,9 +282,9 @@
 
   function sumAtk(units) { return units.reduce((n, u) => n + u.atk, 0); }
 
-  function applyDamage(units, dmg) {
+  function applyDamage(state, units, dmg) {
     while (dmg > 0 && units.length) {
-      const i = (Math.random() * units.length) | 0, u = units[i];
+      const i = (rand(state) * units.length) | 0, u = units[i];
       const dealt = Math.min(dmg, u.hp);
       u.hp -= dealt; dmg -= dealt;
       if (u.hp <= 1e-9) units.splice(i, 1);
@@ -259,13 +292,13 @@
   }
 
   // returns when one side is dead or neither can hurt the other
-  function battle(att, def) {
+  function battle(state, att, def) {
     for (let round = 0; round < 200 && att.length && def.length; round++) {
       const a = sumAtk(att), d = sumAtk(def);
       if (a <= 0 && d <= 0) break;
-      const da = a * (0.8 + Math.random() * 0.4), dd = d * (0.8 + Math.random() * 0.4);
-      applyDamage(def, da);
-      applyDamage(att, dd);
+      const da = a * (0.8 + rand(state) * 0.4), dd = d * (0.8 + rand(state) * 0.4);
+      applyDamage(state, def, da);
+      applyDamage(state, att, dd);
     }
   }
 
@@ -279,8 +312,12 @@
 
   function ownerName(state, id) { return id ? empire(state, id).name : 'natives'; }
 
-  function playerCares(state, f, w, vis) {
-    return f.owner === PLAYER || w.owner === PLAYER || vis.has(w.id);
+  // who gets told about something happening at world w involving fleet f
+  function audience(state, f, w, vis) {
+    const a = new Set([f.owner]);
+    if (w.owner) a.add(w.owner);
+    for (const id of Object.keys(vis)) if (vis[id].has(w.id)) a.add(+id);
+    return [...a];
   }
 
   function returnHome(state, f) {
@@ -296,12 +333,12 @@
 
   function arrive(state, f, vis) {
     const w = state.worlds[f.to];
-    const care = playerCares(state, f, w, vis);
+    const aud = audience(state, f, w, vis);
     const who = ownerName(state, f.owner);
 
     if (w.owner === f.owner) {
       mergeInto(w.garrison, f.ships);
-      if (f.owner === PLAYER) log(state, 'Fleet arrived at ' + w.name + '.');
+      log(state, 'Fleet arrived at ' + w.name + '.', 'info', [f.owner]);
       return true;
     }
 
@@ -311,10 +348,10 @@
         f.ships.transport--;
         w.owner = f.owner; w.pop = Math.max(w.pop, 4); w.troops = 2; w.fort = 0;
         mergeInto(w.garrison, f.ships);
-        if (care) log(state, who + ' colonized ' + w.name + '.', f.owner === PLAYER ? 'good' : 'info');
+        log(state, who + ' colonized ' + w.name + '.', 'good', aud);
         return true;
       }
-      if (f.owner === PLAYER) log(state, 'Fleet surveyed ' + w.name + ' (no transport, nothing colonized). Returning.');
+      log(state, 'Fleet surveyed ' + w.name + ' (no transport, nothing colonized). Returning.', 'info', [f.owner]);
       return !returnHome(state, f);
     }
 
@@ -326,18 +363,15 @@
     if (D > 0) def.push({ t: 'defense', atk: 2 * D * techMult(defTech), hp: 8 * D * techMult(defTech) });
     const startAtt = shipCount(f.ships), startDef = shipCount(w.garrison);
 
-    battle(att, def);
+    battle(state, att, def);
 
     const attLeft = countUnits(att), defLeft = countUnits(def);
     const defenseUp = def.some(u => u.t === 'defense');
     w.garrison = defLeft;
 
-    if (care) {
-      log(state, 'Battle at ' + w.name + ': ' + who + ' (' + startAtt + ' ships) vs ' + ownerName(state, w.owner) +
-        ' (' + startDef + ' ships' + (D ? ', defense ' + D : '') + '). Attacker lost ' +
-        (startAtt - shipCount(attLeft)) + ', defender lost ' + (startDef - shipCount(defLeft)) + '.',
-        (f.owner === PLAYER || w.owner === PLAYER) ? 'battle' : 'info');
-    }
+    log(state, 'Battle at ' + w.name + ': ' + who + ' (' + startAtt + ' ships) vs ' + ownerName(state, w.owner) +
+      ' (' + startDef + ' ships' + (D ? ', defense ' + D : '') + '). Attacker lost ' +
+      (startAtt - shipCount(attLeft)) + ', defender lost ' + (startDef - shipCount(defLeft)) + '.', 'battle', aud);
 
     f.ships = attLeft;
     if (!att.length) return true; // fleet destroyed
@@ -356,16 +390,13 @@
       w.fort = 0; w.queue = []; w.natives = false;
       attLeft.transport = 0;
       mergeInto(w.garrison, attLeft);
-      if (care || prev === PLAYER) {
-        log(state, who + ' captured ' + w.name + (prev ? ' from ' + ownerName(state, prev) : '') + '.',
-          f.owner === PLAYER ? 'good' : (prev === PLAYER ? 'bad' : 'info'));
-      }
+      log(state, who + ' captured ' + w.name + (prev ? ' from ' + ownerName(state, prev) : '') + '.', 'good', aud);
       return true;
     }
     w.troops = Math.max(0, G - T);
     attLeft.transport = 0;
     f.ships = attLeft;
-    if (care) log(state, who + ' ground assault on ' + w.name + ' failed.', f.owner === PLAYER ? 'bad' : 'info');
+    log(state, who + ' ground assault on ' + w.name + ' failed.', 'bad', aud);
     if (!shipCount(attLeft)) return true;
     return !returnHome(state, f);
   }
@@ -377,7 +408,7 @@
     const mine = state.worlds.filter(w => w.owner === e.id);
     if (!mine.length) return;
 
-    if (e.credits > researchCost(state, e.id) + 150 && e.tech < MAX_TECH && Math.random() < 0.5) research(state, e.id);
+    if (e.credits > researchCost(state, e.id) + 150 && e.tech < MAX_TECH && rand(state) < 0.5) research(state, e.id);
 
     const targeted = new Set(state.fleets.filter(f => f.owner === e.id).map(f => f.to));
     const colonizable = state.worlds.filter(w => !w.owner && !w.natives && !targeted.has(w.id));
@@ -389,7 +420,7 @@
     for (const w of mine) {
       if (e.credits < 40) break;
       const haveT = w.garrison.transport + w.queue.filter(t => t === 'transport').length + inFlightTransports;
-      const r = Math.random();
+      const r = rand(state);
       let type = 'frigate';
       if (e.wantTransports && haveT < 6 && r < 0.6) type = 'transport';
       else if (colonizable.length && haveT < 2 && r < 0.5) type = 'transport';
@@ -446,6 +477,8 @@
 
   // ---------- turn processing ----------
 
+  const humans = state => state.empires.filter(e => e.human);
+
   function checkEnd(state) {
     for (const e of state.empires) {
       const hasWorld = state.worlds.some(w => w.owner === e.id);
@@ -455,15 +488,19 @@
         log(state, e.name + ' has been eliminated.', e.human ? 'bad' : 'good');
       }
     }
-    if (!empire(state, PLAYER).alive) { state.over = 'lost'; return; }
-    const rivals = state.empires.filter(e => !e.human && e.alive);
-    const share = state.worlds.filter(w => w.owner === PLAYER).length / state.worlds.length;
-    if (!rivals.length || share >= WIN_SHARE) state.over = 'won';
+    const people = humans(state).filter(e => e.alive);
+    if (!people.length) { state.over = true; state.winner = null; return; }
+    for (const e of people) {
+      const share = state.worlds.filter(w => w.owner === e.id).length / state.worlds.length;
+      if (share >= WIN_SHARE) { state.over = true; state.winner = e.id; return; }
+    }
+    const ai = state.empires.filter(e => !e.human && e.alive);
+    if (!ai.length && people.length === 1) { state.over = true; state.winner = people[0].id; }
   }
 
   function endTurn(state) {
     if (state.over) return;
-    const vis = visibleWorlds(state, PLAYER);
+    const vis = refreshKnown(state);
 
     for (const e of state.empires) if (e.alive && !e.human) aiTurn(state, e);
 
@@ -495,15 +532,79 @@
     }
 
     state.turn++;
+    state.ready = {};
     checkEnd(state);
     refreshKnown(state);
   }
 
+  // Turn advances once every living human has said they are done.
+  function maybeAdvance(state) {
+    if (state.over) return false;
+    const waiting = humans(state).filter(e => e.alive && !state.ready[e.id]);
+    if (waiting.length) return false;
+    endTurn(state);
+    return true;
+  }
+
+  const isInt = n => Number.isInteger(n);
+
+  // The single entry point for player orders. Everything a remote player can do goes through here,
+  // so this is where ownership and input checks live.
+  function apply(state, empId, cmd) {
+    if (state.over) return { ok: false, msg: 'Game is over.' };
+    const e = empire(state, empId);
+    if (!e || !e.human) return { ok: false, msg: 'Not a player.' };
+    if (!e.alive) return { ok: false, msg: 'You are eliminated.' };
+    if (!cmd || typeof cmd !== 'object') return { ok: false, msg: 'Bad command.' };
+    const own = id => isInt(id) && state.worlds[id] && state.worlds[id].owner === empId;
+    // Orders carry the turn they were issued in. A message that arrives after the turn moved on is stale.
+    // ready/unready must carry it; verification/TurnSync.tla shows why (a late ready would pre-ready the next turn).
+    if (cmd.turn !== undefined && cmd.turn !== state.turn) return { ok: false, msg: 'Turn already moved on.', stale: true };
+    if ((cmd.op === 'ready' || cmd.op === 'unready') && cmd.turn !== state.turn) return { ok: false, msg: 'Missing turn.', stale: true };
+    switch (cmd.op) {
+      case 'build':
+        if (!own(cmd.world)) return { ok: false, msg: 'Not your world.' };
+        return build(state, cmd.world, cmd.type);
+      case 'fortify':
+        if (!own(cmd.world)) return { ok: false, msg: 'Not your world.' };
+        return fortify(state, cmd.world);
+      case 'research':
+        return research(state, empId);
+      case 'send':
+        if (!own(cmd.from) || !isInt(cmd.to) || !state.worlds[cmd.to]) return { ok: false, msg: 'Bad route.' };
+        return sendFleet(state, empId, cmd.from, cmd.to, cmd.ships);
+      case 'ready': {
+        state.ready[empId] = true;
+        const advanced = maybeAdvance(state);
+        return { ok: true, advanced };
+      }
+      case 'unready':
+        delete state.ready[empId];
+        return { ok: true };
+      default:
+        return { ok: false, msg: 'Unknown command.' };
+    }
+  }
+
+  // hand an empire over to the AI (player left or was dropped)
+  function dropPlayer(state, empId) {
+    const e = empire(state, empId);
+    if (!e || !e.human) return false;
+    e.human = false; e.player = null;
+    delete state.ready[empId];
+    log(state, e.name + ' is now run by the AI.', 'info');
+    if (!state.over) {
+      if (!humans(state).some(h => h.alive)) { state.over = true; state.winner = null; }
+      else maybeAdvance(state);
+    }
+    return true;
+  }
+
   const api = {
     PLAYER, MAX_TECH, TROOPS_PER_TRANSPORT, WIN_SHARE, SHIPS, SHIP_ORDER, WORLD_TYPES, DIFFICULTY,
-    newGame, endTurn, build, fortify, research, sendFleet, eta, visibleWorlds, refreshKnown,
-    worldDefense, maxTroops, worldIncome, empireIncome, researchCost, fortifyCost, techMult,
-    shipCount, shipValue, dist, empire,
+    newGame, endTurn, apply, maybeAdvance, dropPlayer, build, fortify, research, sendFleet, eta,
+    visibleWorlds, refreshKnown, fleetVisibleTo, worldDefense, maxTroops, worldIncome, empireIncome,
+    researchCost, fortifyCost, techMult, shipCount, shipValue, dist, empire,
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

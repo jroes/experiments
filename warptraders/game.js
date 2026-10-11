@@ -20,6 +20,14 @@
     };
   }
 
+  // all in-game randomness comes from the state, so a run can be replayed exactly
+  function rand(s) {
+    const a = (s.rng = (s.rng + 0x6D2B79F5) | 0);
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  }
+
   const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
   const cargoUsed = s => GOODS.reduce((n, g) => n + s.cargo[g], 0);
 
@@ -38,26 +46,25 @@
   function quote(port, good, qty, buying) {
     // buying = player buys from port (port stock drops), else player sells (stock rises)
     let stock = port.stock[good], total = 0;
+    // Each unit is priced on the stock edge it crosses, so buying a unit and selling it back cost the same.
     for (let i = 0; i < qty; i++) {
-      total += unitPrice(good, stock, port.max[good]);
+      total += unitPrice(good, buying ? stock - 1 : stock, port.max[good]);
       stock += buying ? -1 : 1;
     }
-    return Math.round(total);
+    // the player never gains from rounding: pay rounds up, receive rounds down
+    return buying ? Math.ceil(total - 1e-6) : Math.floor(total + 1e-6);
   }
 
   function maxQty(s, good, buying) {
     const p = s.sectors[s.sector].port;
     if (!p || p.mode[good] !== (buying ? 'sell' : 'buy')) return 0;
-    let q;
-    if (buying) {
-      q = Math.min(p.stock[good], s.holds - cargoUsed(s));
-      // shrink until affordable
-      while (q > 0 && quote(p, good, q, true) > s.credits) q = Math.floor(q * 0.9) === q ? q - 1 : Math.floor(q * 0.9);
-      while (q < Math.min(p.stock[good], s.holds - cargoUsed(s)) && quote(p, good, q + 1, true) <= s.credits) q++;
-    } else {
-      q = Math.min(s.cargo[good], Math.floor(p.max[good] - p.stock[good]));
+    if (!buying) return Math.max(0, Math.min(s.cargo[good], Math.floor(p.max[good] - p.stock[good])));
+    let hi = Math.max(0, Math.min(Math.floor(p.stock[good]), s.holds - cargoUsed(s))), lo = 0;
+    while (lo < hi) { // largest q whose total price fits the budget (price rises with q, so this is monotonic)
+      const mid = Math.ceil((lo + hi) / 2);
+      if (quote(p, good, mid, true) <= s.credits) lo = mid; else hi = mid - 1;
     }
-    return Math.max(0, q);
+    return lo;
   }
 
   function trade(s, good, qty, buying) {
@@ -65,6 +72,7 @@
     const p = s.sectors[s.sector].port;
     if (!p) return { ok: false, msg: 'No port here.' };
     if (p.mode[good] !== (buying ? 'sell' : 'buy')) return { ok: false, msg: 'Port will not ' + (buying ? 'sell' : 'buy') + ' that.' };
+    if (typeof qty !== 'number' || !Number.isFinite(qty)) return { ok: false, msg: 'Bad quantity.' };
     qty = Math.floor(qty);
     if (qty < 1) return { ok: false, msg: 'Nothing to trade.' };
     if (buying) {
@@ -100,7 +108,7 @@
         const p = sec.port;
         if (!p) continue;
         for (const g of GOODS) {
-          const d = p.max[g] * (0.006 + Math.random() * 0.006);
+          const d = p.max[g] * (0.006 + rand(s) * 0.006);
           p.stock[g] = p.mode[g] === 'sell' ? Math.min(p.max[g], p.stock[g] + d) : Math.max(0, p.stock[g] - d);
         }
       }
@@ -163,7 +171,7 @@
     sectors.forEach((sec, i) => { sec.hops = hops[i]; });
 
     const s = {
-      version: 1, seed, sectors, sector: 0, prev: 0, turnsLeft: START_TURNS,
+      version: 2, seed, rng: (seed ^ 0x9E3779B9) | 0, sectors, sector: 0, prev: 0, turnsLeft: START_TURNS,
       credits: 1000, holds: 20, fighters: 0, cargo: { fuel: 0, organics: 0, equipment: 0 },
       paid: { fuel: 0, organics: 0, equipment: 0 }, visited: [0], seen: {}, log: [], encounter: null, over: false,
     };
@@ -184,8 +192,8 @@
     tick(s, 1);
     snapshot(s);
     const sec = s.sectors[to];
-    if (to !== 0 && Math.random() < 0.05 + 0.025 * sec.hops) {
-      const strength = Math.round(4 + sec.hops * 3 + (START_TURNS - s.turnsLeft) / 25 + Math.random() * 6);
+    if (to !== 0 && s.turnsLeft > 0 && rand(s) < 0.05 + 0.025 * sec.hops) {
+      const strength = Math.round(4 + sec.hops * 3 + (START_TURNS - s.turnsLeft) / 25 + rand(s) * 6);
       s.encounter = { strength };
       log(s, 'Pirates ambush you in sector ' + (to + 1) + ' (strength ' + strength + ').', 'bad');
     }
@@ -221,11 +229,12 @@
 
   function resolve(s, choice) {
     const e = s.encounter;
-    if (!e) return { ok: false };
+    if (!e) return { ok: false, msg: 'Nothing to resolve.' };
+    if (!['fight', 'pay', 'flee'].includes(choice)) return { ok: false, msg: 'Unknown choice.' };
     const str = e.strength;
     if (choice === 'fight') {
       if (!s.fighters) return { ok: false, msg: 'You have no fighters.' };
-      if (s.fighters * (0.7 + Math.random() * 0.6) >= str) {
+      if (s.fighters * (0.7 + rand(s) * 0.6) >= str) {
         const lost = Math.min(s.fighters - 1, Math.ceil(str * 0.4));
         const loot = str * 30;
         s.fighters -= Math.max(0, lost); s.credits += loot;
@@ -244,7 +253,7 @@
       log(s, 'You pay the pirates ' + toll + ' credits and they let you go.');
     } else if (choice === 'flee') {
       s.turnsLeft--;
-      if (Math.random() < 0.5) {
+      if (rand(s) < 0.5) {
         s.sector = s.prev;
         log(s, 'You slip away back to sector ' + (s.prev + 1) + '.');
       } else {
@@ -274,8 +283,9 @@
 
   function buyFighters(s, n) {
     if (s.sector !== 0 || s.encounter || s.over) return { ok: false, msg: 'Only at Stardock.' };
+    if (!Number.isInteger(n) || n < 1 || n > 100000) return { ok: false, msg: 'Bad amount.' };
     const c = n * FIGHTER_COST;
-    if (n < 1 || s.credits < c) return { ok: false, msg: 'Not enough credits.' };
+    if (s.credits < c) return { ok: false, msg: 'Not enough credits.' };
     s.credits -= c; s.fighters += n;
     log(s, 'Bought ' + n + ' fighters for ' + c + '.');
     return { ok: true };
@@ -283,6 +293,7 @@
 
   function finish(s) {
     s.over = true;
+    s.encounter = null;
     s.score = Math.floor(s.credits);
     log(s, 'Out of turns. Final credits: ' + s.score + '.', 'good');
   }

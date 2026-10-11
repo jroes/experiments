@@ -5,3 +5,7 @@ Browser-only space trading game. Fly between sectors, buy low, sell high, dodge 
 - `game.js`: rules, no DOM, runs under node.
 - `ui.js`: canvas map and side panel.
 - Saves to `localStorage` only.
+
+## Race friends
+
+Click Race friends, then Host. Everyone gets the same galaxy and turn count and a live scoreboard. Same browser-to-browser connection as Sector Dominion (see `../shared/`). Scores come from each player's own browser, so it is friends-only.
