@@ -56,6 +56,54 @@ cd relay && npx wrangler dev --local
 
 The game accepts `http://localhost:...` as a relay address for testing. Any other relay must be `https://`.
 
+## Limits
+
+Everything below has a default in `src/limits.js` and can be changed without touching code: set the environment variable
+(Cloudflare: `[vars]` in `wrangler.toml` or the dashboard, Node and Fly: the process environment).
+
+| What | Default | Variable |
+| --- | --- | --- |
+| Request body | 8192 bytes (checked from `Content-Length` before reading, and again after) | `RELAY_BODY_MAX` |
+| One orders code | 8000 characters, about 100 orders | `RELAY_CODE_MAX` |
+| Rows per room | 4000 | `RELAY_ROOM_ROWS` |
+| Stored bytes per room | 1,000,000 | `RELAY_ROOM_BYTES` |
+| Turns returned by one range read | 30 | `RELAY_RANGE_MAX` |
+| Highest turn number | 5000 | `RELAY_TURN_MAX` |
+| Requests per room per minute | 240 | `RELAY_ROOM_REQ_PER_MIN` |
+| Writes per room per minute | 90 | `RELAY_ROOM_WRITES_PER_MIN` |
+| Requests per address per minute (Node server, and Cloudflare if the `RL` binding is on) | 240 | `RELAY_IP_REQ_PER_MIN` |
+| New rooms per address per hour | 6 | `RELAY_IP_CREATE_PER_HOUR` |
+| New rooms per day, everyone together | 300 | `RELAY_GLOBAL_CREATE_PER_DAY` |
+
+What happens when a limit is hit: the relay answers `429` (or `413` for a body that is too big) with a `Retry-After` header, and the
+game shows a plain message. Nothing is lost, because every browser keeps its own copy of the game.
+
+How the limits are enforced:
+
+- Per-room rates and sizes are checked inside each room before anything is stored, so a flood costs almost nothing. They are exact.
+- On Cloudflare, room creation goes through one small `Gate` Durable Object that counts creations per address (hashed) per hour and
+  overall per day. This is what protects a free daily quota from someone spamming new rooms.
+- Per-address request rates on Cloudflare need Cloudflare's rate limiting binding. It is off by default because I could not confirm
+  it is on the free plan, and its counts are per location (a soft limit). Uncomment the `[[ratelimits]]` block in `wrangler.toml` to try it.
+  The Node server counts these exactly.
+- On Fly, set `CLIENT_IP_HEADER=fly-client-ip` (already in `fly.toml`) so limits see the real visitor. The header is ignored unless
+  you set this, so nobody can dodge a limit by sending a fake one.
+
+Games with a lot of orders per turn need `RELAY_CODE_MAX` and `RELAY_BODY_MAX` raised together (the body has to hold the code).
+
+## Writing your own relay (a different host or language)
+
+The relay is only the HTTP API below plus the rules in `src/logic.js`. Any implementation that behaves the same works with the games.
+`tests/lockstep.test.mjs` talks to a relay over plain HTTP and is the conformance test:
+
+```sh
+RELAY_URL=http://localhost:8787 node --test tests/lockstep.test.mjs
+```
+
+Raise the rate limits first so the tests do not trip them (`RELAY_ROOM_REQ_PER_MIN`, `RELAY_ROOM_WRITES_PER_MIN`,
+`RELAY_IP_CREATE_PER_HOUR`, `RELAY_GLOBAL_CREATE_PER_DAY`). The things an implementation has to get right are: first write wins and is atomic
+per room, the seat-token rules, the host-only skip, the turn-must-be-open rule, and permissive CORS with `Retry-After` exposed.
+
 ## What it protects and what it does not
 
 - Each seat has its own secret token, handed out in that player's invite code. Only that seat can post its orders, and the
@@ -65,10 +113,9 @@ The game accepts `http://localhost:...` as a relay address for testing. Any othe
 - Only the host (seat 1) can post a skip for another seat.
 - A room is a long random name. Anyone who knows it can read the orders, which is fine for friends. Invite codes are bearer
   secrets, so send them privately.
-- Anyone can create rooms. Someone who finds your relay address could spam it and use up the free daily quota. If that
-  happens, add a rate limiting rule in the Cloudflare dashboard or switch to a new Worker name. Games only lose the ability to
-  sync, and nothing is lost, because every browser keeps its own copy and the copy-and-paste codes still work.
-- Limits per room: 6000 rows, 16 KB per message, 30 turns per read.
+- Anyone can create rooms, so room creation is capped per address and per day (see Limits). A determined attacker with many addresses
+  could still use up the daily room allowance, and then nobody can start a new game until tomorrow. Games already running are
+  unaffected. Lower `RELAY_GLOBAL_CREATE_PER_DAY` to cap your exposure, or switch to a new Worker name if you ever need a clean slate.
 
 ## API (for reference)
 

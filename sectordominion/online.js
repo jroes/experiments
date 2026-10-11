@@ -44,6 +44,27 @@
     } catch (e) { return null; }
   }
 
+  // plain-English messages for what the relay can say
+  const WORDS = {
+    too_many_rooms_from_your_address: 'You have started a lot of games from this connection lately. Try again in a while.',
+    daily_room_limit: 'The relay has hit its daily limit for new games. Try again tomorrow.',
+    room_rate_limited: 'Too many requests for this game right now. It will catch up in a minute.',
+    room_write_rate_limited: 'Too many updates for this game right now. Try again in a minute.',
+    rate_limited: 'The relay is busy. Try again in a minute.',
+    room_full: 'This game has used up its storage on the relay.',
+    too_big: 'That was too big for the relay. Send fewer orders at once.',
+    no_such_room: 'The relay does not know this game (it may have expired).',
+    turn_not_open: 'That turn is not open yet.',
+    bad_token: 'The relay did not accept your seat key.',
+  };
+  function friendly(r) {
+    const code = r && r.data && r.data.error;
+    if (code && WORDS[code]) return WORDS[code];
+    if (r && r.status === 429) return 'The relay is busy. Try again in a minute.';
+    if (r && r.status === 413) return WORDS.too_big;
+    return 'The relay said ' + (code || (r && r.status)) + '.';
+  }
+
   const freshBase = g => G.newGame({ seed: g.seed, humans: g.humans, difficulty: g.difficulty, worlds: g.worlds });
 
   class Session {
@@ -99,13 +120,13 @@
       const e = G.empire(this.base, this.seat);
       if (!e.human || !e.alive) return { ok: false, msg: 'You are not an active player.' };
       const code = G.encodeOrders({ v: 1, seat: this.seat, turn: this.base.turn, cmds: this.cmds });
-      if (code.length > R.LIMIT_CODE) return { ok: false, msg: 'Too many orders for one turn. Send fewer.' };
+      if (code.length > R.LIMIT_CODE) return { ok: false, msg: 'Too many orders for one turn (the relay takes about 100). Send some next turn.' };
       const g = this.game;
       const r = await R.putOrders(g.relay, g.room, this.base.turn, this.seat, g.token, { code });
       if (r.status === 201 || r.status === 200) { this.sent = true; await this.sync(); return { ok: true }; }
       await this.sync();
       if (r.status === 409) return { ok: false, msg: 'Your orders for this turn were not accepted. The host may have skipped you.' };
-      return { ok: false, msg: 'Relay said ' + (r.data && r.data.error || r.status) + '.' };
+      return { ok: false, msg: friendly(r) };
     }
 
     async hostSkip(seat, ai) {
@@ -114,7 +135,7 @@
       const r = await R.skip(g.relay, g.room, this.base.turn, seat, g.token, !!ai);
       await this.sync();
       if (r.status === 201 || r.status === 200) return { ok: true };
-      return { ok: false, msg: r.status === 409 ? 'They already sent orders.' : 'Relay said ' + (r.data && r.data.error || r.status) + '.' };
+      return { ok: false, msg: r.status === 409 ? 'They already sent orders.' : friendly(r) };
     }
 
     // Reads the board and plays every turn that is complete. Safe to call as often as you like.
@@ -126,7 +147,7 @@
         for (let guard = 0; guard < 500; guard++) {
           const turn = this.base.turn;
           const r = await R.sync(g.relay, g.room, turn);
-          if (r.status !== 200) { this.error = 'Relay said ' + (r.data && r.data.error || r.status) + '.'; break; }
+          if (r.status !== 200) { this.error = friendly(r); break; }
           const { orders, hashes } = r.data;
 
           const mine = G.hashState(this.base);
@@ -162,7 +183,7 @@
       try {
         for (let guard = 0; guard < 400; guard++) {
           const r = await R.range(g.relay, g.room, from, from + 29);
-          if (r.status !== 200) { this.error = 'Relay said ' + (r.data && r.data.error || r.status) + '.'; break; }
+          if (r.status !== 200) { this.error = friendly(r); break; }
           const { orders, hashes } = r.data;
           let stopped = false;
           for (let t = from; t < from + 30; t++) {
@@ -194,7 +215,7 @@
       const room = R.randomId(16), tokens = {}, hashes = {};
       for (let s = 1; s <= humans; s++) { tokens[s] = R.randomId(24, 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'); hashes[s] = await R.sha256hex(tokens[s]); }
       const r = await R.create(relay, room, humans, hashes);
-      if (r.status !== 201) throw new Error('The relay refused to make the game (' + (r.data && r.data.error || r.status) + ').');
+      if (r.status !== 201) throw new Error(friendly(r));
       const seed = (R.randomId(6, '0123456789') | 0) * 1000 + (R.randomId(3, '0123456789') | 0);
       const base = { relay, room, humans, difficulty: opts.difficulty, worlds: opts.worlds, seed, rules: G.RULES };
       const game = { ...base, seat: 1, token: tokens[1] };

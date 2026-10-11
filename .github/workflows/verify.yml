@@ -18,6 +18,8 @@ jobs:
       - run: npm test
       - name: Lockstep tests against a real relay over HTTP
         run: |
+          # the suite plays many games from one address, so lift the rate limits for this run
+          export RELAY_ROOM_REQ_PER_MIN=1000000 RELAY_ROOM_WRITES_PER_MIN=1000000 RELAY_IP_REQ_PER_MIN=1000000 RELAY_IP_CREATE_PER_HOUR=100000 RELAY_GLOBAL_CREATE_PER_DAY=1000000
           node relay/src/node-server.js &
           sleep 2
           RELAY_URL=http://localhost:8787 node --test tests/lockstep.test.mjs
