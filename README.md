@@ -4,7 +4,9 @@ Games and toys. Mostly browser-only static files with no build step; [elf-punch/
 
 - [sectordominion/](sectordominion/): space empire 4X.
 - [warptraders/](warptraders/): space trading.
-- [shared/](shared/): the client for the shared key/value store, and serverless peer-to-peer play (WebRTC, used by Warp Traders' race).
+- [tankwars/](tankwars/): artillery duels. Hills, wind, shields, a shop between rounds, computer players.
+- [hollowmere/](hollowmere/) and [gullrock/](gullrock/): two small adventures in the style of the old Sierra games. Walk, type commands, try not to die.
+- [shared/](shared/): the client for the shared key/value store, serverless peer-to-peer play (WebRTC, used by Warp Traders' race), and the adventure engine.
 - [elf-punch/](elf-punch/): multiplayer survival toy in Rust, also a small shared key/value store (`/kv`) the other experiments can use from the browser.
 - [verification/](verification/) and [tests/](tests/): TLA+ model of online play, plus property and fuzz tests. `npm test`, `npm run tlc`.
 
