@@ -240,7 +240,17 @@
       const pts = cells.map(cur => { const cx = cur % GW; return { x: cx * CELL + CELL / 2, y: ((cur - cx) / GW) * CELL + CELL / 2 }; });
       // the last step goes to the exact spot asked for, if that spot is walkable
       if (isWalkable(r, x1, y1, g)) pts.push({ x: x1, y: y1 });
-      return pts;
+      // pull the path straight: from each point go to the furthest later point in a clear line, so the hero walks direct, not in grid steps
+      const clear = (ax, ay, bx, by) => {
+        const n = Math.ceil(Math.sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay)) / 0.5);
+        for (let k = 1; k <= n; k++) if (!isWalkable(r, ax + (bx - ax) * k / n, ay + (by - ay) * k / n, g)) return false;
+        return true;
+      };
+      const out = [];
+      let ax = x0, ay = y0;
+      for (let k = 1; k < pts.length; k++) if (!clear(ax, ay, pts[k].x, pts[k].y)) { out.push(pts[k - 1]); ax = pts[k - 1].x; ay = pts[k - 1].y; }
+      out.push(pts[pts.length - 1]);
+      return out;
     }
 
     g.walkTo = (x, y, then) => {
@@ -251,7 +261,14 @@
     };
     g.stop = () => { g.path = null; g.pending = null; };
 
-    function face(dx, dy) { S().dir = Math.abs(dx) > Math.abs(dy) ? (dx < 0 ? 'l' : 'r') : (dy < 0 ? 'u' : 'd'); }
+    // which way the hero looks. Turning from sideways to up or down (or back) needs a clear lead, so a near-diagonal walk does not flicker
+    function face(dx, dy) {
+      const ax = Math.abs(dx), ay = Math.abs(dy), side = S().dir === 'l' || S().dir === 'r';
+      const toSide = side ? ax * 1.3 >= ay : ax > ay * 1.3;
+      S().dir = toSide ? (dx < 0 ? 'l' : 'r') : (dy < 0 ? 'u' : 'd');
+    }
+    // g.step counts distance walked (for the walking animation), so the legs move at the same pace at any frame rate
+    const STRIDE = 0.75;
 
     // Moves the hero along the path (and runs what was waiting for them to arrive).
     g.update = dt => {
@@ -259,28 +276,36 @@
       if (S().dead || S().won) return;
       if (!g.path || !g.path.length) return;
       let left = SPEED * dt;
+      const before = left;
       while (left > 0 && g.path && g.path.length) {
         const tgt = g.path[0], dx = tgt.x - S().x, dy = tgt.y - S().y, d = Math.sqrt(dx * dx + dy * dy);
         if (d <= left) { S().x = tgt.x; S().y = tgt.y; left -= d; g.path.shift(); if (d > 0.01) face(dx, dy); }
         else { S().x += dx / d * left; S().y += dy / d * left; face(dx, dy); left = 0; }
       }
-      g.step++;
+      g.step += (before - left) * STRIDE;
       if (checkEdges()) return;
       if (!g.path || !g.path.length) { g.path = null; const p = g.pending; g.pending = null; if (p) p(); }
     };
 
     // arrow keys: move a little in a direction
+    // the same speed in every direction, and a long frame is walked in short steps so walls and exits are not skipped
     g.nudge = (dx, dy, dt) => {
       if (S().dead || S().won) return;
       g.path = null; g.pending = null;
-      const k = SPEED * dt;
-      const nx = S().x + dx * k, ny = S().y + dy * k;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      if (!len) return;
+      dx /= len; dy /= len;
       face(dx, dy);
-      if (isWalkable(room(), nx, ny, g)) { S().x = nx; S().y = ny; g.step++; }
-      else if (dx && isWalkable(room(), nx, S().y, g)) { S().x = nx; g.step++; }
-      else if (dy && isWalkable(room(), S().x, ny, g)) { S().y = ny; g.step++; }
-      else if (dx || dy) edgePush(dx, dy);
-      checkEdges();
+      let left = SPEED * dt;
+      while (left > 1e-6) {
+        const k = Math.min(left, 1); left -= k;
+        const nx = S().x + dx * k, ny = S().y + dy * k;
+        if (isWalkable(room(), nx, ny, g)) { S().x = nx; S().y = ny; g.step += k * STRIDE; }
+        else if (dx && isWalkable(room(), nx, S().y, g)) { S().x = nx; g.step += Math.abs(dx) * k * STRIDE; }
+        else if (dy && isWalkable(room(), S().x, ny, g)) { S().y = ny; g.step += Math.abs(dy) * k * STRIDE; }
+        else { edgePush(dx, dy); break; } // blocked: maybe at an edge with an exit
+        if (checkEdges()) break;
+      }
     };
 
     // trying to walk off the picture

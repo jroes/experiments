@@ -108,6 +108,9 @@ Seats are 1-based in keys and invites and 0-based in the game. If a change would
   SwiftShader (emulated), so time the main thread there, not the GPU; a context loss is handled (`WEBGL_lose_context` in a browser check). **Effects** (top bar, or the help dialog on phones)
   turns the camera off for slow phones. `room.back`, objects' `draw` and `def.hd.hero` get the HD scene, not an `AdvArt.Pix`; the test draws every room with `HD.render`.
 - A room entered only by a handler (`g.goto`) and not by an edge, like landing the pod, can say so with `reachedBy`; the reachability test starts from those rooms too.
+- Walking: arrow keys move at the same speed in every direction, in short steps so a slow frame cannot skip a wall or an exit. A click walks a grid path that is then pulled straight
+  (any clear line is taken), and facing only swaps between sideways and up/down with a clear lead, so a diagonal walk does not flicker. `g.step` is distance walked, so the walking legs
+  keep the same pace at any frame rate. The HD background is only redrawn when something it shows changes (`HD2D.backKey`: room, points, inventory, drops, flags; not the move count).
 - Phone: the verb buttons plus the inventory do everything the keyboard does. Tapping a thing looks at it; pick Use or Give, then tap what you carry, then the target.
 
 **Two ways to host a game.** Browsers hold the rules (lockstep, `/kv`, Sector Dominion) when friends are playing and cheating does not matter. The server holds

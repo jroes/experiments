@@ -332,7 +332,8 @@
   // ---------- a whole frame of the game ----------
   const lookOf = room => (Object.prototype.hasOwnProperty.call(LOOKS, room.look) ? LOOKS[room.look] : LOOKS.hd2d);
   // what the room's background depends on: a new key means it has to be drawn again before it can be used
-  const backKey = g => g.state.room + '|' + g.state.moves + '|' + g.state.points + '|' + g.state.inv.length;
+  // (only what a background can show: not the move count, so typing "look" does not redraw the room)
+  const backKey = g => { const st = g.state; let f = ''; for (const k in st.flags) f += k + '=' + st.flags[k] + ';'; return st.room + '|' + st.points + '|' + st.inv.join(',') + '|' + st.drops.length + '|' + f; };
   // the room's background on its own (hd2d-worker.js draws it with this off the main thread)
   function background(def, g, t, S) {
     const room = def.rooms[g.state.room];

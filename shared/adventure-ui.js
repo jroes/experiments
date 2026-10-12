@@ -58,6 +58,8 @@
       while (msgs.children.length > 80) msgs.removeChild(msgs.firstChild);
       msgs.scrollTop = msgs.scrollHeight;
     }
+    const shown = {};
+    function setText(id, text) { if (shown[id] !== text) { shown[id] = text; $(id).textContent = text; } }
     function flush() {
       for (const t of g.drainText()) addMsg(t);
       for (const e of g.drain()) {
@@ -70,8 +72,9 @@
         else if (e === 'cmd:restart') confirmRestart();
       }
       if (def.musicFor) Sound.setMusicStyle(def.musicFor(g, { intro: $('d-intro').open }));
-      $('s-score').textContent = g.state.points + ' of ' + def.maxScore;
-      $('s-room').textContent = g.room().name;
+      // only touch the page when something changed (writing text every frame makes the browser redo the layout every frame)
+      setText('s-score', g.state.points + ' of ' + def.maxScore);
+      setText('s-room', g.room().name);
       paintInv();
       if (g.state.dead && !$('d-dead').open && !$('d-intro').open) showDead();
       if (g.state.won && !$('d-win').open) showWin();
@@ -108,7 +111,8 @@
     }
 
     function loop(now) {
-      const dt = Math.min(0.1, (now - last) / 1000 || 0); last = now;
+      // time since the last frame. A hiccup is caught up (walking is done in short steps), but not a long pause like a hidden tab
+      const dt = Math.min(0.25, (now - last) / 1000 || 0); last = now;
       const modal = root.document.querySelector('dialog[open]');
       if (!modal && !g.state.dead && !g.state.won) {
         let dx = 0, dy = 0;
