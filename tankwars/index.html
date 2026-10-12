@@ -15,6 +15,7 @@
   <div class="stat">Wind <b id="s-wind"></b></div>
   <div class="spacer"></div>
   <button id="b-help">Help</button>
+  <button id="b-invite" hidden>Invite</button>
   <button id="b-sound">Sound</button>
   <button id="b-new">New game</button>
 </header>
@@ -22,9 +23,11 @@
   <div id="stage">
     <canvas id="view" width="480" height="180"></canvas>
     <div id="banner" hidden></div>
+    <div id="toast" hidden></div>
   </div>
   <section id="hud">
     <div id="who"></div>
+    <div id="net" hidden></div>
     <div id="ctl">
       <div class="knob"><span>Angle</span><button class="rep" data-k="angle" data-d="-1">&minus;</button><b id="v-angle"></b><button class="rep" data-k="angle" data-d="1">+</button></div>
       <div class="knob"><span>Power</span><button class="rep" data-k="power" data-d="-1">&minus;</button><b id="v-power"></b><button class="rep" data-k="power" data-d="1">+</button></div>
@@ -45,12 +48,14 @@
     <label>Map size
       <select id="n-size"><option value="small">Small</option><option value="normal" selected>Normal</option><option value="wide">Wide</option></select>
     </label>
+    <label class="check"><input type="checkbox" id="n-online"><span>Play online with friends<span class="fine">Seat 1 is you. Every other Human seat gets a link to send. Anyone with a link can play that seat and can see and change the game, so only share it with friends.</span></span></label>
     <label>Seed (optional, same seed gives the same hills)
       <input id="n-seed" inputmode="numeric" placeholder="random" maxlength="9">
     </label>
+    <p class="bad" id="new-msg"></p>
     <div class="row">
       <button value="cancel" formnovalidate>Cancel</button>
-      <button value="go" class="primary">Play</button>
+      <button value="go" class="primary" id="b-play">Play</button>
     </div>
   </form>
 </dialog>
@@ -59,7 +64,14 @@
   <h2 id="shop-title">Shop</h2>
   <p class="fine">Money comes from hitting tanks, from wins, and from what you did not spend.</p>
   <div id="shop-items"></div>
-  <form method="dialog"><div class="row"><button class="primary" value="done">Done</button></div></form>
+  <form method="dialog"><div class="row"><button type="button" id="shop-undo">Undo</button><button class="primary" value="done">Done</button></div></form>
+</dialog>
+
+<dialog id="d-invite">
+  <h2>Invite friends</h2>
+  <p class="fine">Send each friend their own link. It puts them in their seat. Anyone who has a link can play that seat and can see and change this game, so keep links to friends. Games are kept for 60 days after the last move.</p>
+  <div id="invite-list"></div>
+  <form method="dialog"><div class="row"><button class="primary">Done</button></div></form>
 </dialog>
 
 <dialog id="d-help">
@@ -70,6 +82,7 @@
     <li><b>Wind</b> pushes shells sideways. The number at the top is how hard, and which way.</li>
     <li>Shells dig holes. Tanks fall when the ground goes from under them, and that hurts.</li>
     <li>Drag on the picture to aim from your tank, or use the buttons. Keys: <kbd>&larr;</kbd><kbd>&rarr;</kbd> angle, <kbd>&uarr;</kbd><kbd>&darr;</kbd> power, <kbd>Tab</kbd> weapon, <kbd>Space</kbd> fire. Hold <kbd>Shift</kbd> for bigger steps.</li>
+    <li><b>Online:</b> pick Play online with friends in New game, then send each friend their link. Each person plays on their own screen, and turns go in order. If a friend goes quiet, you can let the computer play their turn.</li>
     <li>Between rounds, spend money on bigger shells, a shield, or dirt to bury someone.</li>
     <li>You can mix people and computers on one screen. Pass the device around.</li>
   </ul>
@@ -78,9 +91,12 @@
 </dialog>
 
 <script src="../shared/sound.js"></script>
+<script src="../shared/config.js"></script>
 <script src="../shared/version.js"></script>
 <script src="../shared/update.js"></script>
+<script src="../shared/store.js"></script>
 <script src="game.js"></script>
+<script src="online.js"></script>
 <script src="ui.js"></script>
 </body>
 </html>
