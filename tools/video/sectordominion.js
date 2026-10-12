@@ -13,6 +13,7 @@ const { route, ROOT } = require('./common');
     init: `try { if (!localStorage.getItem('sd-vo')) { localStorage.setItem('sd-vo','1'); localStorage.setItem('sectordominion-help-seen','1'); localStorage.setItem('sectordominion-name-asked','1'); localStorage.setItem('sectordominion-name-v1','Ada'); } } catch (e) {}`,
   });
   const page = await rec.start();
+  await rec.capAt('31%', '56%');
   const K = 0.72; // pace: captions stay up this fraction of the time first planned
   const say = (t, ms) => rec.cap(t, ms && Math.round(ms * K));
   const state = () => page.evaluate(() => { const i = JSON.parse(localStorage.getItem('sectordominion-games-v2')); return JSON.parse(localStorage.getItem('sectordominion-g-' + i.active)); });

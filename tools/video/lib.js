@@ -13,7 +13,7 @@ const { chromium } = require('playwright');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 const OVERLAY_CSS = `
-#vo-cap { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%) translateY(14px); max-width: 84%; pointer-events: none;
+#vo-cap { position: fixed; left: var(--vo-cap-x, 50%); bottom: 26px; transform: translateX(-50%) translateY(14px); max-width: var(--vo-cap-w, 84%); pointer-events: none;
   background: rgba(5,7,13,.88); border: 1px solid #5ee0b0; border-radius: 12px; padding: 11px 20px; color: #eaf3ff; font: 600 23px/1.25 ui-monospace, Menlo, Consolas, monospace;
   text-align: center; opacity: 0; transition: opacity .35s, transform .35s; box-shadow: 0 8px 40px rgba(0,0,0,.6), 0 0 24px rgba(94,224,176,.25); }
 #vo-cap.on { opacity: 1; transform: translateX(-50%) translateY(0); }
@@ -67,6 +67,7 @@ const OVERLAY_JS = `
   };
   if (document.body) mount(); else document.addEventListener('DOMContentLoaded', mount);
   window.__vo = {
+    capAt(x, w) { document.documentElement.style.setProperty('--vo-cap-x', x); document.documentElement.style.setProperty('--vo-cap-w', w); },
     cap(html) { const c = document.getElementById('vo-cap'); if (!c) return; if (!html) { c.classList.remove('on'); return; } c.innerHTML = html; c.classList.add('on'); },
     hi(r) { const h = document.getElementById('vo-hi'); if (!h) return; if (!r) { h.classList.remove('on'); return; }
       const pad = r.pad === undefined ? 8 : r.pad; h.style.left = (r.x - pad) + 'px'; h.style.top = (r.y - pad) + 'px'; h.style.width = (r.w + pad * 2) + 'px'; h.style.height = (r.h + pad * 2) + 'px'; h.classList.add('on'); },
@@ -103,7 +104,11 @@ const OVERLAY_JS = `
 
 class Recorder {
   constructor(opts) {
-    this.opts = { width: 960, height: 540, scale: 4 / 3, ...opts }; // a 960x540 page drawn at 4/3 gives a 1280x720 video with bigger text
+    // The page is a little smaller than the video (default 1060 wide, drawn at 1280/1060), so text comes out bigger than at 1:1
+    // while the desktop layout still fits.
+    this.opts = { width: 1060, ...opts };
+    this.opts.height = this.opts.height || Math.round(this.opts.width * 9 / 16);
+    this.opts.scale = 1280 / this.opts.width;
     this.frames = [];
     this.marks = []; // { t, kind }: where sound effects go
     this.t0 = null;
@@ -139,6 +144,8 @@ class Recorder {
   mark(kind) { this.marks.push({ t: Date.now() / 1000, kind }); }
   async wait(ms) { await sleep(ms); }
 
+  // where captions sit: centred over the map keeps them off the side panel
+  async capAt(x, w) { await this.page.evaluate(([a, b]) => window.__vo.capAt(a, b), [x, w]); }
   async cap(html, ms) { await this.page.evaluate(h => window.__vo.cap(h), html); if (ms) await sleep(ms); }
   async uncap() { await this.page.evaluate(() => window.__vo.cap('')); }
   async card(opts, ms) { this.mark('hit'); await this.page.evaluate(o => window.__vo.card(o), opts); if (ms) await sleep(ms); }

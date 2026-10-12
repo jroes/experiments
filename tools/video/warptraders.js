@@ -11,12 +11,14 @@ const SEED = '112';
   const rec = new Recorder({
     url: 'https://jroes.github.io/experiments/warptraders/',
     route: route(process.env.KV_PORT || 8135),
+    width: 1100,
     promptAnswer: SEED,
     musicSeed: 9,
     poster: path.join(ROOT, 'warptraders', 'intro.jpg'), posterAt: 12,
     init: `try { if (!localStorage.getItem('wt-vo')) { localStorage.setItem('wt-vo','1'); localStorage.setItem('warptraders-help-seen','1'); } } catch (e) {}`,
   });
   const page = await rec.start();
+  await rec.capAt('31%', '56%');
   const K = 0.72; // pace: captions stay up this fraction of the time first planned
   const say = (t, ms) => rec.cap(t, ms && Math.round(ms * K));
   const sectorXY = async id => {
