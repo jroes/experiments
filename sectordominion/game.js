@@ -704,6 +704,9 @@
     if (D > 0) def.push({ t: 'defense', atk: 2 * D * techMult(defTech), hp: 8 * D * techMult(defTech) });
     const sum = (u, k) => u.reduce((n, x) => n + x[k], 0);
     const r = { attAtk: round1(sum(att, 'atk')), attHp: round1(sum(att, 'hp')), defAtk: round1(sum(def, 'atk')), defHp: round1(sum(def, 'hp')), defense: D };
+    // taking a world takes troops, and only transports carry them (TROOPS_PER_TRANSPORT each); they must out-number the world's troops
+    r.troops = w.troops; r.transports = ships.transport || 0; r.needTransports = Math.floor(w.troops / TROOPS_PER_TRANSPORT) + 1;
+    r.canTake = r.transports >= r.needTransports;
     if (!def.length) r.verdict = 'free';                    // nothing to fight
     else if (sum(att, 'atk') <= 0) r.verdict = 'lose';      // no guns against something that has them
     else {

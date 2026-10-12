@@ -42,7 +42,7 @@
       setView(r.json);
       offline = false;
     } catch (e) {
-      if (!offline) log('Cannot reach the server. Trying again.', 'bad');
+      if (!offline) log('Cannot reach the server. Trying again. (If it was just updated, give it a minute.)', 'bad');
       offline = true;
     }
   }
@@ -227,6 +227,43 @@
     } catch (e) { $('board-table').innerHTML = '<tr><td class="bad">Cannot reach the server.</td></tr>'; }
   };
 
+  // ---- moving to another device: the key rides in the URL's # part, which never reaches a server ----
+  const KEY_RE = /^[0-9a-f]{32}$/;
+  const keyFrom = (text) => {
+    const m = String(text || '').match(/[#&?]key=([0-9a-f]{32})\b/) || String(text || '').trim().match(/^([0-9a-f]{32})$/);
+    return m ? m[1] : null;
+  };
+  async function takeKey(k) {
+    if (!KEY_RE.test(k)) return 'That does not look like a trader key.';
+    if (token && token !== k && !confirm('This browser is already trading' + (saved && saved.name ? ' as ' + saved.name : '') + '. Switch to the other trader? (This one keeps its key, if you saved the link.)')) return 'cancelled';
+    const old = token;
+    token = k;
+    const r = await api('GET', '/me').catch(() => null);
+    if (!r) { token = old; return 'Cannot reach the server.'; }
+    if (r.status !== 200) { token = old; return 'The server does not know that key. It may be from before a reset.'; }
+    try { localStorage.setItem(KEY, JSON.stringify({ token, name: r.json.you.name })); saved = { token, name: r.json.you.name }; } catch (e) { log('This browser cannot save your key.', 'bad'); }
+    setView(r.json);
+    return '';
+  }
+  $('b-device').onclick = () => {
+    if (!token) return;
+    const url = new URL('./', location.href).href + '#key=' + token;
+    $('device-link').value = url;
+    try { const q = qrcode(0, 'M'); q.addData(url); q.make(); $('device-qr').innerHTML = q.createSvgTag({ cellSize: 4, margin: 8, scalable: true }); } catch (e) { $('device-qr').innerHTML = ''; }
+    $('d-device').showModal();
+  };
+  $('device-link').onfocus = (e) => e.target.select();
+  $('b-device-copy').onclick = async () => {
+    const url = $('device-link').value;
+    try { if (navigator.share && matchMedia('(pointer: coarse)').matches) await navigator.share({ title: 'My Warp Traders trader', url }); else { await navigator.clipboard.writeText(url); $('b-device-copy').textContent = 'Copied'; } } catch (e) { $('device-link').select(); }
+  };
+  $('b-key').onclick = async () => {
+    const k = keyFrom($('in-key').value);
+    const msg = await takeKey(k || '');
+    $('key-err').textContent = msg === 'cancelled' ? '' : msg;
+    if (!msg) $('d-join').close();
+  };
+
   // ---- joining ----
   function askJoin(msg) {
     $('join-err').textContent = msg || '';
@@ -254,5 +291,10 @@
   setInterval(tickTimer, 1000);
   setInterval(() => { if (!document.hidden) refresh(); }, 5000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
-  if (token) refresh(); else askJoin();
+  // opened from a link made by "Other device"?
+  const fromLink = keyFrom(location.hash);
+  if (fromLink) {
+    try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* ignore */ }
+    takeKey(fromLink).then((msg) => { if (msg && msg !== 'cancelled') { log(msg, 'bad'); if (!token) askJoin(msg); } else if (!token) askJoin(); });
+  } else if (token) refresh(); else askJoin();
 })();

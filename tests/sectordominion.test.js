@@ -433,3 +433,15 @@ test('a review export is smaller than the save, still a valid game, and keeps th
   assert.equal(G.hashState({ ...ex, known: s.known }), G.hashState({ ...s, log: ex.log }), 'everything the game depends on is there');
   assert.ok(s.log.length >= ex.log.length, 'the original is untouched');
 });
+
+test('the estimate says how many transports it takes to hold a world (troops must out-number the defenders)', () => {
+  const s = G.newGame({ seed: 10 }), w = { ...s.worlds.find(x => x.name === 'Wynion'), garrison: { scout: 0, frigate: 0, cruiser: 0, transport: 0 }, fort: 0 };
+  for (const [troops, need] of [[0, 1], [4, 1], [5, 2], [7, 2], [9, 2], [10, 3], [19, 4]]) {
+    const e = G.estimateBattle(s, { frigate: 5, transport: need - 1 }, 1, { ...w, troops });
+    assert.equal(e.needTransports, need, 'troops ' + troops);
+    assert.equal(e.canTake, false);
+    assert.equal(G.estimateBattle(s, { frigate: 5, transport: need }, 1, { ...w, troops }).canTake, true);
+    // the rule the estimate is describing
+    assert.ok(need * G.TROOPS_PER_TRANSPORT > troops && (need - 1) * G.TROOPS_PER_TRANSPORT <= troops);
+  }
+});

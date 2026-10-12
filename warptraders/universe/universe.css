@@ -13,3 +13,7 @@ a.btn:hover { border-color: var(--accent); }
 .pill { font-size: 12px; color: var(--warn); }
 #banner-offline { color: var(--bad); }
 @media (max-width: 760px) { a.btn { flex: 1 1 auto; min-height: 40px; text-align: center; line-height: 30px; } }
+#device-qr { background: #fff; padding: 8px; border-radius: 6px; width: 232px; max-width: 100%; margin: 8px auto; line-height: 0; }
+#device-qr svg { width: 100%; height: auto; display: block; }
+#device-link { width: 100%; font-size: 13px; margin: 6px 0; }
+dialog details { border-top: 1px solid var(--line); padding: 8px 0; margin: 8px 0 0; }
