@@ -267,7 +267,16 @@
     shaft(spec) { this.shafts.push(spec); }
     sunAt(x, y) { this.sun = [x, y]; }
 
-    snapshot() { return { col: this.col.slice(), emit: this.emit.slice(), depth: this.depth.slice(), stamp: this.stamp.slice(), id: this.id, lights: this.lights.slice(), shafts: this.shafts.slice(), sun: this.sun, z: this.z }; }
+    // a copy of the picture so far (the room's background), into spare buffers when given
+    snapshot(into) {
+      const s = into || { col: new Float32Array(this.col.length), emit: new Uint8Array(this.emit.length), depth: new Float32Array(this.depth.length), stamp: new Int32Array(this.stamp.length) };
+      s.col.set(this.col); s.emit.set(this.emit); s.depth.set(this.depth); s.stamp.set(this.stamp);
+      s.id = this.id; s.lights = this.lights.slice(); s.shafts = this.shafts.slice(); s.sun = this.sun; s.z = this.z;
+      return s;
+    }
+    // start again with a look, keeping the buffers (a new Scene every frame makes megabytes of garbage)
+    reset(look) { this.look = look; this.R = look.ramps; this.id = 0; this.z = 0.4; this.lights = []; this.shafts = []; this.sun = null; return this; }
+    clear() { this.col.fill(0); this.emit.fill(0); this.depth.fill(0); this.stamp.fill(0); return this; }
     restore(s) { this.col.set(s.col); this.emit.set(s.emit); this.depth.set(s.depth); this.stamp.set(s.stamp); this.id = s.id; this.lights = s.lights.slice(); this.shafts = s.shafts.slice(); this.sun = s.sun; this.z = s.z; }
 
     // light the picture. Returns RGBA pixels.
@@ -321,25 +330,45 @@
   };
 
   // ---------- a whole frame of the game ----------
-  // opts: moving (the hero is walking), cache ({} kept by the caller: the room's background is redrawn only every backEvery seconds), out (pixels to reuse)
+  const lookOf = room => (Object.prototype.hasOwnProperty.call(LOOKS, room.look) ? LOOKS[room.look] : LOOKS.hd2d);
+  // what the room's background depends on: a new key means it has to be drawn again before it can be used
+  const backKey = g => g.state.room + '|' + g.state.moves + '|' + g.state.points + '|' + g.state.inv.length;
+  // the room's background on its own (hd2d-worker.js draws it with this off the main thread)
+  function background(def, g, t, S) {
+    const room = def.rooms[g.state.room];
+    S.reset(lookOf(room)).clear();
+    room.back(S, g, t);
+    return S;
+  }
+  // opts:
+  //   cache    {} kept by the caller. The room's background is reused while its key is the same and it is younger than backEvery seconds.
+  //   refresh  (g, key, t) asks for a newer background to be drawn elsewhere (a worker) and put in the cache; the old one is used until then.
+  //   scene    a Scene to reuse.  moving  the hero is walking.  out  pixels to reuse.
+  //   raw      skip the lighting and return the unlit picture, for the GPU (hd2d-gl.js) to light.
   function render(def, g, t, opts) {
     opts = opts || {};
-    const room = def.rooms[g.state.room], look = Object.prototype.hasOwnProperty.call(LOOKS, room.look) ? LOOKS[room.look] : LOOKS.hd2d;
-    const S = new Scene(look), c = opts.cache;
-    const key = g.state.room + '|' + g.state.moves + '|' + g.state.points + '|' + g.state.inv.length;
-    if (c && c.key === key && c.look === look && Math.abs(t - c.t) < (opts.backEvery || 0.1)) S.restore(c.snap);
-    else { room.back(S, g, t); if (c) { c.key = key; c.look = look; c.t = t; c.snap = S.snapshot(); } }
+    const room = def.rooms[g.state.room], look = lookOf(room);
+    const S = opts.scene ? opts.scene.reset(look) : new Scene(look), c = opts.cache, key = backKey(g), every = opts.backEvery || 0.1;
+    if (c && c.snap && c.key === key && c.look === look && (opts.refresh || Math.abs(t - c.t) < every)) {
+      S.restore(c.snap);
+      if (opts.refresh && Math.abs(t - c.t) >= every) opts.refresh(g, key, t);
+    } else {
+      background(def, g, t, S);
+      if (c) { c.key = key; c.look = look; c.t = t; c.snap = S.snapshot(c.snap && c.own ? c.snap : undefined); c.own = true; }
+    }
+    S.z = 0.4;
     const list = [];
     for (const o of g.objects()) if (o.draw) list.push({ base: o.base !== undefined ? o.base : (o.rect ? o.rect[1] + o.rect[3] : 0), f: () => o.draw(S, g, t) });
     if (opts.hero !== false && !g.state.dead) list.push({ base: g.state.y, f: () => { S.z = 0.7; def.hd.hero(S, g.state.x, g.state.y, g.state.dir, !!opts.moving, g.step, g, t); } });
     list.sort((a, b) => a.base - b.base);
     for (const l of list) l.f();
     if (room.front) room.front(S, g, t);
-    const rgba = S.finish(opts.out);
-    return { rgba, emit: S.emit, depth: S.depth, shafts: S.shafts, sun: S.sun, look, W, H, focus: (g.state.y - 9) / 100 };
+    const frame = { scene: S, emit: S.emit, depth: S.depth, shafts: S.shafts, sun: S.sun, look, W, H, focus: (g.state.y - 9) / 100 };
+    if (!opts.raw) frame.rgba = S.finish(opts.out);
+    return frame;
   }
 
-  const api = { fast: true, SCALE, W, H, DW, DH, LOOKS, BASE, Scene, render, hash, expand, grade, FONT, addMaterials, addLook };
+  const api = { fast: true, SCALE, W, H, DW, DH, LOOKS, BASE, Scene, render, background, backKey, lookOf, hash, expand, grade, FONT, addMaterials, addLook };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.HD2D = Object.assign(root.HD2D || {}, api);
 })(typeof window !== 'undefined' ? window : globalThis);

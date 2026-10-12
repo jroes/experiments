@@ -114,6 +114,35 @@ test('HD-2D games: every room renders lit pixels, with and without the things in
   }
 });
 
+test('HD-2D: the background worker draws what the main thread would, and a frame made from it matches a fresh one', () => {
+  const HD = require('../shared/hd2d.js'), vm = require('node:vm'), fs = require('node:fs'), path = require('node:path');
+  const src = fs.readFileSync(path.join(__dirname, '../shared/hd2d-worker.js'), 'utf8');
+  for (const [name, { def }] of Object.entries(GAMES)) {
+    if (!def.hd) continue;
+    // the worker, run in a sandbox with the scripts it would import already loaded
+    const posted = [], self = { Adventure: Adv, HD2D: HD, [name.toUpperCase()]: def, postMessage: m => posted.push(m) };
+    self.self = self; self.importScripts = () => {};
+    vm.runInNewContext(src, self);
+    self.onmessage({ data: { type: 'init', name: name.toUpperCase(), scripts: [] } });
+    const g = Adv.create(def); g.instant = true;
+    g.command(GAMES[name].walk.win[0]);
+    const key = HD.backKey(g);
+    self.onmessage({ data: { type: 'draw', key, t: 1.3, step: g.step, state: JSON.parse(JSON.stringify(g.state)) } });
+    assert.equal(posted.length, 1, name + ' worker answered');
+    assert.equal(posted[0].type, 'back'); assert.equal(posted[0].key, key);
+    // a frame built on the worker's background is the same as one drawn from scratch
+    const cache = { key, look: HD.lookOf(def.rooms[g.state.room]), t: 1.3, snap: posted[0].snap }, asked = [];
+    const a = HD.render(def, g, 1.3, { cache, refresh: (gg, k) => asked.push(k) }).rgba, b = HD.render(def, g, 1.3, {}).rgba;
+    assert.ok(Buffer.from(a.buffer).equals(Buffer.from(b.buffer)), name + ' worker background differs');
+    // an old background is still used, and a newer one is asked for
+    HD.render(def, g, 2, { cache, refresh: (gg, k) => asked.push(k) });
+    assert.deepEqual(asked, [key]);
+    // a hostile state is ignored, not drawn
+    self.onmessage({ data: { type: 'draw', key: 'x', t: 0, step: 0, state: { room: '__proto__' } } });
+    assert.equal(posted[1].type, 'skip');
+  }
+});
+
 test('HD-2D: the fast fill for plain shapes draws exactly the same pixels as the general one', () => {
   const HD = require('../shared/hd2d.js');
   for (const { def } of Object.values(GAMES)) {
