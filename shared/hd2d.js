@@ -138,7 +138,9 @@
     //   rim (a lit edge on the far side), cyl (round across its height, like a pipe lying down), vcyl (round across its width, like a can),
     //   band [y0, y1] (the height the cyl rounding spans), clipY / clipX [lo, hi] (cut the shape: half a circle is a dome)
     shape(kind, g, mat, o) {
-      o = o || {}; this.id++;
+      o = o || {};
+      if (api.fast && (kind === 'rect' || kind === 'poly') && typeof mat !== 'function' && !o.cyl && !o.vcyl && !o.outline && !o.clipX && !o.clipY) return this.fill(kind, g, mat, o);
+      this.id++;
       const list = [];
       let x0, y0, x1, y1, rr = 0, cx = 0, cy = 0, rx = 1, ry = 1, pts = null;
       if (kind === 'rect' || kind === 'rrect') { x0 = Math.round(g[0] * SCALE); y0 = Math.round(g[1] * SCALE); x1 = Math.round((g[0] + g[2]) * SCALE); y1 = Math.round((g[1] + g[3]) * SCALE); if (kind === 'rrect') rr = Math.min(g[4] * SCALE, (x1 - x0) / 2, (y1 - y0) / 2); }
@@ -171,6 +173,34 @@
         }
       }
       if (o.outline && !o.emit) this.outline(list, typeof mat === 'function' ? 'dark' : mat);
+    }
+    // The common case (a plain rect or polygon) made fast: most of a room is these. Same pixels as shape(), checked by a test.
+    // The ramp is looked up once, there is no pixel list, and polygons are filled a row at a time from their edge crossings.
+    fill(kind, g, mat, o) {
+      this.id++;
+      let x0, y0, x1, y1, pts = null;
+      if (kind === 'rect') { x0 = Math.round(g[0] * SCALE); y0 = Math.round(g[1] * SCALE); x1 = Math.round((g[0] + g[2]) * SCALE); y1 = Math.round((g[1] + g[3]) * SCALE); }
+      else { pts = g.map(p => [p[0] * SCALE, p[1] * SCALE]); x0 = Infinity; x1 = -Infinity; y0 = Infinity; y1 = -Infinity; for (const p of pts) { if (p[0] < x0) x0 = p[0]; if (p[0] > x1) x1 = p[0]; if (p[1] < y0) y0 = p[1]; if (p[1] > y1) y1 = p[1]; } x0 = Math.floor(x0); x1 = Math.ceil(x1); y0 = Math.floor(y0); y1 = Math.ceil(y1); }
+      const bw = Math.max(1, x1 - x0), bh = Math.max(1, y1 - y0);
+      const r = this.ramp(mat), last = r.length - 1, bias = o.bias || 0, em = o.emit ? 1 : o.unlit ? 2 : 0, dith = !!o.dither, flat = !!o.flat, grad = o.grad;
+      const col = this.col, emit = this.emit, depth = this.depth, stamp = this.stamp, z = this.z, id = this.id, xs = [];
+      for (let y = Math.max(0, y0); y < Math.min(H, y1); y++) {
+        if (pts) { // where this row of pixel centres crosses the edges; a pixel is inside when an odd number of crossings lie to its right (as inPoly)
+          xs.length = 0; const yc = y + 0.5;
+          for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) { const a = pts[i], b = pts[j]; if ((a[1] > yc) !== (b[1] > yc)) xs.push((b[0] - a[0]) * (yc - a[1]) / (b[1] - a[1]) + a[0]); }
+          if (!xs.length) continue; xs.sort((p, q) => p - q);
+        }
+        let k = 0;
+        for (let x = Math.max(0, x0); x < Math.min(W, x1); x++) {
+          if (pts) { const xc = x + 0.5; while (k < xs.length && xs[k] <= xc) k++; if (((xs.length - k) & 1) === 0) continue; }
+          let s = flat ? 0.6 : 1 - ((x - x0) / bw * 0.3 + (y - y0) / bh * 0.6);
+          if (!flat && !pts && bh > 3 && !grad) { if (y === y0) s += 0.3; else if (y === y1 - 1) s -= 0.2; }
+          if (grad) s = grad[0] + (grad[1] - grad[0]) * ((y - y0) / bh);
+          const p = clamp(s + bias, 0, 1) * last; let c;
+          if (dith) { const fl = Math.floor(p); c = r[Math.min(last, p - fl > BAYER[(y & 3) * 4 + (x & 3)] ? fl + 1 : fl)]; } else c = r[Math.round(p)];
+          const i = y * W + x; col[i * 3] = c[0]; col[i * 3 + 1] = c[1]; col[i * 3 + 2] = c[2]; emit[i] = em; depth[i] = z; stamp[i] = id;
+        }
+      }
     }
     // a dark edge around a shape, where it meets something else
     outline(list, mat) {
@@ -242,7 +272,7 @@
 
     // light the picture. Returns RGBA pixels.
     finish(out) {
-      const L = this.look.light, lm = new Float32Array(LW * LH * 3), k = 160 / LW;
+      const L = this.look.light, k = 160 / LW;
       for (let j = 0; j < LH; j++) for (let i = 0; i < LW; i++) {
         let r = L.ambient, g = L.ambient, b = L.ambient; const px = (i + 0.5) * k, py = (j + 0.5) * k;
         for (const l of this.lights) {
@@ -251,23 +281,20 @@
           const d = Math.sqrt(d2), f = (1 - d) * (1 - d) * l.i * L.gain;
           r += f * l.c[0] / 255; g += f * l.c[1] / 255; b += f * l.c[2] / 255;
         }
-        const q = (j * LW + i) * 3; lm[q] = r; lm[q + 1] = g; lm[q + 2] = b;
+        const q = (j * LW + i) * 3; LM[q] = r; LM[q + 1] = g; LM[q + 2] = b;
       }
       out = out || new Uint8ClampedArray(W * H * 4);
-      const st = L.steps;
+      const st = L.steps, col = this.col, emit = this.emit, lm = LM;
       for (let y = 0; y < H; y++) {
-        const fy = clamp((y + 0.5) / LQ - 0.5, 0, LH - 1), j0 = Math.floor(fy), j1 = Math.min(LH - 1, j0 + 1), ty = fy - j0;
+        const fy = clamp((y + 0.5) / LQ - 0.5, 0, LH - 1), j0 = Math.floor(fy), j1 = Math.min(LH - 1, j0 + 1), ty = fy - j0, R0 = j0 * LW * 3, R1 = j1 * LW * 3;
         for (let x = 0; x < W; x++) {
-          const i = y * W + x, o = i * 4;
-          let r = this.col[i * 3], g = this.col[i * 3 + 1], b = this.col[i * 3 + 2];
-          if (!this.emit[i]) {
-            const fx = clamp((x + 0.5) / LQ - 0.5, 0, LW - 1), i0 = Math.floor(fx), i1 = Math.min(LW - 1, i0 + 1), tx = fx - i0;
-            const a = (j0 * LW + i0) * 3, bq = (j0 * LW + i1) * 3, c = (j1 * LW + i0) * 3, d = (j1 * LW + i1) * 3;
-            for (let ch = 0; ch < 3; ch++) {
-              const v = (lm[a + ch] * (1 - tx) + lm[bq + ch] * tx) * (1 - ty) + (lm[c + ch] * (1 - tx) + lm[d + ch] * tx) * ty;
-              const q = Math.round(v * st) / st;   // light falls off in bands, like hand-shaded pixel art
-              if (ch === 0) r *= q; else if (ch === 1) g *= q; else b *= q;
-            }
+          const i = y * W + x, o = i * 4, c3 = i * 3;
+          let r = col[c3], g = col[c3 + 1], b = col[c3 + 2];
+          if (!emit[i]) { // the light map, smoothed back up, then banded like hand-shaded pixel art
+            const tx = TX[x], a = R0 + I0[x], bq = R0 + I1[x], c = R1 + I0[x], d = R1 + I1[x];
+            r *= Math.round(((lm[a] * (1 - tx) + lm[bq] * tx) * (1 - ty) + (lm[c] * (1 - tx) + lm[d] * tx) * ty) * st) / st;
+            g *= Math.round(((lm[a + 1] * (1 - tx) + lm[bq + 1] * tx) * (1 - ty) + (lm[c + 1] * (1 - tx) + lm[d + 1] * tx) * ty) * st) / st;
+            b *= Math.round(((lm[a + 2] * (1 - tx) + lm[bq + 2] * tx) * (1 - ty) + (lm[c + 2] * (1 - tx) + lm[d + 2] * tx) * ty) * st) / st;
           }
           out[o] = r; out[o + 1] = g; out[o + 2] = b; out[o + 3] = 255;
         }
@@ -275,6 +302,9 @@
       return out;
     }
   }
+  // the light map and, for each picture column, which light map cells it blends and how much
+  const LM = new Float32Array(LW * LH * 3), I0 = new Int32Array(W), I1 = new Int32Array(W), TX = new Float64Array(W);
+  for (let x = 0; x < W; x++) { const fx = clamp((x + 0.5) / LQ - 0.5, 0, LW - 1), i0 = Math.floor(fx); I0[x] = i0 * 3; I1[x] = Math.min(LW - 1, i0 + 1) * 3; TX[x] = fx - i0; }
   function inPoly(pts, x, y) { let c = false; for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) { const a = pts[i], b = pts[j]; if ((a[1] > y) !== (b[1] > y) && x < (b[0] - a[0]) * (y - a[1]) / (b[1] - a[1]) + a[0]) c = !c; } return c; }
 
   const FONT = {
@@ -309,7 +339,7 @@
     return { rgba, emit: S.emit, depth: S.depth, shafts: S.shafts, sun: S.sun, look, W, H, focus: (g.state.y - 9) / 100 };
   }
 
-  const api = { SCALE, W, H, DW, DH, LOOKS, BASE, Scene, render, hash, expand, grade, FONT, addMaterials, addLook };
+  const api = { fast: true, SCALE, W, H, DW, DH, LOOKS, BASE, Scene, render, hash, expand, grade, FONT, addMaterials, addLook };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.HD2D = Object.assign(root.HD2D || {}, api);
 })(typeof window !== 'undefined' ? window : globalThis);

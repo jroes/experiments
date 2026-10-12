@@ -107,6 +107,19 @@ test('HD-2D games: every room renders lit pixels, with and without the things in
   }
 });
 
+test('HD-2D: the fast fill for plain shapes draws exactly the same pixels as the general one', () => {
+  const HD = require('../shared/hd2d.js');
+  for (const { def } of Object.values(GAMES)) {
+    if (!def.hd) continue;
+    for (const rid of Object.keys(def.rooms)) {
+      const g = Adv.create(def); g.state.room = rid;
+      HD.fast = false; const slow = HD.render(def, g, 0.7, {}).rgba;
+      HD.fast = true; const fast = HD.render(def, g, 0.7, {}).rgba;
+      assert.ok(Buffer.from(slow.buffer).equals(Buffer.from(fast.buffer)), rid + ' differs');
+    }
+  }
+});
+
 test('HD-2D: a cached background gives the same picture as drawing it fresh', () => {
   const HD = require('../shared/hd2d.js'), def = GAMES.starsweeper.def;
   const g = Adv.create(def), cache = {};
