@@ -173,3 +173,6 @@ details input { width: 100%; margin-top: 8px; }
 .port-table input { width: 64px; padding: 2px 4px; }
 .warps { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
 .enc { border: 1px solid var(--bad); padding: 8px; margin: 8px 0; }
+
+#v-intro { display: block; width: min(880px, 92vw); max-height: 70vh; background: #000; border-radius: 6px; }
+#d-intro { max-width: min(920px, 96vw); padding: 10px; }

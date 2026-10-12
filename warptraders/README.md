@@ -13,3 +13,5 @@ Click Race friends, then Host. Everyone gets the same galaxy and turn count and 
 ## Challenge seeds (play on your own time)
 
 Starting a new game asks for a seed. Everyone who uses the same seed gets the same galaxy and the same starting markets, so you can play whenever you like and compare scores. When a run ends, Copy result to share gives you a one-line result to post. Runs are deterministic: the same seed and the same moves always give the same outcome.
+
+`intro.mp4` is a one-minute intro video, made by `tools/video/warptraders.js` (see `CLAUDE.md`). The Help button has a link to it.
