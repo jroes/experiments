@@ -6,8 +6,8 @@
  * game is deterministic, so all copies stay identical. Each set of orders carries a hash of the sender's game, so if two copies
  * ever disagree you get a warning and can rebuild by replaying the log from turn 1.
  *
- * The store is the source of truth. localStorage is only a cache, so a new device can join with the same invite code.
- * Each game is one namespace with a long random name, and the store will not list keys, so only people holding an invite can
+ * The store is the source of truth. localStorage is only a cache, so a new device can join with the same invite link.
+ * Each game is one namespace with a long random name, and the store will not list keys, so only people holding an invite link can
  * find it. There are no accounts, so anyone who has the name can write to it: this is for friends.
  */
 (function (root) {
@@ -20,25 +20,30 @@
   const unb64 = s => decodeURIComponent(escape(atob(s.replace(/-/g, '+').replace(/_/g, '/'))));
   // A player counts as online if their page checked in within this many seconds. Pages check in every 15 s while visible.
   const ONLINE_SECS = 45;
-  const ROOM_RE = /^[a-z0-9]{20,32}$/;
+  const ROOM_RE = /^[a-z0-9]{16,32}$/;
   const HASH_RE = /^[0-9a-f]{16}$/;
 
-  // ----- invite codes: everything a friend needs to join, in one string -----
+  // ----- invite codes -----
+  // An invite is just the game's room name plus the seat it is for: 16 letters and digits, then one digit. Everything else
+  // (rules, size, difficulty, seed) lives in the game's meta row in the store, so the code can be short enough for a text.
 
-  function encodeInvite(g) {
-    return 'SDO-' + b64(JSON.stringify({
-      v: 2, rules: g.rules, server: g.server, room: g.room, seat: g.seat,
-      humans: g.humans, difficulty: g.difficulty, worlds: g.worlds, seed: g.seed,
-    }));
+  const ROOM_LEN = 16; // 16 letters and digits is about 82 bits: nobody can guess one, and the server will not list them
+
+  const inviteCode = (room, seat) => room + seat;
+
+  // Accepts a bare code or a whole invite link (anything after the last #, with or without join=).
+  function parseInvite(text) {
+    const t = String(text || '').trim().toLowerCase().replace(/\s+/g, '');
+    const code = t.slice(t.lastIndexOf('#') + 1).replace(/^join=/, '');
+    const m = /^([a-z0-9]{16,32})([1-4])$/.exec(code);
+    return m ? { room: m[1], seat: +m[2] } : null;
   }
 
-  function decodeInvite(code) {
+  // Everything about a game that must be valid before we play it. Used for saved games and for meta read from the store.
+  function cleanGame(o) {
     try {
-      code = String(code).trim().replace(/\s+/g, '');
-      if (!code.startsWith('SDO-')) return null;
-      const o = JSON.parse(unb64(code.slice(4)));
       const server = S.cleanBase(o.server);
-      if (!o || o.v !== 2 || !server || typeof o.room !== 'string' || !ROOM_RE.test(o.room)) return null;
+      if (!o || !server || typeof o.room !== 'string' || !ROOM_RE.test(o.room)) return null;
       if (!Number.isInteger(o.humans) || o.humans < 2 || o.humans > 4) return null;
       if (!Number.isInteger(o.seat) || o.seat < 1 || o.seat > o.humans) return null;
       if (!G.has(G.DIFFICULTY, o.difficulty) || !Number.isInteger(o.worlds) || o.worlds < 24 || o.worlds > 80) return null;
@@ -97,9 +102,8 @@
     toJSON() { return { v: 2, game: this.game, base: this.base, cmds: this.cmds, sent: this.sent, desync: this.desync }; }
     static fromSaved(o) {
       if (!o || o.v !== 2 || !o.game || !o.base || !Array.isArray(o.cmds)) return null;
-      const game = decodeInvite(encodeInvite(o.game)); // re-validate everything that came out of localStorage
+      const game = cleanGame(o.game); // re-validate everything that came out of localStorage
       if (!game || game.rules !== G.RULES) return null;
-      game.invites = Array.isArray(o.game.invites) ? o.game.invites.filter(x => typeof x === 'string').slice(0, 4) : undefined;
       return new Session(game, o);
     }
 
@@ -281,34 +285,38 @@
     static async create(opts) {
       const server = S.cleanBase(opts.server);
       if (!server) throw new Error('The server address must start with https:// (or http://localhost).');
-      const humans = opts.humans;
-      const room = S.randomId(24); // 24 letters and digits: about 124 bits, so nobody can guess it
-      const r = await S.createGame(server, room, { v: 1, humans, rules: G.RULES });
-      if (r.status !== 201) throw new Error(friendly(r));
+      const room = S.randomId(ROOM_LEN);
       const seed = (S.randomId(6, '0123456789') | 0) * 1000 + (S.randomId(3, '0123456789') | 0);
-      const base = { server, room, humans, difficulty: opts.difficulty, worlds: opts.worlds, seed, rules: G.RULES };
-      const game = { ...base, seat: 1 };
-      game.invites = [];
-      for (let s = 2; s <= humans; s++) game.invites.push(encodeInvite({ ...base, seat: s }));
+      const game = cleanGame({ server, room, seat: 1, humans: opts.humans, difficulty: opts.difficulty, worlds: opts.worlds, seed, rules: G.RULES });
+      if (!game) throw new Error('Those game settings are not allowed.');
+      const meta = { v: 2, humans: game.humans, rules: game.rules, difficulty: game.difficulty, worlds: game.worlds, seed: game.seed };
+      const r = await S.createGame(server, room, meta);
+      if (r.status !== 201) throw new Error(friendly(r));
       const session = new Session(game);
       await session.sync();
       return session;
     }
 
-    static async join(code) {
-      const game = decodeInvite(code);
-      if (!game) throw new Error('That does not look like an invite code. Copy it again in full.');
-      if (game.rules !== G.RULES) throw new Error('That game was made with a different version of the rules.');
-      const m = await S.readMeta(game.server, game.room);
+    // `invite` is a code or a link; `server` is where games live (the same one for everybody).
+    static async join(invite, server) {
+      const inv = parseInvite(invite);
+      if (!inv) throw new Error('That does not look like an invite. Open the link your friend sent you.');
+      const base = S.cleanBase(server);
+      if (!base) throw new Error('The server address must start with https:// (or http://localhost).');
+      const m = await S.readMeta(base, inv.room);
       if (m.status !== 200) throw new Error(friendly(m));
-      if (!m.value || m.value.humans !== game.humans) throw new Error('That invite does not match its game.');
+      const v = m.value && typeof m.value === 'object' ? m.value : {};
+      if (v.v !== 2) throw new Error('That game was made by an older version and cannot be joined from here.');
+      const game = cleanGame({ server: base, room: inv.room, seat: inv.seat, humans: v.humans, difficulty: v.difficulty, worlds: v.worlds, seed: v.seed, rules: v.rules });
+      if (!game) throw new Error('That invite does not match a game this page can play.');
+      if (game.rules !== G.RULES) throw new Error('That game was made with a different version of the rules.');
       const session = new Session(game);
       await session.rebuild();
       return session;
     }
   }
 
-  const api = { Session, encodeInvite, decodeInvite, cleanEntry, ONLINE_SECS };
+  const api = { Session, inviteCode, parseInvite, cleanGame, cleanEntry, ONLINE_SECS, ROOM_LEN };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Online = api;
 })(typeof window !== 'undefined' ? window : globalThis);

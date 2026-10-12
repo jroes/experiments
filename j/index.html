@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b1220">
+<title>You're invited to Sector Dominion</title>
+<meta name="description" content="A friend invited you to a game of Sector Dominion. Tap the link to join. Free, in your browser, nothing to install.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Sector Dominion">
+<meta property="og:title" content="Join my game of Sector Dominion">
+<meta property="og:description" content="Build a star empire and take over the sector. Tap to join. Free, in your browser.">
+<meta property="og:url" content="https://jroes.github.io/experiments/j/">
+<meta property="og:image" content="https://jroes.github.io/experiments/j/invite.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Sector Dominion: you are invited to a game">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="robots" content="noindex">
+<meta name="referrer" content="no-referrer">
+<style>
+  html, body { height: 100%; margin: 0; background: #05070d; color: #cfe3ff; font: 16px/1.4 ui-monospace, Menlo, Consolas, monospace; }
+  body { display: grid; place-items: center; text-align: center; padding: 24px; }
+  a { color: #5ee0b0; }
+  h1 { color: #5ee0b0; letter-spacing: 3px; font-size: 20px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>SECTOR DOMINION</h1>
+  <p>Opening your game...</p>
+  <p><a id="go" href="../sectordominion/">Tap here if nothing happens</a></p>
+</main>
+<script>
+  // The invite code is after the #, so it never reaches any server. Hand it to the game, which does the joining.
+  (function () {
+    var code = location.hash.replace(/^#(join=)?/, '');
+    var to = '../sectordominion/' + location.search + (code ? '#join=' + encodeURIComponent(code) : '');
+    document.getElementById('go').href = to;
+    location.replace(to);
+  })();
+</script>
+</body>
+</html>

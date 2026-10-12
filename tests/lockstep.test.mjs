@@ -38,34 +38,46 @@ function randomOrders(session, rnd) {
 async function setup(humans) {
   const host = await Online.Session.create({ server: SERVER, humans, difficulty: 'normal', worlds: 30 });
   const sessions = [host];
-  for (const inv of host.game.invites) sessions.push(await Online.Session.join(inv));
+  for (let seat = 2; seat <= humans; seat++) sessions.push(await Online.Session.join(Online.inviteCode(host.game.room, seat), SERVER));
   return sessions;
 }
 
 const hashes = players => players.map(p => G.hashState(p.base));
 
-test('invite codes round trip and junk is refused', async () => {
+test('invite codes are short, round trip, and junk is refused', async () => {
   install();
-  const [host] = await setup(3);
-  assert.equal(host.game.invites.length, 2);
-  for (const inv of host.game.invites) {
-    const g = Online.decodeInvite(inv);
-    assert.ok(g);
-    assert.equal(g.room, host.game.room);
-    assert.ok(!JSON.stringify(g).includes('token'), 'there are no secrets in an invite');
+  const [host, a, b] = await setup(3);
+  assert.match(host.game.room, /^[a-z0-9]{16}$/);
+  assert.deepEqual([a.seat, b.seat], [2, 3]);
+  for (const s of [a, b]) {
+    assert.equal(s.game.room, host.game.room);
+    assert.equal(s.game.seed, host.game.seed, 'settings come from the game, not the invite');
+    assert.equal(s.game.worlds, 30);
   }
-  assert.match(host.game.room, /^[a-z0-9]{24}$/);
-  assert.notEqual(setup, null);
+  const code = Online.inviteCode(host.game.room, 2);
+  assert.equal(code.length, 17);
+  assert.deepEqual(Online.parseInvite(code), { room: host.game.room, seat: 2 });
+  assert.deepEqual(Online.parseInvite('https://jroes.github.io/experiments/j/#' + code.toUpperCase()), { room: host.game.room, seat: 2 });
+  assert.deepEqual(Online.parseInvite('#join=' + code), { room: host.game.room, seat: 2 });
   const rnd = driver(5);
   for (let i = 0; i < 200; i++) {
-    const junk = ['', 'SDO-', 'SDO-@@', 'x', 'SDO-' + Buffer.from('{"v":2}').toString('base64'), null, undefined, 7, 'SDO-' + Buffer.from(String(rnd())).toString('base64')][i % 9];
-    assert.equal(Online.decodeInvite(junk), null);
+    const junk = ['', 'x', null, undefined, 7, 'a'.repeat(16), 'a'.repeat(15) + '9', 'a'.repeat(40) + '1', 'SDO-abc', String(rnd())][i % 10];
+    assert.equal(Online.parseInvite(junk), null, String(junk));
   }
-  const g = Online.decodeInvite(host.game.invites[0]);
+  // what is in the store decides the game, and it is checked like any other input
+  const good = { server: SERVER, room: host.game.room, seat: 1, humans: 2, difficulty: 'normal', worlds: 30, seed: 5, rules: G.RULES };
+  assert.ok(Online.cleanGame(good));
   for (const bad of [{ server: 'http://evil.example' }, { server: 'javascript:alert(1)' }, { room: 'X' }, { room: 'a'.repeat(12) }, { seat: 9 }, { humans: 7 }, { worlds: 5000 }, { difficulty: '__proto__' }, { difficulty: 'constructor' }, { seed: 1e12 }]) {
-    assert.equal(Online.decodeInvite(Online.encodeInvite({ ...g, ...bad })), null, JSON.stringify(bad));
+    assert.equal(Online.cleanGame({ ...good, ...bad }), null, JSON.stringify(bad));
   }
-  assert.ok(Online.decodeInvite(Online.encodeInvite({ ...g, server: 'http://localhost:8123' })), 'a server on this machine is allowed');
+  assert.ok(Online.cleanGame({ ...good, server: 'http://localhost:8123' }), 'a server on this machine is allowed');
+  await assert.rejects(() => Online.Session.join('zzzzzzzzzzzzzzzz1', SERVER), /does not know this game/);
+  await assert.rejects(() => Online.Session.join('nonsense', SERVER), /does not look like an invite/);
+  // a seat the game does not have
+  await assert.rejects(() => Online.Session.join(Online.inviteCode(host.game.room, 4), SERVER), /does not match/);
+  // hostile meta dropped into a made-up room
+  await S.createGame(SERVER, 'b'.repeat(16), { v: 2, humans: 2, rules: G.RULES, difficulty: '__proto__', worlds: 30, seed: 1 });
+  await assert.rejects(() => Online.Session.join('b'.repeat(16) + '2', SERVER), /does not match/);
 });
 
 test('three browsers stay identical over 30 turns with shuffled arrival and random sync timing', async () => {
@@ -101,7 +113,7 @@ test('a late joiner rebuilds the exact game by replaying the log', async () => {
     for (const p of players) { randomOrders(p, rnd); await p.submit(); }
     for (const p of players) await p.sync();
   }
-  const fresh = await Online.Session.join(players[0].game.invites[0]);
+  const fresh = await Online.Session.join(Online.inviteCode(players[0].game.room, 2), SERVER);
   assert.equal(G.hashState(fresh.base), G.hashState(players[1].base));
   assert.equal(fresh.base.turn, 13);
   assert.equal(fresh.desync, false);
@@ -117,7 +129,7 @@ test('replaying a long game takes few requests, because keys are read in batches
     for (const p of players) await p.sync();
   }
   n.calls.length = 0;
-  const fresh = await Online.Session.join(players[0].game.invites[0]);
+  const fresh = await Online.Session.join(Online.inviteCode(players[0].game.room, 2), SERVER);
   assert.equal(G.hashState(fresh.base), G.hashState(players[1].base));
   const reads = n.calls.filter(c => c.method === 'GET').length;
   assert.ok(reads <= 8, '41 turns of 4 players took ' + reads + ' reads');
@@ -129,7 +141,7 @@ test('rejoining mid-turn restores my submitted orders', async () => {
   const [host, a, b] = await setup(3);
   randomOrders(a, rnd);
   await a.submit();
-  const again = await Online.Session.join(host.game.invites[0]);
+  const again = await Online.Session.join(Online.inviteCode(host.game.room, 2), SERVER);
   assert.equal(again.sent, true);
   assert.deepEqual(again.cmds, a.cmds);
   assert.equal(G.hashState(again.working), G.hashState(a.working), 'preview matches');
@@ -347,7 +359,7 @@ test('coming online and going offline are reported once each, and the first look
   const [host, a, b] = await setup(3);
   await a.beat();
   // someone who joins while seat 2 is already here does not get an "arrived" notice for them
-  const late = await Online.Session.join(host.game.invites[1]);
+  const late = await Online.Session.join(Online.inviteCode(host.game.room, 3), SERVER);
   assert.equal(late.isOnline(2), true);
   assert.deepEqual(late.takeEvents(), []);
   // the host looked before seat 2 arrived, so they hear about it, once
