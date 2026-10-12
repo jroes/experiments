@@ -4,7 +4,6 @@
   const SAVE_KEY = 'sectordominion-save-v1';
   const MAIL_KEY = 'sectordominion-mail-v1';
   const ONLINE_KEY = 'sectordominion-online-v1';
-  const SERVER_KEY = 'sectordominion-server';
   const COLORS = ['#6b7a94', '#5ee0b0', '#ffb454', '#ff6b6b', '#b48cff'];
 
   const $ = id => document.getElementById(id);
@@ -772,7 +771,8 @@
   $('b-online').onclick = () => {
     $('d-mp').close();
     const f = $('f-online');
-    try { f.server.value = localStorage.getItem(SERVER_KEY) || window.KV_URL || ''; } catch (e) { f.server.value = window.KV_URL || ''; }
+    // the storage server is not shown: it comes from shared/config.js, or from ?server=... when testing against another one
+    f.server.value = new URLSearchParams(location.search).get('server') || window.KV_URL || '';
     $('online-msg').textContent = '';
     $('d-online').showModal();
   };
@@ -784,7 +784,6 @@
     msg.textContent = 'Creating...';
     try {
       const server = String(fd.get('server') || '').trim();
-      try { localStorage.setItem(SERVER_KEY, server); } catch (err) { /* ignore */ }
       const session = await Online.Session.create({ server, humans: +fd.get('humans'), difficulty: fd.get('difficulty'), worlds: +fd.get('worlds') });
       ui.showInvites = true;
       startOnline(session);

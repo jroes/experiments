@@ -105,9 +105,7 @@
   <p class="fine">Everyone keeps their own copy of the game in their browser. You send your orders to a small shared storage server, and when everyone's orders are in, each browser plays the turn itself. No one has to be online at the same time, and you can come back from any device with your invite code. Each game lives under a long random name that only your invite codes contain. There are no accounts, so only play with friends.</p>
   <h3>Start a game</h3>
   <form id="f-online" method="dialog">
-    <label>Storage server (the default is fine)
-      <input name="server" type="url" placeholder="https://elf-castle-wood-puncher.fly.dev" autocomplete="off">
-    </label>
+    <input name="server" type="hidden"> <!-- filled in from shared/config.js; ?server=... overrides it for testing -->
     <label>Human players (including you)
       <select name="humans"><option>2</option><option selected>3</option><option>4</option></select>
     </label>
