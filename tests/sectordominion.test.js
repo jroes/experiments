@@ -370,3 +370,66 @@ test('fuzz: ship type, difficulty and world fields drawn from prototype keys nev
     }
   }
 });
+
+// ---------- battle estimates and exports ----------
+
+// plays one real fight: `ships` attack world `name` of a fresh game whose defenders are `garrison`, `fort`, `pop`. Returns whether any attacker survived.
+function fight(seed, ships, garrison, fort, pop, target) {
+  const s = G.newGame({ seed, difficulty: 'normal', worlds: 40 });
+  const cap = s.worlds.find(w => w.owner === 1);
+  const w = target ? s.worlds.find(x => x.name === target) : s.worlds.filter(x => !x.owner).sort((a, b) => G.dist(cap, a) - G.dist(cap, b))[0]; // no name: the nearest unclaimed world
+  target = w.name;
+  w.fort = fort; w.pop = pop; w.troops = 4; w.natives = true; // natives defend, an empty world does not
+  w.garrison = { scout: 0, frigate: 0, cruiser: 0, transport: 0, ...garrison };
+  cap.garrison = { scout: 0, frigate: 0, cruiser: 0, transport: 0, ...ships };
+  const est = G.estimateBattle(s, cap.garrison, 1, w);
+  assert.ok(G.apply(s, 1, { op: 'send', from: cap.id, to: w.id, ships: { ...cap.garrison }, turn: 1 }).ok);
+  let log0 = s.log.length, report = null;
+  for (let i = 0; i < 12 && !report; i++) { G.apply(s, 1, { op: 'ready', turn: s.turn }); report = s.log.find(l => /^Battle at /.test(l.text) && l.text.includes(target)); }
+  assert.ok(report, 'the fleet should have arrived and fought');
+  const lost = +/Attacker lost (\d+) of (\d+)/.exec(report.text)[1], sent = +/Attacker lost (\d+) of (\d+)/.exec(report.text)[2];
+  return { est, survived: lost < sent, text: report.text };
+}
+
+test('the battle estimate agrees with real fights when it is confident', () => {
+  let wins = 0, winN = 0, loses = 0, loseN = 0, close = 0;
+  const rnd = driver(11);
+  for (let i = 0; i < 160; i++) {
+    const seed = 10;
+    const frigates = 1 + ((rnd() * 20) | 0), cruisers = (rnd() * 6) | 0;
+    const g = { frigate: (rnd() * 25) | 0, cruiser: (rnd() * 8) | 0 };
+    const fort = (rnd() * 6) | 0, pop = 10 + ((rnd() * 90) | 0);
+    const r = fight(seed + (i % 7), { frigate: frigates, cruiser: cruisers }, g, fort, pop, null);
+    if (r.est.verdict === 'win' || r.est.verdict === 'free') { winN++; if (r.survived) wins++; }
+    else if (r.est.verdict === 'lose') { loseN++; if (r.survived) loses++; }
+    else close++;
+  }
+  assert.ok(winN > 10 && loseN > 10, 'the scenarios cover both ' + winN + ' ' + loseN);
+  assert.ok(wins / winN >= 0.95, 'a "win" nearly always survives: ' + wins + '/' + winN);
+  assert.ok(loses / loseN <= 0.05, 'a "lose" nearly always dies: ' + loses + '/' + loseN);
+});
+
+test('the report says what each side had, and the estimate flags unarmed fleets', () => {
+  const r = fight(10, { frigate: 15 }, { frigate: 10, cruiser: 5 }, 5, 100, 'Wynion');
+  assert.match(r.text, /15 Frigates\) vs natives \(10 Frigates, 5 Cruisers; defense 9: attack 18, hull 72\)/);
+  assert.match(r.text, /Attacker lost 15 of 15/);
+  const s = G.newGame({ seed: 10 }), w = s.worlds.find(x => x.name === 'Wynion');
+  assert.equal(G.estimateBattle(s, { transport: 2 }, 1, w).verdict, 'lose', 'transports have no guns');
+  assert.equal(G.estimateBattle(s, { frigate: 15 }, 1, w).verdict, 'win');
+  const empty = { ...w, fort: 0, pop: 5, garrison: { scout: 0, frigate: 0, cruiser: 0, transport: 0 } };
+  assert.equal(G.estimateBattle(s, { frigate: 1 }, 1, empty).verdict, 'free', 'nothing there to fight');
+  assert.equal(G.describeShips({ scout: 0, frigate: 1, cruiser: 0, transport: 2 }), '1 Frigate, 2 Transports');
+  assert.equal(G.describeShips({ scout: 0, frigate: 0, cruiser: 0, transport: 0 }), 'no ships');
+});
+
+test('a review export is smaller than the save, still a valid game, and keeps the log', () => {
+  const s = G.newGame({ seed: 3 });
+  for (let i = 0; i < 25; i++) { G.apply(s, 1, { op: 'build', world: s.worlds.find(w => w.owner === 1).id, type: 'frigate', turn: s.turn }); G.apply(s, 1, { op: 'ready', turn: s.turn }); }
+  const ex = G.reviewExport(s);
+  assert.ok(G.validState(ex));
+  assert.deepEqual(ex.known, {});
+  assert.ok(JSON.stringify(ex).length <= JSON.stringify(s).length);
+  assert.ok(ex.log.length <= 150 && ex.log.length > 0);
+  assert.equal(G.hashState({ ...ex, known: s.known }), G.hashState({ ...s, log: ex.log }), 'everything the game depends on is there');
+  assert.ok(s.log.length >= ex.log.length, 'the original is untouched');
+});

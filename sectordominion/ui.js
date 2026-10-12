@@ -422,7 +422,9 @@
     else {
       const w = ui.state.worlds[id], i = info(w);
       tip.hidden = false;
-      tip.textContent = w.name + ' - ' + (i.natives && !i.owner ? 'Natives' : i.owner ? ui.state.empires[i.owner - 1].name : 'Unclaimed') + ', pop ' + i.pop;
+      const od = ui.targeting ? oddsFor(id) : null;
+      tip.textContent = w.name + ' - ' + (i.natives && !i.owner ? 'Natives' : i.owner ? ui.state.empires[i.owner - 1].name : 'Unclaimed') + ', pop ' + i.pop +
+        (od ? ' | ' + ODDS_WORDS[od.verdict] + ' (' + od.attAtk + ' atk, ' + od.attHp + ' hull vs ' + od.defAtk + ' atk, ' + od.defHp + ' hull)' : '');
       tip.style.left = (p.x + 14) + 'px'; tip.style.top = (p.y + 14) + 'px';
     }
   });
@@ -464,8 +466,20 @@
     renderLog();
   }
 
+  // How the fleet that is about to go would fare against a world I can see right now (null if I cannot see it, or it is mine or empty)
+  function oddsFor(toId) {
+    const w = ui.state.worlds[toId], i = info(w);
+    if (!w || !i || !i.live || w.owner === ui.me || (!w.owner && !w.natives)) return null;
+    if (!G.shipCount(ui.send)) return null;
+    return G.estimateBattle(ui.state, ui.send, ui.me, w);
+  }
+  const ODDS_WORDS = { win: 'you should win', close: 'a close fight', lose: 'you would lose', free: 'nothing to fight' };
+
   function dispatchTo(toId) {
     if (toId === ui.selected) { toast('Pick a different world.'); return; }
+    const odds = oddsFor(toId);
+    if (odds && odds.verdict === 'lose' && !confirm('This looks like a losing fight. Your fleet: attack ' + odds.attAtk + ', hull ' + odds.attHp + '. ' +
+      'Their side: attack ' + odds.defAtk + ', hull ' + odds.defHp + (odds.defense ? ' (the world\'s own defense is ' + odds.defense + ')' : '') + '. Send anyway?')) return;
     const res = act({ op: 'send', from: ui.selected, to: toId, ships: { ...ui.send } });
     if (!res.ok) { toast(res.msg); return; }
     if (res.eta) ui.state.log.unshift({ turn: ui.state.turn, text: 'Fleet sent to ' + ui.state.worlds[toId].name + ', ' + res.eta + ' turn' + (res.eta > 1 ? 's' : '') + '.', kind: 'info', to: [ui.me] });
@@ -856,12 +870,12 @@
 
   function renderDevice() {
     $('p-device').innerHTML = '<h3>You</h3><p class="who dim">Playing as <b>' + esc(ui.name || 'no name yet') + '</b></p>' +
-      '<div class="btns"><button data-do="name">' + (ui.name ? 'Change name' : 'Set name') + '</button><button data-do="device">Link another device</button></div>';
+      '<div class="btns"><button data-do="name">' + (ui.name ? 'Change name' : 'Set name') + '</button><button data-do="device">Link another device</button><button data-do="export">Export game</button></div>';
   }
   $('p-device').addEventListener('click', e => {
     const b = e.target.closest('button[data-do]');
     if (!b) return;
-    if (b.dataset.do === 'name') askName(); else openDevice();
+    if (b.dataset.do === 'name') askName(); else if (b.dataset.do === 'export') openExport(); else openDevice();
   });
 
   // ----- the link between this device and others -----
@@ -872,6 +886,37 @@
   const dismissed = () => { const v = readJson(DISMISSED_KEY, []); return new Set(Array.isArray(v) ? v.filter(x => typeof x === 'string').slice(-200) : []); };
   const dismiss = (room, seat) => { const d = dismissed(); d.add(room + seat); writeJson(DISMISSED_KEY, [...d]); };
   const undismiss = (room, seat) => { const d = dismissed(); if (d.delete(room + seat)) writeJson(DISMISSED_KEY, [...d]); };
+
+  // ----- export: the game as a file, for someone else to look at -----
+  function exportText() {
+    const online = ui.online, st = online ? online.base : ui.state; // for a game with friends: the game as it stood when this turn began
+    const out = {
+      format: 'sectordominion-review', version: 1, exportedAt: new Date().toISOString(), app: window.APP_VERSION || 'dev',
+      kind: online ? 'friends' : 'solo', seat: ui.me, turn: st.turn, game: G.reviewExport(st),
+    };
+    if (online) out.ordersThisTurn = online.cmds; // no room name or server: this file is not a way into the game
+    return JSON.stringify(out);
+  }
+  function openExport() {
+    const text = exportText();
+    $('export-text').value = text;
+    $('export-size').textContent = Math.round(text.length / 1024) + ' KB';
+    $('d-export').showModal();
+  }
+  $('b-export-download').onclick = () => {
+    const blob = new Blob([$('export-text').value], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = 'sectordominion-turn-' + ui.state.turn + '.json';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  };
+  $('b-export-copy').onclick = async () => {
+    const ta = $('export-text'), b = $('b-export-copy');
+    let ok = false;
+    try { await navigator.clipboard.writeText(ta.value); ok = true; } catch (e) { ta.select(); try { ok = document.execCommand('copy'); } catch (e2) { /* ignore */ } }
+    b.textContent = ok ? 'Copied' : 'Select and copy';
+    setTimeout(() => { b.textContent = 'Copy'; }, 2000);
+  };
 
   async function openDevice() {
     const lead = $('device-lead'), note = $('device-note'), msg = $('device-msg'), link = $('device-link'), qr = $('device-qr');

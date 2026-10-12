@@ -112,6 +112,13 @@ Shell gotcha: `pkill -f <pattern>` can match and kill your own shell command. Us
 - Map clicks are computed with the game's own fit rule. Dispatch `resize` first so the game refits to what is on screen.
 - Videos are a few MB each and live in git, so do not regenerate them for small changes.
 
+## Reviewing a player's game
+
+The side panel has **Export game**: the game as one JSON file (no room name, server or link in it, so it is not a way into a game with friends). Someone can send it for a review.
+`node tools/review.js export.json [--world Name]` prints who has what, the worlds near the player (owner, defense, garrison), recent battles, and optionally what the player's biggest
+garrison would meet at a world. Battle reports in the log list both sides, including the world's own defense, so a fight can be understood afterwards. `Game.estimateBattle` is the same
+arithmetic as a real fight (attack times hull, tested against 160 real fights), used for the target tooltip and the "this looks like a losing fight" warning.
+
 ## Deploys and updates
 
 A deploy is a static copy of the repo on GitHub Pages. The workflow stamps the commit into `shared/version.js` (what each page was built from) and `version.json` (what is live now).
