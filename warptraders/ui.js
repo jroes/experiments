@@ -154,7 +154,7 @@
   }
 
   function sectorAt(px, py) {
-    let best = null, bd = 16;
+    let best = null, bd = (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) ? 26 : 16;
     for (const sec of s.sectors) {
       if (!known(sec.id)) continue;
       const d = Math.hypot(X(sec.x) - px, Y(sec.y) - py);
@@ -177,6 +177,7 @@
   }
 
   canvas.addEventListener('pointermove', e => {
+    if (e.pointerType === 'touch') return;
     const r = canvas.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
     const id = sectorAt(px, py);
     if (id !== hover) { hover = id; draw(); }

@@ -1,0 +1,50 @@
+<!doctype html>
+<meta charset="utf-8">
+<!-- Source for the preview images (sectordominion/og.png and j/invite.png). Run: node tools/make-og.js -->
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 1200px; height: 630px; overflow: hidden; background: #05070d; color: #cfe3ff; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .bg { position: absolute; inset: 0; background:
+    radial-gradient(ellipse at 78% 55%, rgba(94,224,176,0.22), transparent 55%),
+    radial-gradient(ellipse at 20% 90%, rgba(180,140,255,0.16), transparent 50%),
+    #05070d; }
+  canvas { position: absolute; inset: 0; }
+  .text { position: absolute; left: 80px; top: 150px; width: 600px; }
+  .kicker { color: #7d90b0; font-size: 26px; letter-spacing: 4px; margin-bottom: 18px; }
+  h1 { margin: 0; color: #5ee0b0; font-size: 84px; line-height: 1.05; letter-spacing: 6px; }
+  p { font-size: 32px; line-height: 1.35; color: #cfe3ff; margin: 28px 0 0; }
+  .pill { display: inline-block; margin-top: 36px; border: 2px solid #5ee0b0; color: #5ee0b0; background: #123a2e; padding: 12px 28px; font-size: 30px; border-radius: 8px; }
+</style>
+<div class="bg"></div>
+<canvas id="c" width="1200" height="630"></canvas>
+<div class="text">
+  <div class="kicker" id="kicker"></div>
+  <h1>SECTOR<br>DOMINION</h1>
+  <p id="line"></p>
+  <span class="pill" id="pill"></span>
+</div>
+<script>
+  const q = new URLSearchParams(location.search).get('v') === 'invite';
+  document.getElementById('kicker').textContent = q ? 'YOU ARE INVITED' : 'A SPACE EMPIRE GAME';
+  document.getElementById('line').textContent = q ? 'A friend started a game. Tap the link to take your seat.' : 'Grow your worlds. Outwit the AI. Play alone or with friends.';
+  document.getElementById('pill').textContent = q ? 'Tap to join' : 'Play free in your browser';
+  // a made-up sector, drawn from a fixed seed so the image is the same every time
+  let a = 7;
+  const rnd = () => { a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  const c = document.getElementById('c').getContext('2d');
+  for (let i = 0; i < 160; i++) { c.fillStyle = 'rgba(207,227,255,' + (0.15 + rnd() * 0.5) + ')'; c.fillRect(rnd() * 1200, rnd() * 630, 1 + rnd() * 2, 1 + rnd() * 2); }
+  const colors = ['#5ee0b0', '#ffb454', '#ff6b6b', '#b48cff', '#6b7a94'];
+  const worlds = [];
+  for (let i = 0; i < 22; i++) worlds.push({ x: 640 + rnd() * 500, y: 60 + rnd() * 510, r: 6 + rnd() * 16, col: colors[i < 6 ? 0 : i < 9 ? 1 : i < 11 ? 2 : i < 13 ? 3 : 4] });
+  c.strokeStyle = 'rgba(94,224,176,0.28)'; c.lineWidth = 2; c.setLineDash([8, 8]);
+  for (let i = 0; i < worlds.length; i++) for (let j = i + 1; j < worlds.length; j++) {
+    const d = Math.hypot(worlds[i].x - worlds[j].x, worlds[i].y - worlds[j].y);
+    if (d < 130 && worlds[i].col === worlds[j].col) { c.beginPath(); c.moveTo(worlds[i].x, worlds[i].y); c.lineTo(worlds[j].x, worlds[j].y); c.stroke(); }
+  }
+  c.setLineDash([]);
+  for (const w of worlds) {
+    c.fillStyle = w.col; c.shadowColor = w.col; c.shadowBlur = 22;
+    c.beginPath(); c.arc(w.x, w.y, w.r, 0, 7); c.fill();
+    c.shadowBlur = 0;
+  }
+</script>

@@ -20,7 +20,7 @@
     online: null,   // the game with friends, through the shared store (online.js)
     onlineMsg: '',
     onlineBusy: false,
-    showInvites: false,
+    userView: false, // the player has panned or zoomed, so a resize should not refit the map
     notes: [],      // who came and went, and turns played: shown in the log, not saved
   };
 
@@ -133,7 +133,7 @@
 
   function renderWorld() {
     const el = $('p-world'), s = ui.state;
-    if (ui.selected == null) { el.innerHTML = '<h3>No world selected</h3><p class="dim">Click a world on the map.</p>'; return; }
+    if (ui.selected == null) { el.innerHTML = '<h3>No world selected</h3><p class="dim">Tap a world on the map.</p>'; return; }
     const w = s.worlds[ui.selected], i = info(w);
     if (!i) { el.innerHTML = '<h3>Unexplored</h3>'; return; }
     const type = G.WORLD_TYPES[w.type].label, mine = w.owner === ui.me, frozen = s.over || !meEmp().alive;
@@ -175,8 +175,8 @@
         }
         const n = G.shipCount(ui.send);
         h += '<div class="btns"><button class="primary" data-act="target" ' + (n && !frozen ? '' : 'disabled') + '>' +
-          (ui.targeting ? 'Click a world on the map...' : 'Choose destination') + '</button></div>';
-        if (ui.targeting) h += '<p class="hint">Esc to cancel.</p>';
+          (ui.targeting ? 'Tap a world on the map...' : 'Choose destination') + '</button></div>';
+        if (ui.targeting) h += '<p class="hint">' + (coarse ? 'Tap the button again to cancel.' : 'Esc to cancel.') + '</p>';
       }
     } else if (ui.vis.size) {
       const near = s.worlds.filter(x => x.owner === ui.me).sort((a, b) => G.dist(a, w) - G.dist(b, w))[0];
@@ -225,6 +225,7 @@
     ui.view.scale = scale;
     ui.view.ox = (r.width - s.width * scale) / 2;
     ui.view.oy = (r.height - s.height * scale) / 2;
+    ui.userView = false;
   }
 
   function resize() {
@@ -232,7 +233,7 @@
     canvas.width = Math.round(r.width * dpr);
     canvas.height = Math.round(r.height * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    if (ui.state) { fitView(); draw(); }
+    if (ui.state) { if (!ui.userView) fitView(); draw(); }
   }
 
   const sx = x => ui.view.ox + x * ui.view.scale;
@@ -293,7 +294,7 @@
   }
 
   function worldAt(px, py) {
-    let best = null, bd = 18;
+    let best = null, bd = coarse ? 28 : 18;
     for (const w of ui.state.worlds) {
       if (!info(w)) continue;
       const d = Math.hypot(sx(w.x) - px, sy(w.y) - py);
@@ -302,21 +303,53 @@
     return best;
   }
 
-  // pointer: drag to pan, click to select/target
-  let drag = null;
+  // pointer: one finger or the mouse drags to pan and taps/clicks to select or target; two fingers pinch to zoom
+  const coarse = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
+  const pts = new Map();
+  let drag = null, pinch = null;
+  const MIN_SCALE = 2, MAX_SCALE = 30;
+
+  function zoomAt(px, py, ns) {
+    const v = ui.view;
+    ns = Math.max(MIN_SCALE, Math.min(MAX_SCALE, ns));
+    const f = ns / v.scale;
+    v.ox = px - (px - v.ox) * f; v.oy = py - (py - v.oy) * f; v.scale = ns;
+    ui.userView = true;
+  }
+  const local = e => { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+
   canvas.addEventListener('pointerdown', e => {
     canvas.setPointerCapture(e.pointerId);
-    drag = { x: e.clientX, y: e.clientY, ox: ui.view.ox, oy: ui.view.oy, moved: false };
+    pts.set(e.pointerId, local(e));
+    if (pts.size === 2) {
+      const [a, b] = [...pts.values()];
+      pinch = { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, scale: ui.view.scale, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2, ox: ui.view.ox, oy: ui.view.oy };
+      drag = null;
+    } else if (pts.size === 1) drag = { x: e.clientX, y: e.clientY, ox: ui.view.ox, oy: ui.view.oy, moved: false };
   });
   canvas.addEventListener('pointermove', e => {
-    const r = canvas.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
+    const p = local(e);
+    if (pts.has(e.pointerId)) {
+      pts.set(e.pointerId, p);
+      if (pinch && pts.size === 2) {
+        const [a, b] = [...pts.values()], d = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+        // keep the spot that was between the fingers when the pinch began between them now, at the new scale
+        const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+        const ns = Math.max(MIN_SCALE, Math.min(MAX_SCALE, pinch.scale * d / pinch.d)), f = ns / pinch.scale;
+        ui.view.scale = ns; ui.view.ox = mx - (pinch.mx - pinch.ox) * f; ui.view.oy = my - (pinch.my - pinch.oy) * f;
+        ui.userView = true;
+        draw();
+        return;
+      }
+    }
     if (drag) {
       const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-      if (Math.abs(dx) + Math.abs(dy) > 4) drag.moved = true;
-      if (drag.moved) { ui.view.ox = drag.ox + dx; ui.view.oy = drag.oy + dy; canvas.classList.add('dragging'); draw(); }
+      if (Math.abs(dx) + Math.abs(dy) > (coarse ? 8 : 4)) drag.moved = true;
+      if (drag.moved) { ui.view.ox = drag.ox + dx; ui.view.oy = drag.oy + dy; ui.userView = true; canvas.classList.add('dragging'); draw(); }
       return;
     }
-    const id = worldAt(px, py);
+    if (e.pointerType === 'touch') return;
+    const id = worldAt(p.x, p.y);
     if (id !== ui.hover) { ui.hover = id; draw(); }
     const tip = $('tip');
     if (id == null) tip.hidden = true;
@@ -324,31 +357,39 @@
       const w = ui.state.worlds[id], i = info(w);
       tip.hidden = false;
       tip.textContent = w.name + ' - ' + (i.natives && !i.owner ? 'Natives' : i.owner ? ui.state.empires[i.owner - 1].name : 'Unclaimed') + ', pop ' + i.pop;
-      tip.style.left = (px + 14) + 'px'; tip.style.top = (py + 14) + 'px';
+      tip.style.left = (p.x + 14) + 'px'; tip.style.top = (p.y + 14) + 'px';
     }
   });
   canvas.addEventListener('pointerup', e => {
-    const r = canvas.getBoundingClientRect();
+    const wasPinch = !!pinch;
+    pts.delete(e.pointerId);
+    if (pts.size < 2) pinch = null;
+    if (wasPinch) { // a finger is still down: carry on panning from where it is, without a jump
+      const rest = [...pts.entries()][0];
+      drag = rest ? { x: rest[1].x + canvas.getBoundingClientRect().left, y: rest[1].y + canvas.getBoundingClientRect().top, ox: ui.view.ox, oy: ui.view.oy, moved: true } : null;
+      canvas.classList.remove('dragging');
+      return;
+    }
     const wasDrag = drag && drag.moved;
     drag = null;
     canvas.classList.remove('dragging');
     if (wasDrag) return;
-    const id = worldAt(e.clientX - r.left, e.clientY - r.top);
+    const p = local(e), id = worldAt(p.x, p.y);
     if (ui.targeting) {
       if (id != null) dispatchTo(id);
       return;
     }
     if (id != null) { ui.selected = id; resetSend(); refresh(); }
   });
+  canvas.addEventListener('pointercancel', e => { pts.delete(e.pointerId); if (pts.size < 2) pinch = null; if (!pts.size) drag = null; canvas.classList.remove('dragging'); });
   canvas.addEventListener('pointerleave', () => { $('tip').hidden = true; ui.hover = null; });
   canvas.addEventListener('wheel', e => {
     e.preventDefault();
-    const r = canvas.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
-    const k = e.deltaY < 0 ? 1.15 : 1 / 1.15, v = ui.view;
-    const ns = Math.max(3, Math.min(30, v.scale * k)), f = ns / v.scale;
-    v.ox = px - (px - v.ox) * f; v.oy = py - (py - v.oy) * f; v.scale = ns;
+    const p = local(e);
+    zoomAt(p.x, p.y, ui.view.scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15));
     draw();
   }, { passive: false });
+  $('b-fit').onclick = () => { fitView(); draw(); };
 
   function toast(msg) {
     ui.state.log.unshift({ turn: ui.state.turn, text: msg, kind: 'bad', to: [ui.me] });
@@ -396,7 +437,7 @@
   }
 
   function openNew() {
-    if (ui.online) { toast('You are in a game with friends. Use Leave game in the Online panel first.'); return; }
+    if (ui.online) { toast('You are in a game with friends. Use Leave game in the Game with friends panel first.'); return; }
     $('d-new').showModal();
   }
 
@@ -538,12 +579,8 @@
         (o.isHost && seat !== ui.me && e.human && e.alive && !entry ? ' <button class="small" data-act="skip" data-e="' + seat + '" title="Play the turn without them">skip</button> <button class="small" data-act="skip-ai" data-e="' + seat + '" title="Give this empire to the AI for good">AI</button>' : '') + '</div>';
     }
     h += '</div><div class="btns"><button data-act="osync">Refresh</button><button data-act="orebuild" title="Replay the whole game from its log">Rebuild</button>';
-    if (o.isHost && g.invites) h += '<button data-act="oinvites">Invite codes</button>';
+    if (o.isHost) h += '<button data-act="oinvites">Invite links</button>';
     h += '<button data-act="oleave">Leave game</button></div>';
-    if (ui.showInvites && g.invites) {
-      h += g.invites.map((c, i) => '<p class="dim">' + esc(nameOf(i + 2)) + ' (seat ' + (i + 2) + ')</p><textarea readonly rows="3" style="width:100%;background:#060b16;color:inherit;border:1px solid var(--line);border-radius:4px;font:11px monospace">' + esc(c) + '</textarea>').join('');
-      h += '<p class="fine">Each code is for one friend. Anyone holding a code can play that seat, so send it privately.</p>';
-    }
     if (ui.onlineMsg) h += '<p class="hint">' + esc(ui.onlineMsg) + '</p>';
     el.innerHTML = h;
   }
@@ -554,18 +591,19 @@
     const a = b.dataset.act, o = ui.online;
     if (a === 'osync') { ui.onlineMsg = 'Checking...'; refresh(); await syncOnline(false); refresh(); }
     else if (a === 'orebuild') { ui.onlineMsg = 'Rebuilding...'; refresh(); const r = await o.rebuild(); adoptSession(); ui.onlineMsg = r.error || 'Rebuilt from the log. Turn ' + r.turn + '.'; save(); refresh(); }
-    else if (a === 'oinvites') { ui.showInvites = !ui.showInvites; refresh(); }
+    else if (a === 'oinvites') openInvites();
     else if (a === 'skip' || a === 'skip-ai') {
       const ai = a === 'skip-ai';
       if (ai && !confirm('Give this empire to the AI for the rest of the game?')) return;
       const r = await o.hostSkip(+b.dataset.e, ai);
       adoptSession(); ui.onlineMsg = r.ok ? '' : r.msg; save(); refresh();
     } else if (a === 'oleave') {
-      if (!confirm('Leave this game on this device? The game stays on the server. You can come back with your invite code.')) return;
-      clearOnline(); ui.online = null; ui.showInvites = false; ui.notes = [];
+      if (!confirm('Leave this game on this device? The game stays on the server. You can come back with your invite link.')) return;
+      clearOnline(); ui.online = null; ui.notes = [];
       document.title = baseTitle;
       const solo = load();
       setState(solo || G.newGame({}));
+      if (!solo) save();
     }
   });
 
@@ -610,21 +648,77 @@
     try {
       const server = String(fd.get('server') || '').trim();
       const session = await Online.Session.create({ server, humans: +fd.get('humans'), difficulty: fd.get('difficulty'), worlds: +fd.get('worlds') });
-      ui.showInvites = true;
       startOnline(session);
       $('d-online').close();
+      openInvites(); // straight to "how do I get my friends in"
     } catch (err) { msg.textContent = err.message; }
   });
-  $('b-join-online').onclick = async () => {
-    const msg = $('online-msg');
-    msg.textContent = 'Joining...';
+
+  // ----- invite links -----
+
+  // Short on purpose: the page's own address, /j/, then the room and seat. The part after # is never sent to any server.
+  const inviteLink = seat => new URL('../j/', location.href).href + '#' + Online.inviteCode(ui.online.game.room, seat);
+
+  function openInvites() {
+    if (!ui.online || !ui.online.isHost) return;
+    const g = ui.online.game, list = $('invite-list');
+    list.innerHTML = '';
+    for (let seat = 2; seat <= g.humans; seat++) {
+      const url = inviteLink(seat), row = document.createElement('div');
+      row.className = 'invite';
+      row.innerHTML = '<div class="who">Friend ' + (seat - 1) + ' <span class="dim">(' + esc(nameOf(seat)) + ')</span></div><input readonly aria-label="Invite link for friend ' + (seat - 1) + '"><div class="row"><button type="button" data-copy>Copy link</button></div>';
+      const input = row.querySelector('input');
+      input.value = url;
+      input.addEventListener('focus', () => input.select());
+      const btns = row.querySelector('.row');
+      if (navigator.share) {
+        const sh = document.createElement('button');
+        sh.type = 'button'; sh.textContent = 'Share'; sh.className = 'primary';
+        sh.onclick = () => navigator.share({ title: 'Sector Dominion', text: 'Join my game of Sector Dominion:', url }).catch(() => { /* closed the share sheet */ });
+        btns.appendChild(sh);
+      }
+      row.querySelector('[data-copy]').onclick = async ev => {
+        const b = ev.currentTarget;
+        let ok = false;
+        try { await navigator.clipboard.writeText(url); ok = true; } catch (err) { input.select(); try { ok = document.execCommand('copy'); } catch (e2) { /* ignore */ } }
+        b.textContent = ok ? 'Copied' : 'Press and hold to copy';
+        setTimeout(() => { b.textContent = 'Copy link'; }, 2000);
+      };
+      list.appendChild(row);
+    }
+    $('d-invite').showModal();
+  }
+
+  // Joining. A link opens the game page with #join=<code>. If this device is not in a game, that joins straight away.
+  // If it is, ask first, because joining swaps the game on this device.
+  async function joinGame(invite) {
+    const msg = $('join-msg'), go = $('b-join-go'), close = $('b-join-close');
+    const server = new URLSearchParams(location.search).get('server') || window.KV_URL || '';
+    msg.textContent = 'Joining...'; go.hidden = true; close.textContent = 'Cancel';
+    if (!$('d-join').open) $('d-join').showModal();
     try {
-      const session = await Online.Session.join($('t-invite').value);
-      ui.showInvites = false;
+      const session = await Online.Session.join(invite, server);
       startOnline(session);
-      $('d-online').close();
-    } catch (err) { msg.textContent = err.message; }
-  };
+      $('d-join').close(); $('d-online').close();
+    } catch (err) { msg.textContent = err.message; close.textContent = 'Close'; }
+  }
+
+  $('b-join-online').onclick = () => { $('d-online').close(); joinGame($('t-invite').value); };
+
+  function handleHash() {
+    const m = /^#join=(.+)$/.exec(location.hash);
+    if (!m) return;
+    history.replaceState(null, '', location.pathname + location.search); // the code is not needed in the address bar any more
+    const inv = Online.parseInvite(m[1]);
+    if (ui.online && inv && inv.room === ui.online.game.room) return; // already in this game
+    if (ui.online && inv) {
+      $('join-msg').textContent = 'You are already in a game on this device. Joining this one replaces it here. The other game stays on the server, and its link still works.';
+      $('b-join-go').hidden = false; $('b-join-close').textContent = 'Not now';
+      $('b-join-go').onclick = () => joinGame(m[1]);
+      $('d-join').showModal();
+    } else joinGame(m[1]);
+  }
+  window.addEventListener('hashchange', handleHash);
 
   // ---------- boot ----------
 
@@ -638,12 +732,17 @@
     const saved = load();
     setState(saved || G.newGame({}));
     if (!saved) {
+      save(); // a refresh must bring this same game back, not roll a new one
       try {
-        if (!localStorage.getItem('sectordominion-help-seen')) {
+        if (!localStorage.getItem('sectordominion-help-seen') && !/^#join=/.test(location.hash)) {
           $('d-help').showModal();
           localStorage.setItem('sectordominion-help-seen', '1');
         }
-      } catch (e) { $('d-help').showModal(); }
+      } catch (e) { /* storage blocked: skip the intro */ }
     }
   }
+  handleHash();
+  // phones can drop a page without warning, so write the game down whenever the page is hidden or closed
+  window.addEventListener('pagehide', save);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) save(); });
 })();

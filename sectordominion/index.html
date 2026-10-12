@@ -2,7 +2,18 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b1220">
+<meta name="description" content="A small space-empire strategy game in your browser. Play alone against three AI empires, or with friends over a link.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Sector Dominion">
+<meta property="og:title" content="Sector Dominion">
+<meta property="og:description" content="Build a star empire and take over the sector. Free, in your browser. Play alone or with friends over a link.">
+<meta property="og:url" content="https://jroes.github.io/experiments/sectordominion/">
+<meta property="og:image" content="https://jroes.github.io/experiments/sectordominion/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
 <title>Sector Dominion</title>
 <link rel="stylesheet" href="style.css">
 </head>
@@ -23,6 +34,7 @@
 <main>
   <div id="mapwrap">
     <canvas id="map"></canvas>
+    <button id="b-fit" title="Fit the whole map">Fit</button>
     <div id="banner" hidden></div>
     <div id="tip" hidden></div>
   </div>
@@ -38,14 +50,15 @@
   <h2>How to play</h2>
   <p>You run a small star empire. Grow it, then take over the sector. Win by wiping out all three rival empires or by holding 70% of all worlds.</p>
   <ul>
-    <li><b>Click a world</b> to select it. Drag the map to pan, scroll to zoom.</li>
+    <li><b>Tap or click a world</b> to select it. Drag the map to pan. Pinch or scroll to zoom, and <i>Fit</i> brings the whole map back.</li>
     <li>You only see worlds near your worlds and fleets. Send scouts to look around.</li>
     <li><b>Build</b> ships at your worlds. They show up next turn. Ships cost credits.</li>
-    <li><b>Dispatch</b>: pick ship counts in the world panel, hit <i>Choose destination</i>, click a world on the map.</li>
+    <li><b>Dispatch</b>: pick ship counts in the world panel, hit <i>Choose destination</i>, then pick a world on the map.</li>
     <li>A <b>Transport</b> sent to an empty world colonizes it. Natives have defenses and need an invasion.</li>
     <li>To take a defended world, kill its garrison and defenses, then land more troops than it has. Each Transport carries 5 troops.</li>
     <li><b>Fortify</b> adds permanent defense to a world. <b>Research</b> makes ships stronger and income higher.</li>
-    <li>Keys: <kbd>E</kbd> end turn, <kbd>Esc</kbd> cancel targeting.</li>
+    <li><b>Play with friends</b> gives you one link per friend. They open it and they are in. Turns play when everyone has sent orders, so nobody has to be online at the same time.</li>
+    <li>On a computer: <kbd>E</kbd> ends the turn, <kbd>Esc</kbd> cancels targeting.</li>
   </ul>
   <p class="fine">Inspired by classic 4X space strategy games. Original code and art.</p>
   <form method="dialog"><button class="primary">Got it</button></form>
@@ -80,8 +93,7 @@
 
 <dialog id="d-online">
   <h2>Play with friends</h2>
-  <p class="fine">Everyone keeps their own copy of the game in their browser, and you send your orders to a small shared server. When everyone's orders are in, each browser plays the turn itself. If your friends are online the turn plays right away, and if they are not, the game just waits and keeps going: nobody has to be here at the same time, and you can come back from any device with your invite code. You will see who is online and who was last seen. Each game lives under a long random name that only your invite codes contain. There are no accounts, so only play with friends.</p>
-  <h3>Start a game</h3>
+  <p class="fine">Pick the settings and you get one link per friend. They open it and they are in, with nothing to type. Nobody has to be online at the same time: the game waits for each player's orders, plays the turn once everyone is in, and you can come back from any device with your link. Your game lives under a long random name that only your links contain. There are no accounts, so only send links to people you trust.</p>
   <form id="f-online" method="dialog">
     <input name="server" type="hidden"> <!-- filled in from shared/config.js; ?server=... overrides it for testing -->
     <label>Human players (including you)
@@ -95,10 +107,26 @@
     </label>
     <div class="row"><button value="cancel" formnovalidate>Cancel</button><button value="create" class="primary">Create game</button></div>
   </form>
-  <h3>Join a game</h3>
-  <textarea id="t-invite" rows="3" placeholder="Paste your invite code (SDO-...)" style="width:100%;background:#060b16;color:inherit;border:1px solid var(--line);border-radius:4px;font:11px monospace"></textarea>
-  <div class="row"><button type="button" id="b-join-online">Join</button></div>
+  <details>
+    <summary>Got an invite you can't open as a link?</summary>
+    <input id="t-invite" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Paste the link or code">
+    <div class="row"><button type="button" id="b-join-online">Join</button></div>
+  </details>
   <p class="hint" id="online-msg"></p>
+</dialog>
+
+<dialog id="d-invite">
+  <h2>Your game is ready</h2>
+  <p>Send each friend their own link. When they open it, they are in. There is nothing for them to type.</p>
+  <div id="invite-list"></div>
+  <p class="fine">You can start playing now. The game waits for your friends and plays each turn once everyone has sent orders. Each link is for one seat, so send it only to that friend. You can get these links again with <b>Invite links</b> in the game panel.</p>
+  <form method="dialog"><button class="primary" autofocus>Start playing</button></form>
+</dialog>
+
+<dialog id="d-join">
+  <h2>Join a game</h2>
+  <p id="join-msg"></p>
+  <div class="row"><button type="button" id="b-join-close" onclick="this.closest('dialog').close()">Close</button><button type="button" id="b-join-go" class="primary" hidden>Join this game</button></div>
 </dialog>
 
 <script src="../shared/config.js"></script>
