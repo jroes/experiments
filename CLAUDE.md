@@ -19,7 +19,7 @@ key/value store. Live at https://jroes.github.io/experiments/. Written for whoev
 | `sectordominion/` | Space-empire game. `game.js` (rules, AI, no DOM), `online.js` (play with friends), `ui.js`, `index.html`, `style.css` |
 | `warptraders/` | Space trading game. Challenge seeds, plus a live race over WebRTC (`shared/p2p.js`, `lobby.js`) |
 | `tankwars/` | Artillery game. `game.js` (rules, AI, no DOM), `online.js` (play with friends, lockstep through the `/kv` store), `ui.js`, `index.html`, `style.css` |
-| `hollowmere/`, `gullrock/` | Two adventures. Each is `game.js` (plain data: rooms, items, handlers) plus a page; the engine is in `shared/` |
+| `hollowmere/`, `gullrock/`, `starsweeper/` | Three adventures. Each is `game.js` (plain data: rooms, items, handlers) plus a page; the engine is in `shared/` |
 | `shared/` | `store.js` (KV client), `config.js` (`KV_URL`), `qrcode.js` (vendored, MIT), p2p and lobby code. `adventure.js` (engine, no DOM), `adventure-art.js` (EGA pixel helpers), `adventure-ui.js`, `arcade.css` (look shared by Tank Wars and the adventures) |
 | `j/` | Invite landing page: OpenGraph tags for link previews, then hands `#<code>` to the game |
 | `elf-punch/` | Rust server: `/kv` store (`src/store.rs`), the lab for server-authoritative games (`src/lab/`), the original elf toy (`src/elf.rs`). See its README |
@@ -95,6 +95,8 @@ Seats are 1-based in keys and invites and 0-based in the game. If a change would
 - Each game has a scripted walkthrough in `tests/walk-<game>.js` (a win with every point, and a list of ways to die). Add to both when you add a puzzle. The tests also check that every clickable thing can be walked up to and every exit can be walked to,
   and fuzz random commands. `maxScore` must equal what the walkthrough earns.
 - Art is code (`adventure-art.js`, 16 EGA colours, dither for extra shades), 160 x 100, scaled up with `image-rendering: pixelated`. Objects with a `draw()` are sorted by `base` (or the bottom of `rect`) against the hero, so the hero walks behind and in front of things.
+- A game can set `music` (a mood for `Sound.mount`, default `'storybook'`) and `hero` (its own sprite function, same arguments as `AdvArt.hero`). Star Sweeper uses both.
+- A room entered only by a handler (`g.goto`) and not by an edge, like landing the pod, can say so with `reachedBy`; the reachability test starts from those rooms too.
 - Phone: the verb buttons plus the inventory do everything the keyboard does. Tapping a thing looks at it; pick Use or Give, then tap what you carry, then the target.
 
 **Two ways to host a game.** Browsers hold the rules (lockstep, `/kv`, Sector Dominion) when friends are playing and cheating does not matter. The server holds
