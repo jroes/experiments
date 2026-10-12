@@ -106,6 +106,19 @@ Shell gotcha: `pkill -f <pattern>` can match and kill your own shell command. Us
 - Map clicks are computed with the game's own fit rule. Dispatch `resize` first so the game refits to what is on screen.
 - Videos are a few MB each and live in git, so do not regenerate them for small changes.
 
+## Sound
+
+`shared/sound.js` makes every sound in the browser with Web Audio (oscillators and noise): no files, no licences. Short effects for things that happen (a friend joins or
+leaves, a turn plays, a build, a launch, a world settled, a battle, winning or losing) and a very quiet generative space ambience that is **off until the player turns it on**.
+Settings (effects, music, volume) are saved on the device under one key shared by all the games. Rules for adding sounds:
+
+- Sounds only listen to what the page already knows. They never touch game rules or state. Play them from UI code (`Sound.play('join')`), never from `game.js`.
+- Browsers only allow audio after a tap or key press, so the context is made on the first one. Nothing plays before that, and that is fine.
+- Opening or switching to a game must be silent: set the baseline first (`quietBaseline()` in Sector Dominion), then play sounds for what changes.
+- Music stops while the page is hidden. Same sound twice within 90 ms plays once.
+- Add a new sound in `SOUNDS` in `sound.js`, then run the offline render check (peak under 0.95, not silent, no NaN) and keep it well under the loudest ones. Effects sit about 15 to 20 dB above the music.
+- Check levels, not taste: nobody can listen to it in the sandbox. Ask the owner to listen after a deploy.
+
 ## UI conventions
 
 - Works on a phone first: 16px fields (iOS zooms smaller ones), 40px tap targets on coarse pointers, `100dvh`, safe-area padding, the main action pinned to the bottom, map with one-finger pan and pinch zoom.

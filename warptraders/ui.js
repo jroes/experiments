@@ -6,6 +6,9 @@
   const canvas = $('map'), ctx = canvas.getContext('2d');
   let s, view = { sc: 1, ox: 0, oy: 0 }, hover = null, qty = {};
   let net = null, race = null; // race: { me, players: {id: {name, credits, turnsLeft, done}} }
+  Sound.load().mount($('b-sound'));
+  let wasOver = null, wasEncounter = null; // what the last sound was for
+
   const esc = x => String(x).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
   function save() { if (race) return; try { localStorage.setItem(KEY, JSON.stringify(s)); } catch (e) { /* ignore */ } }
@@ -19,6 +22,10 @@
   const known = id => s.visited.includes(id) || s.visited.some(v => s.sectors[v].warps.includes(id));
 
   function refresh() {
+    // sounds follow what changes: pirates showing up, the run ending
+    if (wasEncounter === false && s.encounter) Sound.play('alarm');
+    if (wasOver === false && s.over) Sound.play('win');
+    wasEncounter = !!s.encounter; wasOver = !!s.over;
     $('s-turns').textContent = s.turnsLeft;
     $('s-credits').textContent = num(s.credits);
     $('s-holds').textContent = G.cargoUsed(s) + '/' + s.holds;
@@ -107,7 +114,15 @@
     else if (a === 'fighters1') r = G.buyFighters(s, 1);
     else if (a === 'fighters10') r = G.buyFighters(s, 10);
     else if (a === 'fight' || a === 'pay' || a === 'flee') { r = G.resolve(s, a); qty = {}; }
-    msg(r); refresh();
+    msg(r);
+    if (r && !r.ok) Sound.play('nope');
+    else if (a === 'warp') Sound.play('warp');
+    else if (a === 'buy' || a === 'sell') Sound.play('coin');
+    else if (a === 'fight') Sound.play('battle');
+    else if (a === 'pay' || a === 'holds' || a === 'fighters1' || a === 'fighters10') Sound.play('build');
+    else if (a === 'flee') Sound.play('warp');
+    else Sound.play('tick');
+    refresh();
   });
 
   // ---------- map ----------
@@ -189,7 +204,7 @@
   canvas.addEventListener('click', e => {
     const r = canvas.getBoundingClientRect(), id = sectorAt(e.clientX - r.left, e.clientY - r.top);
     if (id == null || id === s.sector) return;
-    msg(G.travel(s, id)); qty = {}; refresh();
+    const t = G.travel(s, id); msg(t); Sound.play(t.ok ? 'warp' : 'nope'); qty = {}; refresh();
   });
 
 
