@@ -16,7 +16,7 @@
       set(k, v) { try { root.localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* ignore */ } },
       del(k) { try { root.localStorage.removeItem(k); } catch (e) { /* ignore */ } },
     };
-    Sound.load().mount($('b-sound'), { music: 'storybook' });
+    Sound.load().mount($('b-sound'), { music: def.music || 'storybook' });
 
     const canvas = $('pic'), ctx = canvas.getContext('2d');
     ctx.imageSmoothingEnabled = false;
@@ -72,7 +72,7 @@
       r.back(pix, g, t);
       const list = [];
       for (const o of g.objects()) if (o.draw) list.push({ base: o.base !== undefined ? o.base : (o.rect ? o.rect[1] + o.rect[3] : 0), f: () => o.draw(pix, g, t) });
-      list.push({ base: s.y, f: () => Art.hero(pix, s.x, s.y, s.dir, moving, g.step) });
+      list.push({ base: s.y, f: () => (def.hero || Art.hero)(pix, s.x, s.y, s.dir, moving, g.step) });
       list.sort((a, b) => a.base - b.base);
       for (const l of list) l.f();
       if (r.front) r.front(pix, g, t);

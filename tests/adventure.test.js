@@ -7,6 +7,7 @@ const Art = require('../shared/adventure-art.js');
 const GAMES = {
   hollowmere: { def: require('../hollowmere/game.js'), walk: require('./walk-hollowmere.js') },
   gullrock: { def: require('../gullrock/game.js'), walk: require('./walk-gullrock.js') },
+  starsweeper: { def: require('../starsweeper/game.js'), walk: require('./walk-starsweeper.js') },
 };
 
 function play(def, lines) {
@@ -56,7 +57,9 @@ test('every room and exit is real, and exits come back where they should', () =>
       assert.ok(Adv.isWalkable(r, p.x, p.y, g), rid + ' has no walkable floor');
     }
     // the rooms are all reachable from the start
-    const seen = new Set([def.start.room]), q = [def.start.room];
+    // (a room with reachedBy is entered by a handler, like landing a pod: start from those too)
+    const firsts = [def.start.room].concat(Object.keys(def.rooms).filter(id => def.rooms[id].reachedBy));
+    const seen = new Set(firsts), q = firsts.slice();
     while (q.length) for (const to of Object.values(def.rooms[q.shift()].exits || {})) if (!seen.has(to)) { seen.add(to); q.push(to); }
     // (rooms entered by a door, not an edge, are reached through their object handlers: count them too)
     assert.ok(seen.size >= Object.keys(def.rooms).length - 2, name + ' rooms unreachable');
@@ -74,7 +77,7 @@ test('every scene draws without error, on a fake canvas, at several moments', ()
       for (const t of [0, 0.4, 1.7]) {
         r.back(c, g, t);
         for (const o of g.objects()) if (o.draw) o.draw(c, g, t);
-        Art.hero(c, 80, 80, 'd', true, 3);
+        (def.hero || Art.hero)(c, 80, 80, 'd', true, 3);
       }
     }
     for (const it of Object.values(def.items)) if (it.draw) it.draw(c, 10, 10, g);

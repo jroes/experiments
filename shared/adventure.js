@@ -53,13 +53,14 @@
     restart: ['restart', 'quit'],
     tie: ['tie', 'bind', 'fasten', 'knot'],
     dig: ['dig', 'shovel'],
+    clean: ['clean', 'mop', 'wipe', 'sweep', 'scrub', 'wash', 'polish'],
   };
   const VERB_OF = {};
   for (const [canon, list] of Object.entries(VERBS)) for (const w of list) if (!has(VERB_OF, w)) VERB_OF[w] = canon;
   const DIRS = { n: 'n', north: 'n', s: 's', south: 's', e: 'e', east: 'e', w: 'w', west: 'w', u: 'n', up: 'n', d: 's', down: 's' };
   const DIR_WORD = { n: 'north', s: 'south', e: 'east', w: 'west' };
   // verbs where the thing acted on comes first ("cut rope with knife"); the others act on the second ("use key on door")
-  const TARGET_FIRST = new Set(['open', 'close', 'attack', 'light', 'search', 'look', 'dig', 'cut', 'play']);
+  const TARGET_FIRST = new Set(['open', 'close', 'attack', 'light', 'search', 'look', 'dig', 'cut', 'play', 'clean']);
   const FILLER = new Set(['the', 'a', 'an', 'my', 'some', 'that', 'this', 'please', 'those', 'these', 'your', 'at', 'of', 'around', 'out', 'over']);
   const PREPS = new Set(['on', 'with', 'to', 'in', 'into', 'onto', 'from', 'under', 'behind', 'inside', 'against', 'across', 'for']);
 
@@ -344,9 +345,10 @@
       attack: () => 'Violence is not the answer here.', kiss: () => 'That is a little silly.',
       smell: () => 'It smells like what it is.', listen: () => 'You hear nothing special.',
       tie: () => "That doesn't work.", cut: () => 'You have nothing to cut that with.', dig: () => 'You dig around and find nothing.',
+      clean: () => 'It is about as clean as it is going to get.',
       drop: () => 'Dropped.',
     };
-    const NEEDS_NEAR = new Set(['cut', 'dig', 'take', 'open', 'close', 'push', 'pull', 'climb', 'talk', 'give', 'use', 'search', 'eat', 'drink', 'kiss', 'attack', 'tie', 'light', 'swim', 'enter', 'play', 'smell']);
+    const NEEDS_NEAR = new Set(['cut', 'dig', 'take', 'open', 'close', 'push', 'pull', 'climb', 'talk', 'give', 'use', 'search', 'eat', 'drink', 'kiss', 'attack', 'tie', 'light', 'swim', 'enter', 'play', 'smell', 'clean']);
 
     function call(h, ...rest) { if (typeof h === 'function') h(g, ...rest); else if (typeof h === 'string') g.say(h); }
 
