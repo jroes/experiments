@@ -13,29 +13,30 @@ const { chromium } = require('playwright');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 const OVERLAY_CSS = `
-#vo-cap { position: fixed; left: 50%; bottom: 34px; transform: translateX(-50%) translateY(14px); max-width: 78%; z-index: 99999; pointer-events: none;
-  background: rgba(5,7,13,.88); border: 1px solid #5ee0b0; border-radius: 12px; padding: 14px 26px; color: #eaf3ff; font: 600 30px/1.25 ui-monospace, Menlo, Consolas, monospace;
+#vo-cap { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%) translateY(14px); max-width: 84%; pointer-events: none;
+  background: rgba(5,7,13,.88); border: 1px solid #5ee0b0; border-radius: 12px; padding: 11px 20px; color: #eaf3ff; font: 600 23px/1.25 ui-monospace, Menlo, Consolas, monospace;
   text-align: center; opacity: 0; transition: opacity .35s, transform .35s; box-shadow: 0 8px 40px rgba(0,0,0,.6), 0 0 24px rgba(94,224,176,.25); }
 #vo-cap.on { opacity: 1; transform: translateX(-50%) translateY(0); }
 #vo-cap b { color: #5ee0b0; font-weight: 700; }
-#vo-hi { position: fixed; z-index: 99998; pointer-events: none; border: 3px solid #ffb454; border-radius: 10px; opacity: 0; transition: opacity .3s, left .35s, top .35s, width .35s, height .35s;
-  box-shadow: 0 0 0 9999px rgba(0,0,0,.45), 0 0 26px rgba(255,180,84,.8); }
+#vo-top { position: fixed; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0; background: none; overflow: visible; pointer-events: none; }
+#vo-hi { position: fixed; pointer-events: none; border: 3px solid #ffb454; border-radius: 10px; opacity: 0; transition: opacity .3s, left .35s, top .35s, width .35s, height .35s;
+  box-shadow: 0 0 0 9999px rgba(0,0,0,.38), 0 0 26px rgba(255,180,84,.8); }
 #vo-hi.on { opacity: 1; animation: vopulse 1.1s ease-in-out infinite; }
 @keyframes vopulse { 50% { border-color: #ffe0a8; } }
-#vo-cur { position: fixed; z-index: 100000; width: 26px; height: 26px; margin: -4px 0 0 -4px; pointer-events: none; left: -50px; top: -50px; transition: transform .08s; }
+#vo-cur { position: fixed; width: 26px; height: 26px; margin: -4px 0 0 -4px; pointer-events: none; left: -50px; top: -50px; transition: transform .08s; }
 #vo-cur svg { filter: drop-shadow(0 2px 4px rgba(0,0,0,.7)); }
 #vo-cur.down { transform: scale(.82); }
-.vo-ripple { position: fixed; z-index: 99997; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; border: 3px solid #5ee0b0; pointer-events: none; animation: voripple .6s ease-out forwards; }
+.vo-ripple { position: fixed; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; border: 3px solid #5ee0b0; pointer-events: none; animation: voripple .6s ease-out forwards; }
 @keyframes voripple { to { transform: scale(5); opacity: 0; } }
 #vo-card { position: fixed; inset: 0; z-index: 100001; background: #05070d; color: #cfe3ff; display: grid; place-items: center; text-align: center; opacity: 1; transition: opacity .9s; font-family: ui-monospace, Menlo, Consolas, monospace; overflow: hidden; }
 #vo-card.off { opacity: 0; pointer-events: none; }
 #vo-card canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 #vo-card .in { position: relative; animation: vozoom 6s ease-out forwards; }
 @keyframes vozoom { from { transform: scale(.92); letter-spacing: 2px; } to { transform: scale(1.04); } }
-#vo-card .kick { color: #7d90b0; letter-spacing: 8px; font-size: 24px; margin-bottom: 18px; }
-#vo-card h1 { margin: 0; font-size: 104px; line-height: 1.02; color: #5ee0b0; letter-spacing: 10px; text-shadow: 0 0 40px rgba(94,224,176,.55); }
-#vo-card p { font-size: 34px; margin: 26px 0 0; color: #cfe3ff; }
-#vo-card .pill { display: inline-block; margin-top: 34px; border: 2px solid #5ee0b0; color: #5ee0b0; background: #123a2e; padding: 12px 30px; font-size: 30px; border-radius: 10px; }
+#vo-card .kick { color: #7d90b0; letter-spacing: 6px; font-size: 18px; margin-bottom: 18px; }
+#vo-card h1 { margin: 0; font-size: 80px; line-height: 1.02; color: #5ee0b0; letter-spacing: 10px; text-shadow: 0 0 40px rgba(94,224,176,.55); }
+#vo-card p { font-size: 25px; margin: 26px 0 0; color: #cfe3ff; }
+#vo-card .pill { display: inline-block; margin-top: 34px; border: 2px solid #5ee0b0; color: #5ee0b0; background: #123a2e; padding: 9px 24px; font-size: 22px; border-radius: 10px; }
 `;
 
 const OVERLAY_JS = `
@@ -43,17 +44,24 @@ const OVERLAY_JS = `
   if (window.__vo) return;
   const el = (tag, id) => { const e = document.createElement(tag); if (id) e.id = id; return e; };
   const mount = () => {
-    if (document.getElementById('vo-cap')) return;
+    if (document.getElementById('vo-top')) return;
     const st = document.createElement('style'); st.textContent = ${JSON.stringify(OVERLAY_CSS)}; document.head.appendChild(st);
-    document.body.append(el('div', 'vo-cap'), el('div', 'vo-hi'));
+    // everything lives in one popover so it sits in the browser's top layer, above open dialogs
+    const top = el('div', 'vo-top'); top.setAttribute('popover', 'manual');
+    top.append(el('div', 'vo-cap'), el('div', 'vo-hi'));
     const cur = el('div', 'vo-cur');
     cur.innerHTML = '<svg width="26" height="26" viewBox="0 0 26 26"><path d="M4 2 L4 20 L9 15.5 L12.5 23 L15.5 21.6 L12 14.2 L19 14 Z" fill="#fff" stroke="#05070d" stroke-width="1.6" stroke-linejoin="round"/></svg>';
-    document.body.append(cur);
+    top.append(cur);
+    document.body.append(top);
+    const promote = () => { try { top.hidePopover(); } catch (e) { /* not showing */ } try { top.showPopover(); } catch (e) { /* ignore */ } };
+    window.__voPromote = promote; promote();
+    const sm = HTMLDialogElement.prototype.showModal;
+    HTMLDialogElement.prototype.showModal = function () { const r = sm.apply(this, arguments); promote(); return r; };
     window.addEventListener('mousemove', e => { cur.style.left = e.clientX + 'px'; cur.style.top = e.clientY + 'px'; }, true);
     window.addEventListener('mousedown', e => {
       cur.classList.add('down');
       const r = document.createElement('div'); r.className = 'vo-ripple'; r.style.left = e.clientX + 'px'; r.style.top = e.clientY + 'px';
-      document.body.append(r); setTimeout(() => r.remove(), 700);
+      top.append(r); setTimeout(() => r.remove(), 700);
     }, true);
     window.addEventListener('mouseup', () => cur.classList.remove('down'), true);
   };
@@ -95,7 +103,7 @@ const OVERLAY_JS = `
 
 class Recorder {
   constructor(opts) {
-    this.opts = { width: 1280, height: 720, ...opts };
+    this.opts = { width: 960, height: 540, scale: 4 / 3, ...opts }; // a 960x540 page drawn at 4/3 gives a 1280x720 video with bigger text
     this.frames = [];
     this.marks = []; // { t, kind }: where sound effects go
     this.t0 = null;
@@ -105,7 +113,7 @@ class Recorder {
   async start() {
     const { width, height } = this.opts;
     this.browser = await chromium.launch({ executablePath: process.env.CHROMIUM || '/opt/pw-browsers/chromium' });
-    this.ctx = await this.browser.newContext({ viewport: { width, height }, deviceScaleFactor: 1 });
+    this.ctx = await this.browser.newContext({ viewport: { width, height }, deviceScaleFactor: this.opts.scale });
     if (this.opts.route) await this.opts.route(this.ctx);
     this.page = await this.ctx.newPage();
     this.page.on('dialog', d => d.accept(this.opts.promptAnswer || ''));
@@ -122,7 +130,7 @@ class Recorder {
       try { await this.client.send('Page.screencastFrameAck', { sessionId: f.sessionId }); } catch (e) { /* closing */ }
     });
     await this.page.goto(this.opts.url);
-    await this.client.send('Page.startScreencast', { format: 'jpeg', quality: 92, maxWidth: width, maxHeight: height, everyNthFrame: 1 });
+    await this.client.send('Page.startScreencast', { format: 'jpeg', quality: 92, maxWidth: Math.round(width * this.opts.scale), maxHeight: Math.round(height * this.opts.scale), everyNthFrame: 1 });
     this.wall0 = Date.now() / 1000;
     return this.page;
   }
@@ -150,7 +158,7 @@ class Recorder {
   async unhi() { await this.page.evaluate(() => window.__vo.hi(null)); }
 
   async moveTo(x, y, steps) {
-    await this.page.mouse.move(x, y, { steps: steps || 22 });
+    await this.page.mouse.move(x, y, { steps: steps || 14 });
   }
   async clickAt(x, y) {
     await this.moveTo(x, y);
@@ -184,7 +192,7 @@ class Recorder {
     fs.writeFileSync(listFile, list.join('\n'));
     const total = this.frames[this.frames.length - 1].ts - this.frames[0].ts + 0.5;
     const silent = path.join(this.dir, 'silent.mp4');
-    let r = spawnSync('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', listFile, '-vf', 'fps=30,format=yuv420p', '-c:v', 'libx264', '-preset', 'slow', '-crf', '22', '-movflags', '+faststart', silent], { stdio: 'inherit' });
+    let r = spawnSync('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', listFile, '-vf', 'fps=30,format=yuv420p', '-c:v', 'libx264', '-preset', 'medium', '-crf', '22', '-movflags', '+faststart', silent], { stdio: 'inherit' });
     if (r.status) throw new Error('ffmpeg failed');
     // sound
     const wav = path.join(this.dir, 'sound.wav');

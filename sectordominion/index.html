@@ -47,8 +47,14 @@
   </aside>
 </main>
 
+<dialog id="d-intro">
+  <video id="v-intro" controls playsinline preload="none" poster="intro.jpg" src="intro.mp4"></video>
+  <form method="dialog"><button class="primary">Close</button></form>
+</dialog>
+
 <dialog id="d-help">
   <h2>How to play</h2>
+  <p><button type="button" id="b-intro" class="primary">Watch the intro video</button></p>
   <p>You run a small star empire. Grow it, then take over the sector. You win by wiping out all three rival empires, or by holding 70% of all worlds. You lose if your empire is wiped out.</p>
 
   <details open id="h-first">

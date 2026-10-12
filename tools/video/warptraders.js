@@ -17,7 +17,8 @@ const SEED = '112';
     init: `try { if (!localStorage.getItem('wt-vo')) { localStorage.setItem('wt-vo','1'); localStorage.setItem('warptraders-help-seen','1'); } } catch (e) {}`,
   });
   const page = await rec.start();
-  const say = (t, ms) => rec.cap(t, ms);
+  const K = 0.72; // pace: captions stay up this fraction of the time first planned
+  const say = (t, ms) => rec.cap(t, ms && Math.round(ms * K));
   const sectorXY = async id => {
     const { s, W, H } = await page.evaluate(() => ({ s: JSON.parse(localStorage.getItem('warptraders-save-v1')), W: WT.W, H: WT.H }));
     const sec = s.sectors[id];

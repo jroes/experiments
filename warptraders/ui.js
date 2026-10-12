@@ -295,6 +295,8 @@
   $('b-new').onclick = () => { if (race) { alert('Reload the page to leave the race.'); return; } if (s.over || confirm('Start a new game? Current run is lost.')) newGame(); };
   $('b-retire').onclick = () => { if (!s.over && confirm('Retire and bank your credits?')) { G.retire(s); refresh(); } };
   $('b-help').onclick = () => $('d-help').showModal();
+  $('b-intro').onclick = () => { $('d-help').close(); $('d-intro').showModal(); $('v-intro').play().catch(() => { /* the player's own button works */ }); };
+  $('d-intro').addEventListener('close', () => $('v-intro').pause());
   window.addEventListener('resize', resize);
 
   resize();

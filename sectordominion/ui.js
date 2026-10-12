@@ -502,6 +502,8 @@
 
   $('b-end').onclick = endTurn;
   $('b-help').onclick = () => openHelp();
+  $('b-intro').onclick = () => { $('d-help').close(); $('d-intro').showModal(); $('v-intro').play().catch(() => { /* the player's own button works */ }); };
+  $('d-intro').addEventListener('close', () => $('v-intro').pause());
   $('b-new').onclick = openGames;
   $('f-new').addEventListener('submit', e => {
     if (e.submitter && e.submitter.value !== 'ok') return;
