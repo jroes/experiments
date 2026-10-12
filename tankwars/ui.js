@@ -11,7 +11,7 @@
   let busy = false;   // a shot is flying, or the computer is thinking
   let gen = 0;        // bumps on a new game so late timers do nothing
   let shopQueue = [];
-  Sound.load().mount($('b-sound'));
+  Sound.load().mount($('b-sound'), { music: 'march' });
 
   const esc = x => String(x).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const money = n => '$' + n.toLocaleString();
@@ -265,8 +265,10 @@
   function nudge(key, d) {
     if (!human()) return;
     const p = s.players[s.turn];
+    const before = key === 'angle' ? p.angle : p.power;
     if (key === 'angle') p.angle = Math.max(0, Math.min(180, p.angle + d));
     else p.power = Math.max(1, Math.min(100, p.power + d));
+    if ((key === 'angle' ? p.angle : p.power) !== before) Sound.play('adjust', key === 'angle' ? p.angle / 180 : p.power / 100);
     refresh();
   }
   for (const b of document.querySelectorAll('.rep')) {
@@ -307,8 +309,10 @@
     const dx = lx - p.x, dy = ly - (p.y + 5);
     let ang = Math.round(Math.atan2(dy, dx) * 180 / Math.PI);
     if (ang < 0) ang = dx >= 0 ? 0 : 180;
+    const was = p.angle * 1000 + p.power;
     p.angle = Math.max(0, Math.min(180, ang));
     p.power = Math.max(1, Math.min(100, Math.round(Math.sqrt(dx * dx + dy * dy))));
+    if (p.angle * 1000 + p.power !== was) Sound.play('adjust', p.angle / 180);
     refresh();
   }
   let dragging = false;

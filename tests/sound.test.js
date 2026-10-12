@@ -48,3 +48,9 @@ test('a sound that is switched off does not play, and a burst of one sound plays
   s.last = {};
   assert.equal(s.play('turn'), false, 'nothing plays until the browser has allowed sound');
 });
+
+test('a music style that is not one of ours falls back to the default, and never makes a NaN level', () => {
+  const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '../shared/sound.js'), 'utf8');
+  assert.match(src, /hasOwnProperty\.call\(STYLE_LEN, style\)/);
+  assert.ok(!/STYLE_LEN\[style\]\s*\?/.test(src), 'STYLE_LEN must not be indexed with a name from outside');
+});
