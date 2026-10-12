@@ -121,7 +121,7 @@ class Recorder {
     this.page.on('dialog', d => d.accept(this.opts.promptAnswer || ''));
     this.page.on('pageerror', e => console.log('page error:', e.message));
     await this.page.addInitScript(OVERLAY_JS);
-    await this.page.addInitScript(`{ const st = document.createElement('style'); st.textContent = 'body > :not(#vo-top):not(#vo-card):not(script):not(style) { zoom: ${this.opts.zoom}; }'; document.documentElement.appendChild(st); }`);
+    await this.page.addInitScript(`(function put() { if (!document.documentElement) { setTimeout(put, 0); return; } const st = document.createElement('style'); st.textContent = 'body > :not(#vo-top):not(#vo-card):not(script):not(style) { zoom: ${this.opts.zoom}; }'; document.documentElement.appendChild(st); })();`);
     if (this.opts.init) await this.page.addInitScript(this.opts.init);
     this.client = await this.ctx.newCDPSession(this.page);
     this.client.on('Page.screencastFrame', async f => {

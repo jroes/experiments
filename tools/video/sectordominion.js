@@ -20,6 +20,8 @@ const { route, ROOT } = require('./common');
 
   // map click: the same fit the game uses (no pan or zoom yet)
   const worldXY = async name => {
+    await page.evaluate(() => window.dispatchEvent(new Event('resize'))); // the game refits the map to what is on screen now
+    await sleep(60);
     const s = await state();
     const w = s.worlds.find(x => x.name === name);
     const r = await page.locator('#map').boundingBox();

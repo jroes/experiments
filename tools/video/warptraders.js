@@ -21,6 +21,8 @@ const SEED = '112';
   const K = 0.72; // pace: captions stay up this fraction of the time first planned
   const say = (t, ms) => rec.cap(t, ms && Math.round(ms * K));
   const sectorXY = async id => {
+    await page.evaluate(() => window.dispatchEvent(new Event('resize'))); // the game refits the map to what is on screen now
+    await sleep(60);
     const { s, W, H } = await page.evaluate(() => ({ s: JSON.parse(localStorage.getItem('warptraders-save-v1')), W: WT.W, H: WT.H }));
     const sec = s.sectors[id];
     const r = await page.locator('#map').boundingBox();
