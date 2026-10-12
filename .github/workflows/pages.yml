@@ -23,6 +23,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
+      - name: Stamp the version
+        # each page loads shared/version.js, and open pages poll version.json to find out a newer deploy exists
+        run: |
+          echo "window.APP_VERSION = '${GITHUB_SHA}';" > shared/version.js
+          printf '{"version":"%s","built":"%s"}\n' "${GITHUB_SHA}" "$(date -u +%FT%TZ)" > version.json
       - uses: actions/upload-pages-artifact@v3
         with:
           path: .

@@ -17,3 +17,5 @@ Starting a new game asks for a seed. Everyone who uses the same seed gets the sa
 `intro.mp4` is a one-minute intro video, made by `tools/video/warptraders.js` (see `CLAUDE.md`). The Help button has a link to it.
 
 The Sound button turns effects (warps, trades, pirates) and a very quiet space ambience on or off. The ambience is off until you turn it on.
+
+When a new version is deployed, a bar at the top says so. Refresh saves your run first.

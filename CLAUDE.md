@@ -112,6 +112,18 @@ Shell gotcha: `pkill -f <pattern>` can match and kill your own shell command. Us
 - Map clicks are computed with the game's own fit rule. Dispatch `resize` first so the game refits to what is on screen.
 - Videos are a few MB each and live in git, so do not regenerate them for small changes.
 
+## Deploys and updates
+
+A deploy is a static copy of the repo on GitHub Pages. The workflow stamps the commit into `shared/version.js` (what each page was built from) and `version.json` (what is live now).
+`shared/update.js` asks for `version.json` every 5 minutes while a page is visible (and when it becomes visible again). If it differs, a bar at the top says a new version is ready,
+with **Refresh** and **Later**. It never reloads by itself, so it cannot interrupt a turn. `shared/version.js` says `dev` as committed, which turns the checks off locally.
+
+Nothing should be lost on an update:
+- Everything is saved as it happens (every action, when the page is hidden or closed, and every 20 s), and Refresh saves once more first.
+- **Saved data must stay readable by newer code.** Games, sessions, settings and links carry a version. If you change a saved shape, keep reading the old one (or migrate it), and bump the version only when you must.
+- A game that cannot be read is never deleted. It stays in the list as "Could not be read", so a later fix or going back can still open it. This matters most for `RULES`: a bump means older games replay differently, and the code refuses to guess.
+- Two versions can be open at once (two tabs, two devices, a friend who has not refreshed). Anything shared through the store must tolerate that: new fields are optional, unknown fields are ignored, and `cleanEntry`, `cleanGame` and the others already drop what they do not recognise.
+
 ## Sound
 
 `shared/sound.js` makes every sound in the browser with Web Audio (oscillators and noise): no files, no licences. Short effects for things that happen (a friend joins or

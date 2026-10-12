@@ -313,6 +313,10 @@
   $('b-intro').onclick = () => { $('d-help').close(); $('d-intro').showModal(); $('v-intro').play().catch(() => { /* the player's own button works */ }); };
   $('d-intro').addEventListener('close', () => $('v-intro').pause());
   window.addEventListener('resize', resize);
+  // saved after every action and when the page is hidden; this is a backstop, and what the update bar's Refresh runs first
+  setInterval(save, 20000);
+  window.addEventListener('pagehide', save);
+  Updater.start({ url: '../version.json', beforeReload: save });
 
   resize();
   s = load() || G.newGame({});
