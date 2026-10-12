@@ -268,7 +268,7 @@ impl Store {
         if let Some(rl) = self.rate_ns(ns, now, write) { return rl; }
         match (r.method, key) {
             ("GET", None) => {
-                if let Some(keys) = r.query.split('&').find_map(|p| p.strip_prefix("keys=")) { self.multi_get(ns, keys) }
+                if let Some(keys) = r.query.split('&').find_map(|p| p.strip_prefix("keys=")) { self.multi_get(ns, keys, now) }
                 else if self.lim.allow_list { self.list(ns, r.query) }
                 else { err(404, "no_listing", "listing is turned off; read keys by name: /kv/<ns>/<key> or /kv/<ns>?keys=a,b") }
             }
@@ -284,7 +284,9 @@ impl Store {
 
     /// `GET /kv/<ns>?keys=a,b,c`: several keys by exact name in one request. Missing keys are left out. This is not a way to
     /// discover keys: you have to already know their names.
-    fn multi_get(&self, ns: &str, keys: &str) -> Reply {
+    /// The reply also carries `now`, the server's clock, so a client can tell how long ago a key was written (`t`) without
+    /// trusting its own clock: the games use it to show who is online.
+    fn multi_get(&self, ns: &str, keys: &str, now: u64) -> Reply {
         let names: Vec<&str> = keys.split(',').collect();
         if names.len() > MULTI_GET_MAX {
             return err(400, "too_many_keys", &format!("ask for at most {MULTI_GET_MAX} keys at a time"));
@@ -293,7 +295,7 @@ impl Store {
             return err(400, "bad_key", &format!("key {} is not 1-100 chars of A-Z a-z 0-9 _ - . :", json_str(bad)));
         }
         let m = self.ns.get(ns);
-        let mut out = String::from(r#"{"values":{"#);
+        let mut out = format!(r#"{{"now":{now},"values":{{"#);
         let mut n = 0;
         let mut seen = std::collections::HashSet::new();
         for k in names {
@@ -599,14 +601,16 @@ mod tests {
         let (st, body) = call(&mut s, "GET", "/kv/sdo-secret?keys=o-1-1,nope,h:1,o-1-1", "", 3);
         assert_eq!(st, 200);
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["now"], 3, "the reply carries the server clock");
         let values = v["values"].as_object().unwrap();
         assert_eq!(values.len(), 2);
+        assert_eq!(values["o-1-1"]["t"], 1, "and each key says when it was written");
         assert_eq!(values["o-1-1"]["value"], 10);
         assert_eq!(values["h:1"]["value"]["a"], 1);
         assert!(values["o-1-1"]["rev"].as_u64().unwrap() > 0);
         // a namespace that does not exist looks the same as one with none of those keys
         let (st, body) = call(&mut s, "GET", "/kv/never-made?keys=a,b", "", 3);
-        assert_eq!((st, body.as_str()), (200, r#"{"values":{}}"#));
+        assert_eq!((st, body.as_str()), (200, r#"{"now":3,"values":{}}"#));
         // junk and over-long asks are refused
         assert_eq!(call(&mut s, "GET", "/kv/sdo-secret?keys=", "", 4).0, 400);
         assert_eq!(call(&mut s, "GET", "/kv/sdo-secret?keys=a,,b", "", 4).0, 400);

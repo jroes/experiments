@@ -18,6 +18,8 @@
   const clone = x => JSON.parse(JSON.stringify(x));
   const b64 = s => btoa(unescape(encodeURIComponent(s))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   const unb64 = s => decodeURIComponent(escape(atob(s.replace(/-/g, '+').replace(/_/g, '/'))));
+  // A player counts as online if their page checked in within this many seconds. Pages check in every 15 s while visible.
+  const ONLINE_SECS = 45;
   const ROOM_RE = /^[a-z0-9]{20,32}$/;
   const HASH_RE = /^[0-9a-f]{16}$/;
 
@@ -80,6 +82,9 @@
       this.sent = saved ? !!saved.sent : false;
       this.desync = saved ? !!saved.desync : false;
       this.waiting = [];                                 // seats we still wait for
+      this.presence = {};                                // seat -> seconds since that player's page last checked in
+      this.events = [];                                  // who came online or went offline since the page last looked
+      this._was = null;                                  // seat -> was online at the last look (null until the first look)
       this.entries = {};                                 // orders in the store for this turn
       this.error = null;
       this.working = null;
@@ -148,6 +153,40 @@
       return { ok: false, msg: r.status === 409 ? 'They already sent orders.' : friendly(r) };
     }
 
+    // ----- who is around -----
+
+    // Works out how long ago each other player checked in, and remembers who just came online or went offline.
+    noticePresence(r) {
+      const g = this.game, seen = {};
+      for (let seat = 1; seat <= g.humans; seat++) {
+        if (seat === this.seat) continue;
+        const raw = r.values[S.presenceKey(seat)];
+        if (!raw || raw.t === null || r.now === null) { this.presence[seat] = null; seen[seat] = false; continue; }
+        const age = Math.max(0, r.now - raw.t);
+        this.presence[seat] = age;
+        seen[seat] = age <= ONLINE_SECS;
+      }
+      if (this._was) {
+        for (const [seat, on] of Object.entries(seen)) {
+          const e = G.empire(this.base, +seat);
+          if (!e.human || !e.alive) continue;
+          if (on !== this._was[seat]) this.events.push({ seat: +seat, kind: on ? 'online' : 'offline' });
+        }
+      }
+      this._was = seen;
+    }
+
+    isOnline(seat) { const a = this.presence[seat]; return a !== undefined && a !== null && a <= ONLINE_SECS; }
+    anyoneOnline() { return Object.keys(this.presence).some(seat => this.isOnline(+seat)); }
+    takeEvents() { const e = this.events; this.events = []; return e; }
+
+    // Tell the others this page is open. Never throws: a missed heartbeat only makes you look away for a moment.
+    async beat() {
+      const e = G.empire(this.base, this.seat);
+      if (this.base.over || !e.human) return;
+      try { await S.beat(this.game.server, this.game.room, this.seat); } catch (err) { /* offline: nothing to do */ }
+    }
+
     // Reads the store and plays every turn that is complete. Safe to call as often as you like.
     async sync() {
       const g = this.game;
@@ -158,8 +197,10 @@
           const turn = this.base.turn;
           const keys = [];
           for (let seat = 1; seat <= g.humans; seat++) keys.push(S.orderKey(turn, seat));
+          for (let seat = 1; seat <= g.humans; seat++) keys.push(S.presenceKey(seat)); // same request, so presence costs nothing extra
           const r = await S.readKeys(g.server, g.room, keys);
           if (r.status !== 200) { this.error = friendly(r); break; }
+          if (guard === 0) this.noticePresence(r);
           const orders = {};
           for (let seat = 1; seat <= g.humans; seat++) {
             const raw = r.values[S.orderKey(turn, seat)];
@@ -267,7 +308,7 @@
     }
   }
 
-  const api = { Session, encodeInvite, decodeInvite, cleanEntry };
+  const api = { Session, encodeInvite, decodeInvite, cleanEntry, ONLINE_SECS };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Online = api;
 })(typeof window !== 'undefined' ? window : globalThis);

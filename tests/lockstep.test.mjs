@@ -319,3 +319,104 @@ test('one player with a broken copy is flagged for the others and for themselves
   assert.equal(new Set(hashes(players)).size, 1);
   assert.deepEqual(players.map(p => p.desync), [false, false, false]);
 });
+
+// ---------- presence: who is around ----------
+
+test('a player whose page is open shows as online, and as offline after a minute away', { skip: !!REAL }, async () => {
+  const n = install();
+  const [host, a, b] = await setup(3);
+  for (const p of [host, a, b]) await p.beat();
+  for (const p of [host, a, b]) await p.sync();
+  assert.equal(host.isOnline(2), true);
+  assert.equal(host.isOnline(3), true);
+  assert.equal(host.anyoneOnline(), true);
+  assert.equal(host.presence[1], undefined, 'nobody tracks themself');
+  // seat 2 closes the tab: after more than 45 s of no heartbeat they are away, while 3 keeps checking in
+  n.clock.now += 40;
+  await b.beat(); await host.sync();
+  assert.equal(host.isOnline(2), true, '40 s is still fine');
+  n.clock.now += 20;
+  await b.beat(); await host.sync();
+  assert.equal(host.isOnline(2), false);
+  assert.equal(host.isOnline(3), true);
+  assert.ok(host.presence[2] >= 60 && host.presence[2] < 70, 'how long ago: ' + host.presence[2]);
+});
+
+test('coming online and going offline are reported once each, and the first look is quiet', { skip: !!REAL }, async () => {
+  const n = install();
+  const [host, a, b] = await setup(3);
+  await a.beat();
+  // someone who joins while seat 2 is already here does not get an "arrived" notice for them
+  const late = await Online.Session.join(host.game.invites[1]);
+  assert.equal(late.isOnline(2), true);
+  assert.deepEqual(late.takeEvents(), []);
+  // the host looked before seat 2 arrived, so they hear about it, once
+  await host.sync();
+  assert.deepEqual(host.takeEvents(), [{ seat: 2, kind: 'online' }]);
+  await b.beat(); await host.sync();
+  assert.deepEqual(host.takeEvents(), [{ seat: 3, kind: 'online' }]);
+  await host.sync(); await host.sync();
+  assert.deepEqual(host.takeEvents(), [], 'nothing new, nothing reported');
+  n.clock.now += 70;
+  await b.beat(); await host.sync();       // seat 3 stays, seat 2 has gone quiet
+  assert.deepEqual(host.takeEvents(), [{ seat: 2, kind: 'offline' }]);
+  await host.sync();
+  assert.deepEqual(host.takeEvents(), [], 'reported once');
+  await a.beat(); await host.sync();
+  assert.deepEqual(host.takeEvents(), [{ seat: 2, kind: 'online' }]);
+});
+
+test('a player who never opened the game is "not joined yet", not offline, and the AI is never reported', { skip: !!REAL }, async () => {
+  install();
+  const [host, a, b] = await setup(3);
+  await host.sync();
+  assert.equal(host.presence[2], null);
+  assert.equal(host.isOnline(2), false);
+  await host.submit(); await a.submit();
+  await host.hostSkip(3, true);            // seat 3 becomes AI
+  await b.beat(); await host.sync();
+  assert.deepEqual(host.takeEvents().filter(e => e.seat === 3), [], 'AI seats are not people');
+});
+
+test('presence rides along with the orders read: it costs no extra requests', { skip: !!REAL }, async () => {
+  const n = install();
+  const [host] = await setup(4);
+  n.calls.length = 0;
+  await host.sync();
+  assert.equal(n.calls.length, 1, 'one request to check orders and who is around: ' + n.calls.map(c => c.method + ' ' + c.path).join(' | '));
+});
+
+test('nobody can fake being online or hide being away by writing something into their heartbeat', { skip: !!REAL }, async () => {
+  const n = install();
+  const [host, a] = await setup(2);
+  const { server, room } = host.game;
+  // seat 2 writes a heartbeat whose body claims it is the far future; only the server's own write time counts
+  await S.call(server, 'PUT', '/kv/sdo-' + room + '/p-2', { body: { v: 1, t: 9_999_999_999, now: 0 } });
+  n.clock.now += 120;
+  await host.sync();
+  assert.equal(host.isOnline(2), false);
+  assert.ok(host.presence[2] >= 120);
+  assert.ok(a);
+});
+
+test('a missed heartbeat never throws, and a finished game stops checking in', { skip: !!REAL }, async () => {
+  const n = install();
+  const [host] = await setup(2);
+  const real = globalThis.fetch;
+  globalThis.fetch = async () => { throw new TypeError('fetch failed'); };
+  await host.beat();                       // offline: must not throw
+  globalThis.fetch = real;
+  n.calls.length = 0;
+  host.base.over = true;
+  await host.beat();
+  assert.equal(n.calls.length, 0, 'no heartbeat after the game is over');
+});
+
+test('presence works against the real server too (a player who just checked in is online)', { skip: !REAL }, async () => {
+  install();
+  const [host, a] = await setup(2);
+  await a.beat();
+  await host.sync();
+  assert.equal(host.isOnline(2), true, 'age ' + host.presence[2]);
+  assert.ok(host.presence[2] >= 0 && host.presence[2] < 20);
+});

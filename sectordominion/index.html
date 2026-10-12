@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sector Dominion</title>
 <link rel="stylesheet" href="style.css">
-<link rel="stylesheet" href="../shared/lobby.css">
 </head>
 <body>
 <header id="topbar">
@@ -16,7 +15,7 @@
   <div class="stat">Worlds <b id="s-worlds">1</b></div>
   <div class="spacer"></div>
   <button id="b-help">Help</button>
-  <button id="b-mp">Multiplayer</button>
+  <button id="b-friends">Play with friends</button>
   <button id="b-new">New game</button>
   <button id="b-end" class="primary">End turn</button>
 </header>
@@ -28,7 +27,7 @@
     <div id="tip" hidden></div>
   </div>
   <aside id="side">
-    <section id="p-mail" hidden></section>
+    <section id="p-online" hidden></section>
     <section id="p-world"></section>
     <section id="p-empire"></section>
     <section id="p-log"><h3>Log</h3><ul id="log"></ul></section>
@@ -79,30 +78,9 @@
   </form>
 </dialog>
 
-<dialog id="d-mp">
-  <h2>Multiplayer</h2>
-  <p class="fine">Play with up to 3 friends, directly browser to browser. No server. One person hosts and sends each friend an invite code. Empires nobody takes are run by the AI. Everyone ends their turn, then the turn plays out.</p>
-  <form method="dialog" id="f-mp">
-    <label>Difficulty (host decides)
-      <select name="difficulty"><option value="easy">Easy</option><option value="normal" selected>Normal</option><option value="hard">Hard</option></select>
-    </label>
-    <label>Worlds (host decides)
-      <select name="worlds"><option value="30">30</option><option value="40" selected>40</option><option value="60">60</option></select>
-    </label>
-    <div class="row">
-      <button value="cancel" formnovalidate>Cancel</button>
-      <button value="online" type="button" id="b-online">Play online (async)</button>
-      <button value="mail" type="button" id="b-mail">Play by mail</button>
-      <button value="join">Join a game</button>
-      <button value="host" class="primary">Host a game</button>
-    </div>
-  </form>
-  <p class="fine">Friends-only trust: the host's browser sends everyone the full game state, so anyone who opens dev tools could peek at hidden info.</p>
-</dialog>
-
 <dialog id="d-online">
-  <h2>Play online, any time</h2>
-  <p class="fine">Everyone keeps their own copy of the game in their browser. You send your orders to a small shared storage server, and when everyone's orders are in, each browser plays the turn itself. No one has to be online at the same time, and you can come back from any device with your invite code. Each game lives under a long random name that only your invite codes contain. There are no accounts, so only play with friends.</p>
+  <h2>Play with friends</h2>
+  <p class="fine">Everyone keeps their own copy of the game in their browser, and you send your orders to a small shared server. When everyone's orders are in, each browser plays the turn itself. If your friends are online the turn plays right away, and if they are not, the game just waits and keeps going: nobody has to be here at the same time, and you can come back from any device with your invite code. You will see who is online and who was last seen. Each game lives under a long random name that only your invite codes contain. There are no accounts, so only play with friends.</p>
   <h3>Start a game</h3>
   <form id="f-online" method="dialog">
     <input name="server" type="hidden"> <!-- filled in from shared/config.js; ?server=... overrides it for testing -->
@@ -123,32 +101,8 @@
   <p class="hint" id="online-msg"></p>
 </dialog>
 
-<dialog id="d-mail">
-  <h2>Play by mail</h2>
-  <p class="fine">Take turns on your own time. The host sends each friend a turn file (Discord, email, whatever). They play their turn, copy back a short orders code, and the host pastes it in. When everyone is in, the turn plays. Games are saved in your browser, so you can close the tab and come back.</p>
-  <h3>Host a new game</h3>
-  <form id="f-mail" method="dialog">
-    <label>Human players (including you)
-      <select name="humans"><option>2</option><option selected>3</option><option>4</option></select>
-    </label>
-    <label>Difficulty
-      <select name="difficulty"><option value="easy">Easy</option><option value="normal" selected>Normal</option><option value="hard">Hard</option></select>
-    </label>
-    <label>Worlds
-      <select name="worlds"><option value="30">30</option><option value="40" selected>40</option><option value="60">60</option></select>
-    </label>
-    <div class="row"><button value="cancel" formnovalidate>Cancel</button><button value="start" class="primary">Start mail game</button></div>
-  </form>
-  <h3>Join a game</h3>
-  <p class="fine">Got a turn file from your host? Load it here.</p>
-  <input type="file" id="i-turnfile" accept=".json,application/json">
-  <p class="hint" id="mail-msg"></p>
-</dialog>
-
 <script src="../shared/config.js"></script>
 <script src="../shared/store.js"></script>
-<script src="../shared/p2p.js"></script>
-<script src="../shared/lobby.js"></script>
 <script src="game.js"></script>
 <script src="online.js"></script>
 <script src="ui.js"></script>

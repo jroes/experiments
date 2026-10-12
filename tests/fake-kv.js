@@ -3,6 +3,7 @@
 // The real thing is tested separately: set KV_URL to run the same tests against the real binary.
 function installFakeKv(opts) {
   opts = opts || {};
+  const clock = { now: opts.now !== undefined ? opts.now : 1_800_000_000 }; // unix seconds, tests move it
   const spaces = new Map(); // ns -> Map(key -> {value, rev, t})
   const calls = [];
   let rev = 0;
@@ -24,13 +25,13 @@ function installFakeKv(opts) {
       const names = keys.split(',');
       if (!keys || names.length > 60 || names.some(k => !/^[A-Za-z0-9_.:-]{1,100}$/.test(k))) return err(400, 'bad_key');
       const values = {};
-      for (const k of names) if (space && space.has(k)) values[k] = { value: space.get(k).value, rev: space.get(k).rev, t: 1 };
-      return json(200, { values });
+      for (const k of names) if (space && space.has(k)) values[k] = { value: space.get(k).value, rev: space.get(k).rev, t: space.get(k).t };
+      return json(200, { now: clock.now, values });
     }
     if (!key) return err(405, 'method_not_allowed');
     if (method === 'GET') {
       const e = space && space.get(key);
-      return e ? json(200, { value: e.value, rev: e.rev, t: 1 }) : err(404, 'not_found');
+      return e ? json(200, { value: e.value, rev: e.rev, t: e.t }) : err(404, 'not_found');
     }
     if (method === 'PUT') {
       const body = init.body === undefined ? 'null' : init.body;
@@ -41,7 +42,7 @@ function installFakeKv(opts) {
       if (headers['if-none-match'] === '*' && cur) return err(412, 'exists');
       if (headers['if-match'] !== undefined && (!cur || String(cur.rev) !== String(headers['if-match']).replace(/"/g, ''))) return err(412, 'rev_mismatch');
       if (!spaces.has(ns)) spaces.set(ns, new Map());
-      spaces.get(ns).set(key, { value, rev: ++rev });
+      spaces.get(ns).set(key, { value, rev: ++rev, t: clock.now });
       return json(cur ? 200 : 201, { rev, created: !cur });
     }
     if (method === 'DELETE') {
@@ -50,6 +51,6 @@ function installFakeKv(opts) {
     }
     return err(405, 'method_not_allowed');
   };
-  return { spaces, calls, set(ns, key, value) { if (!spaces.has(ns)) spaces.set(ns, new Map()); spaces.get(ns).set(key, { value, rev: ++rev }); } };
+  return { spaces, calls, clock, set(ns, key, value) { if (!spaces.has(ns)) spaces.set(ns, new Map()); spaces.get(ns).set(key, { value, rev: ++rev, t: clock.now }); } };
 }
 module.exports = { installFakeKv };
