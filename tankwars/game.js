@@ -6,10 +6,12 @@
 (function (root) {
   'use strict';
 
-  const W = 320, H = 180;           // the world: W columns of ground, H high. y goes up.
-  const GRAV = 0.08, SPEED = 0.06;  // per step; a shell leaves at power * SPEED
+  const H = 180;                    // the world is s.w columns of ground and H high. y goes up.
+  const DEFAULT_W = 480, MIN_W = 240, MAX_W = 800;
+  const SIZES = { small: 320, normal: 480, wide: 640 };
+  const GRAV = 0.08, SPEED = 0.06;  // per step; a shell leaves at power * speed, and speed grows with the width so every map can be crossed
   const WIND_PUSH = 0.0008;         // sideways push per wind point
-  const MAX_STEPS = 4000;
+  const MAX_STEPS = 6000;
   const START_MONEY = 1000;
   const SHIELD_HP = 60;
   const COLORS = ['#ff6b6b', '#5ee0b0', '#ffd24a', '#7aa8ff'];
@@ -51,28 +53,61 @@
   const cosD = deg => sinD(90 - deg);
 
   // ---------- the hills ----------
-  function makeHeights(s) {
-    const pts = [];
-    const n = randInt(s, 5, 8);
-    for (let i = 0; i <= n; i++) pts.push(randInt(s, 30, 120));
-    const h = new Array(W);
-    for (let x = 0; x < W; x++) {
-      const f = x / (W - 1) * n, i = Math.min(n - 1, Math.floor(f)), t = f - i;
-      const u = t * t * (3 - 2 * t); // smoothstep, no trig
-      h[x] = Math.round(pts[i] * (1 - u) + pts[i + 1] * u + (rand(s) - 0.5) * 3);
+  const TERRAINS = ['rolling', 'mountains', 'valley', 'plateaus', 'mounds'];
+
+  // smooth curve through control points spread over the whole width. sharp = steeper steps between them.
+  function curve(pts, w, sharp) {
+    const n = pts.length - 1, out = new Array(w);
+    for (let x = 0; x < w; x++) {
+      const f = x / (w - 1) * n, i = Math.min(n - 1, Math.floor(f)), t = f - i;
+      let u = t * t * (3 - 2 * t); // smoothstep, no trig
+      if (sharp) u = u * u * (3 - 2 * u);
+      out[x] = pts[i] * (1 - u) + pts[i + 1] * u;
     }
+    return out;
+  }
+
+  // Each round picks one of several kinds of land at random, so no angle and power keeps working from round to round.
+  function makeHeights(s) {
+    const w = s.w, k = w / 320, kind = TERRAINS[randInt(s, 0, TERRAINS.length - 1)];
+    const rnd = (lo, hi) => randInt(s, lo, hi);
+    const points = (count, lo, hi) => Array.from({ length: Math.max(3, Math.round(count * k)) + 1 }, () => rnd(lo, hi));
+    let h, jitter = 3;
+    if (kind === 'rolling') h = curve(points(rnd(5, 8), 30, 120), w, false);
+    else if (kind === 'mountains') { h = curve(points(rnd(8, 13), 20, 140), w, false); jitter = 6; }
+    else if (kind === 'valley') {
+      const rim = rnd(80, 130), floor = rnd(12, 40), wob = curve(points(rnd(5, 7), -14, 14), w, false);
+      h = wob.map((v, x) => { const d = (x / (w - 1)) * 2 - 1; return floor + (rim - floor) * d * d + v; });
+    } else if (kind === 'plateaus') {
+      const levels = [rnd(25, 45), rnd(60, 85), rnd(95, 125)];
+      h = curve(Array.from({ length: Math.max(3, Math.round(rnd(4, 7) * k)) + 1 }, () => levels[rnd(0, 2)]), w, true);
+    } else { // mounds: a low plain with a few hills sticking up
+      const base = rnd(30, 55);
+      h = new Array(w).fill(base);
+      for (let m = rnd(3, 5) + (k > 1.4 ? 2 : 0); m > 0; m--) {
+        const cx = rnd(0, w - 1), wd = rnd(28, 70) * k, ht = rnd(25, 85);
+        for (let x = Math.max(0, Math.floor(cx - wd)); x <= Math.min(w - 1, Math.ceil(cx + wd)); x++) { const u = 1 - Math.abs(x - cx) / wd; h[x] += ht * u * u * (3 - 2 * u); }
+      }
+    }
+    h = h.map(v => Math.round(v + (rand(s) - 0.5) * jitter));
     // smooth the jitter so slopes stay climbable
-    for (let pass = 0; pass < 2; pass++) for (let x = 1; x < W - 1; x++) h[x] = Math.round((h[x - 1] + h[x] * 2 + h[x + 1]) / 4);
+    for (let pass = 0; pass < 2; pass++) for (let x = 1; x < w - 1; x++) h[x] = Math.round((h[x - 1] + h[x] * 2 + h[x + 1]) / 4);
+    s.terrain = kind;
     return h.map(v => clamp(v, 8, H - 40));
   }
 
+  // Tanks go anywhere on the map, as long as they are not too close together, so the distance between them changes every round.
   function placeTanks(s) {
-    const n = s.players.length, order = s.players.map((_, i) => i);
-    for (let i = n - 1; i > 0; i--) { const j = Math.floor(rand(s) * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
-    const span = (W - 80) / n;
-    order.forEach((pi, slot) => {
-      const p = s.players[pi];
-      const x = Math.round(40 + span * slot + span / 2 + (rand(s) - 0.5) * span * 0.5);
+    const n = s.players.length, w = s.w, margin = 24;
+    const gap = Math.max(36, Math.floor(w * 0.55 / n));
+    let xs = null;
+    for (let tries = 0; tries < 300 && !xs; tries++) {
+      const c = Array.from({ length: n }, () => randInt(s, margin, w - margin));
+      if (c.every((x, i) => c.every((y, j) => i === j || Math.abs(x - y) >= gap))) xs = c;
+    }
+    if (!xs) xs = Array.from({ length: n }, (_, i) => Math.round(margin + (w - 2 * margin) * (i + 0.5) / n));
+    s.players.forEach((p, i) => {
+      const x = xs[i];
       p.x = x; p.y = s.heights[x];
       for (let k = x - 6; k <= x + 6; k++) s.heights[k] = p.y; // a flat spot to sit on
     });
@@ -82,13 +117,14 @@
   function newGame(opts) {
     opts = opts || {};
     const seed = (opts.seed === undefined ? Math.floor(Math.random() * 1e9) : opts.seed) | 0; // the one allowed random: the default seed
+    const w = clamp(Math.round(Number(opts.width)) || DEFAULT_W, MIN_W, MAX_W);
     const specs = (opts.players && opts.players.length ? opts.players : [{}, { ai: 2 }]).slice(0, 4);
     const s = {
-      version: 1, seed, rng: seed ^ 0x51ed270b, round: 1, rounds: clamp(opts.rounds | 0 || 5, 1, 15),
+      version: 1, seed, rng: seed ^ 0x51ed270b, w, speed: SPEED * Math.sqrt(w / 320), shots: 0, terrain: 'rolling', round: 1, rounds: clamp(opts.rounds | 0 || 5, 1, 15),
       wind: 0, turn: 0, phase: 'aim', heights: [],
       players: specs.map((p, i) => ({
         id: i, name: String(p.name || NAMES[i]).slice(0, 12), ai: AI_LEVELS[p.ai] ? p.ai : 0, color: COLORS[i],
-        x: 0, y: 0, hp: 100, angle: i % 2 ? 125 : 55, power: 55, weapon: 'shell', shield: 0,
+        x: 0, y: 0, hp: 100, angle: 90, power: 50, weapon: 'shell', shield: 0,
         inv: { big: 0, triple: 0, nuke: 0, dirt: 0, shield: 0 }, money: START_MONEY, wins: 0, alive: true, lastRoundGain: 0,
       })),
       log: [], over: false,
@@ -110,8 +146,9 @@
       if (p.inv.shield > 0) { p.inv.shield--; p.shield = SHIELD_HP; }
     }
     placeTanks(s);
-    s.wind = randInt(s, -8, 8);
-    s.turn = (s.round - 1) % s.players.length;
+    for (const p of s.players) { p.angle = randInt(s, 25, 155); p.power = randInt(s, 30, 80); } // a different starting aim every round
+    s.wind = randInt(s, -9, 9);
+    s.turn = randInt(s, 0, s.players.length - 1);
     s.phase = 'aim';
     log(s, 'Round ' + s.round + ' of ' + s.rounds + '.', 'info');
   }
@@ -131,14 +168,14 @@
   function flight(s, shooter, angle, power) {
     const p = s.players[shooter], st = barrelStart(p, angle);
     let x = st.x, y = st.y;
-    const v = power * SPEED;
+    const v = power * s.speed;
     let vx = cosD(angle) * v, vy = sinD(angle) * v;
     const ax = s.wind * WIND_PUSH;
     const path = [{ x, y }];
     for (let i = 0; i < MAX_STEPS; i++) {
       x += vx; y += vy; vy -= GRAV; vx += ax;
       path.push({ x, y });
-      if (x < 0 || x >= W) return { path, hit: { kind: 'out', x, y } };
+      if (x < 0 || x >= s.w) return { path, hit: { kind: 'out', x, y } };
       const t = tankAt(s, x, y, -1);
       if (t) return { path, hit: { kind: 'tank', x, y, tank: t.id } };
       if (y <= s.heights[Math.floor(x)]) return { path, hit: { kind: 'ground', x, y: s.heights[Math.floor(x)] } };
@@ -148,7 +185,7 @@
   }
 
   function crater(s, cx, cy, r) {
-    for (let x = Math.max(0, Math.floor(cx - r)); x <= Math.min(W - 1, Math.ceil(cx + r)); x++) {
+    for (let x = Math.max(0, Math.floor(cx - r)); x <= Math.min(s.w - 1, Math.ceil(cx + r)); x++) {
       const dx = x - cx;
       if (Math.abs(dx) > r) continue;
       const d = Math.sqrt(r * r - dx * dx), bottom = cy - d, top = cy + d;
@@ -157,7 +194,7 @@
     }
   }
   function mound(s, cx, r) {
-    for (let x = Math.max(0, Math.floor(cx - r)); x <= Math.min(W - 1, Math.ceil(cx + r)); x++) {
+    for (let x = Math.max(0, Math.floor(cx - r)); x <= Math.min(s.w - 1, Math.ceil(cx + r)); x++) {
       const dx = x - cx;
       if (Math.abs(dx) > r) continue;
       s.heights[x] = Math.min(H - 10, s.heights[x] + Math.floor(Math.sqrt(r * r - dx * dx)));
@@ -204,6 +241,7 @@
     if (wname !== 'shell' && !(has(WEAPONS, wname) && p.inv[wname] > 0)) wname = 'shell';
     if (wname !== 'shell') p.inv[wname]--;
     p.weapon = p.inv[wname] > 0 || wname === 'shell' ? wname : 'shell';
+    s.shots++;
     const w = WEAPONS[wname];
     const events = { shooter: p.id, weapon: wname, shots: [], blasts: [], damage: [], falls: [], killed: [] };
     const angles = w.shots === 3 ? [p.angle - 6, p.angle, p.angle + 6] : [p.angle];
@@ -323,8 +361,11 @@
   function validState(o) {
     const isInt = n => Number.isInteger(n);
     if (!o || typeof o !== 'object' || o.version !== 1) return null;
+    // games saved before the maps got wider have no width, speed, shot count or terrain: they were 320 wide
+    if (o.w === undefined) { o.w = 320; o.speed = SPEED; o.shots = 0; o.terrain = 'rolling'; }
+    if (!isInt(o.w) || o.w < MIN_W || o.w > MAX_W || typeof o.speed !== 'number' || !(o.speed > 0.02 && o.speed < 0.3) || !isInt(o.shots) || o.shots < 0 || !TERRAINS.includes(o.terrain)) return null;
     if (!isInt(o.seed) || !isInt(o.rng) || !isInt(o.round) || !isInt(o.rounds) || o.round < 1 || o.rounds < 1 || o.round > o.rounds) return null;
-    if (!Array.isArray(o.heights) || o.heights.length !== W || !o.heights.every(v => isInt(v) && v >= 0 && v <= H)) return null;
+    if (!Array.isArray(o.heights) || o.heights.length !== o.w || !o.heights.every(v => isInt(v) && v >= 0 && v <= H)) return null;
     if (!Array.isArray(o.players) || o.players.length < 2 || o.players.length > 4) return null;
     if (!isInt(o.wind) || Math.abs(o.wind) > 10 || !isInt(o.turn) || o.turn < 0 || o.turn >= o.players.length) return null;
     if (!['aim', 'roundover', 'shop', 'over'].includes(o.phase)) return null;
@@ -332,7 +373,7 @@
       if (!p || p.id !== i || typeof p.name !== 'string' || p.name.length > 12) return null;
       if (![0, 1, 2, 3].includes(p.ai)) return null;
       if (![p.x, p.y, p.hp, p.angle, p.power, p.shield, p.money, p.wins, p.lastRoundGain].every(isInt)) return null;
-      if (p.x < 6 || p.x > W - 7 || p.y < 0 || p.y > H || p.hp < 0 || p.hp > 100 || p.angle < 0 || p.angle > 180 || p.power < 1 || p.power > 100) return null;
+      if (p.x < 6 || p.x > o.w - 7 || p.y < 0 || p.y > H || p.hp < 0 || p.hp > 100 || p.angle < 0 || p.angle > 180 || p.power < 1 || p.power > 100) return null;
       if (p.money < 0 || p.wins < 0 || p.shield < 0 || typeof p.alive !== 'boolean' || typeof p.color !== 'string' || !/^#[0-9a-f]{6}$/i.test(p.color)) return null;
       if (!has(WEAPONS, p.weapon)) return null;
       if (!p.inv || typeof p.inv !== 'object') return null;
@@ -344,7 +385,15 @@
     return o;
   }
 
-  const api = { W, H, GRAV, SPEED, WEAPONS, ITEMS, ITEM_KEYS, AI_LEVELS, COLORS, NAMES, START_MONEY, SHIELD_HP,
+  // A short fingerprint of everything that matters (not the log), so two copies of an online game can tell if they have drifted apart.
+  function hashState(s) {
+    const text = JSON.stringify(s, (k, v) => (k === 'log' ? undefined : v));
+    let a = 0x811c9dc5, b = 0x01000193 ^ 0x5bd1e995;
+    for (let i = 0; i < text.length; i++) { const c = text.charCodeAt(i); a = Math.imul(a ^ c, 0x01000193); b = Math.imul(b + c, 0x5bd1e995) ^ (b >>> 13); }
+    return (a >>> 0).toString(16).padStart(8, '0') + (b >>> 0).toString(16).padStart(8, '0');
+  }
+
+  const api = { H, DEFAULT_W, MIN_W, MAX_W, SIZES, TERRAINS, GRAV, SPEED, hashState, WEAPONS, ITEMS, ITEM_KEYS, AI_LEVELS, COLORS, NAMES, START_MONEY, SHIELD_HP,
     newGame, startRound, flight, fire, advance, nextRound, beginRound, buy, aiAim, aiPlay, aiShop, standings, validState, sinD, cosD, rand, alive, crater, mound, barrelStart };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.TW = api;
 })(typeof window !== 'undefined' ? window : globalThis);

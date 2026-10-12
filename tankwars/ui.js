@@ -4,7 +4,8 @@
   const KEY = 'tankwars-save-v1';
   const $ = id => document.getElementById(id);
   const canvas = $('view'), ctx = canvas.getContext('2d');
-  const W = T.W, H = T.H;
+  const H = T.H;
+  let W = T.DEFAULT_W;  // the map's width, set from the game (they come in several sizes)
   let s = null;
   let shown = null;   // what the picture draws while a shell is in the air: the ground and tanks as they were before the shot
   let fx = null;      // shells and explosions being animated
@@ -102,6 +103,7 @@
 
   function refresh() {
     if (!s) return;
+    if (W !== s.w || canvas.width !== s.w) { W = s.w; canvas.width = W; canvas.height = H; ctx.imageSmoothingEnabled = false; }
     $('s-round').textContent = s.round + '/' + s.rounds;
     $('s-wind').textContent = windText();
     const p = s.players[s.turn];
@@ -245,7 +247,7 @@
     }
     if (players.length < 2) players.push({ ai: 2 });
     const seedText = $('n-seed').value.trim();
-    startGame({ players, rounds: +$('n-rounds').value, seed: /^\d{1,9}$/.test(seedText) ? +seedText : undefined });
+    startGame({ players, rounds: +$('n-rounds').value, width: T.SIZES[$('n-size').value], seed: /^\d{1,9}$/.test(seedText) ? +seedText : undefined });
   }
 
   function startGame(opts) {
@@ -336,5 +338,5 @@
     startGame({ players: [{}, { ai: 2 }], rounds: 5 });
     $('d-help').showModal();
   }
-  window.__tw = { get s() { return s; } };
+  window.__tw = { get s() { return s; }, start: startGame };
 })();

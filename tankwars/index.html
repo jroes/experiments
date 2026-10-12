@@ -20,7 +20,7 @@
 </header>
 <main>
   <div id="stage">
-    <canvas id="view" width="320" height="180"></canvas>
+    <canvas id="view" width="480" height="180"></canvas>
     <div id="banner" hidden></div>
   </div>
   <section id="hud">
@@ -41,6 +41,9 @@
     <div id="seats"></div>
     <label>Rounds
       <select id="n-rounds"><option>3</option><option selected>5</option><option>10</option></select>
+    </label>
+    <label>Map size
+      <select id="n-size"><option value="small">Small</option><option value="normal" selected>Normal</option><option value="wide">Wide</option></select>
     </label>
     <label>Seed (optional, same seed gives the same hills)
       <input id="n-seed" inputmode="numeric" placeholder="random" maxlength="9">
