@@ -22,7 +22,8 @@ key/value store. Live at https://jroes.github.io/experiments/. Written for whoev
 | `hollowmere/`, `gullrock/` | Two adventures. Each is `game.js` (plain data: rooms, items, handlers) plus a page; the engine is in `shared/` |
 | `shared/` | `store.js` (KV client), `config.js` (`KV_URL`), `qrcode.js` (vendored, MIT), p2p and lobby code. `adventure.js` (engine, no DOM), `adventure-art.js` (EGA pixel helpers), `adventure-ui.js`, `arcade.css` (look shared by Tank Wars and the adventures) |
 | `j/` | Invite landing page: OpenGraph tags for link previews, then hands `#<code>` to the game |
-| `elf-punch/` | Rust server. The `/kv` store lives in `src/store.rs`. See its README for limits |
+| `elf-punch/` | Rust server: `/kv` store (`src/store.rs`), the lab for server-authoritative games (`src/lab/`), the original elf toy (`src/elf.rs`). See its README |
+| `warptraders/universe/` | Client for the shared-universe Warp Traders (talks to `/lab/warptraders`) |
 | `tests/` | `node --test` suites. `fake-kv.js` is an in-memory stand-in for the server |
 | `verification/` | TLA+ models checked with TLC (`run-tlc.sh`) |
 | `tools/` | `make-og.js` renders the link-preview images. `video/` makes each game's intro video (below) |
@@ -89,12 +90,19 @@ Weapon and item names come from the player's saved game too: look them up with `
 - Art is code (`adventure-art.js`, 16 EGA colours, dither for extra shades), 160 x 100, scaled up with `image-rendering: pixelated`. Objects with a `draw()` are sorted by `base` (or the bottom of `rect`) against the hero, so the hero walks behind and in front of things.
 - Phone: the verb buttons plus the inventory do everything the keyboard does. Tapping a thing looks at it; pick Use or Give, then tap what you carry, then the target.
 
+**Two ways to host a game.** Browsers hold the rules (lockstep, `/kv`, Sector Dominion) when friends are playing and cheating does not matter. The server holds
+them (`/lab`, `elf-punch/src/lab/`) when players share one world or the score has to be real. A lab game is one `Game` impl (copy `clicker.rs`); the lab handles players, tokens, saving
+and limits. The client is only a screen: never decide anything in it. Lab games keep time-based state lazy (timestamps, brought up to date on access) so the machine can sleep.
+Players are a name plus a secret token (stored hashed, kept in localStorage); losing it loses the player. Everything in a request is untrusted, and refused actions must change nothing.
+Deploying `elf-punch/**` to main restarts the server, which reloads the lab from `/data/lab`.
+
 ## Testing
 
 ```
 npm test                                   # unit, property, fuzz, lockstep (fake store)
 verification/run-tlc.sh                    # TLA+ models (needs Java)
-cd elf-punch && cargo test --release       # server
+cd elf-punch && cargo test --release       # server (store and lab rules)
+cd elf-punch && npm test                   # server over HTTP: world, /kv, /lab (needs the release build)
 ```
 
 Run the store-backed suites against the real binary too. Raise the limits or the suite trips the per-address ones (CI does the same):

@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b1220">
+<title>Warp Traders: the universe</title>
+<link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="universe.css">
+</head>
+<body>
+<header id="topbar">
+  <div class="brand">THE UNIVERSE<span>one galaxy, everyone in it</span></div>
+  <div class="stat">Turns <b id="s-turns"></b><small id="s-next"></small></div>
+  <div class="stat">Credits <b id="s-credits"></b></div>
+  <div class="stat">Holds <b id="s-holds"></b></div>
+  <div class="stat">Fighters <b id="s-fighters"></b></div>
+  <div class="stat">Rank <b id="s-rank"></b></div>
+  <div class="spacer"></div>
+  <button id="b-help">Help</button>
+  <button id="b-board">Leaderboard</button>
+  <button id="b-device">Other device</button>
+  <a class="btn" href="../">Solo game</a>
+</header>
+<main>
+  <div id="mapwrap">
+    <canvas id="map"></canvas>
+    <div id="tip" hidden></div>
+  </div>
+  <aside id="side">
+    <section id="p-here"></section>
+    <section id="p-port"></section>
+    <section id="p-ship"></section>
+    <section id="p-inbox" hidden></section>
+    <section id="p-news"><h3>News</h3><ul id="news"></ul></section>
+    <section id="p-log"><h3>Log</h3><ul id="log"></ul></section>
+  </aside>
+</main>
+
+<dialog id="d-join">
+  <h2>Join the universe</h2>
+  <p>One galaxy, shared with everyone who plays. Ports run low when people buy from them. You can run into other traders, and they can shoot you.</p>
+  <form method="dialog" id="f-join">
+    <label>Trader name <input id="in-name" maxlength="16" autocomplete="off" placeholder="2 to 16 letters or digits"></label>
+    <p class="fine" id="join-err"></p>
+    <p class="fine">There are no accounts. This browser keeps a secret key that is you. Once you're in, <b>Other device</b> gives you a link and a QR code to open the same trader on your phone or another browser. New traders can't be attacked for a few hours.</p>
+    <div class="row"><button class="primary" id="b-join" value="join">Start trading</button></div>
+  </form>
+  <details>
+    <summary>Already a trader? Use a link or key</summary>
+    <input id="in-key" autocomplete="off" placeholder="Paste your link or key">
+    <p class="fine" id="key-err"></p>
+    <div class="row"><button type="button" id="b-key">Use this trader</button></div>
+  </details>
+</dialog>
+
+<dialog id="d-help">
+  <h2>How the universe works</h2>
+  <ul>
+    <li>The server runs the game. Everyone is in the same galaxy and the same ports.</li>
+    <li>Turns: you get one every 90 seconds, up to 600. They keep coming while you're away. A warp costs 1. Trading is free.</li>
+    <li>Ports sell or buy fuel ore, organics and equipment. When someone buys a port out, the price goes up for everybody. It slowly refills (hours).</li>
+    <li>Tap a sector on the map to fly there along sectors you already know.</li>
+    <li><b>Stardock</b> (the gold one in the middle) sells holds and fighters. Nobody fights there.</li>
+    <li>If another trader is in your sector you can attack them (3 turns, needs fighters). The bigger fleet usually wins. The loser is sent back to Stardock with no fighters or cargo, and the winner takes what fits in their holds. New and just-beaten traders are protected for a while.</li>
+    <li>The leaderboard ranks net worth: credits, cargo, fighters and extra holds.</li>
+  </ul>
+  <p class="fine">Friends and strangers share this. Don't use a name or message you wouldn't say out loud.</p>
+  <form method="dialog"><button class="primary">Got it</button></form>
+</dialog>
+
+<dialog id="d-board">
+  <h2>Leaderboard</h2>
+  <p class="fine" id="board-sum"></p>
+  <table class="port-table" id="board-table"></table>
+  <form method="dialog"><button class="primary">Close</button></form>
+</dialog>
+
+<dialog id="d-device">
+  <h2>Use this trader on another device</h2>
+  <p class="fine">Scan this with the camera on your phone, or send yourself the link. That device becomes this trader. Both keep working.</p>
+  <div id="device-qr"></div>
+  <input id="device-link" readonly>
+  <div class="row"><button type="button" id="b-device-copy">Copy link</button></div>
+  <p class="fine">Anyone who has this link <b>is</b> this trader: they can spend the credits and fight with the fighters. Keep it private. Save it somewhere (notes, a message to yourself) and you can get back in even if you lose this browser.</p>
+  <form method="dialog"><button class="primary">Close</button></form>
+</dialog>
+
+<dialog id="d-say">
+  <h2 id="say-title">Message</h2>
+  <form method="dialog" id="f-say">
+    <label>Up to 140 characters <input id="in-say" maxlength="140" autocomplete="off"></label>
+    <div class="row"><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="send">Send</button></div>
+  </form>
+</dialog>
+
+<script src="../../shared/config.js"></script>
+<script src="../../shared/qrcode.js"></script>
+<script src="../../shared/version.js"></script>
+<script src="../../shared/update.js"></script>
+<script src="ui.js"></script>
+</body>
+</html>

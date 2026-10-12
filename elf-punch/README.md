@@ -3,7 +3,8 @@
 Tiny MMO survival toy in Rust: std threads, tungstenite + serde_json, one shared in-memory world (25 players), ticks only
 while someone is connected. About 650 KB static binary, ~6 MB RSS with 25 players.
 
-The same server also hosts a small **key/value store** for the other experiments (`/kv/...`, below), so a static page on
+The same server is also a small **game-experiments host** with two parts: a **key/value store** (`/kv`) for games where the browsers
+hold the rules, and the **lab** (`/lab`) for games where the server holds them. The key/value store for the other experiments (`/kv/...`, below), so a static page on
 GitHub Pages can keep scores, saves or shared state without its own backend.
 
 Live: https://elf-castle-wood-puncher.fly.dev/
@@ -104,3 +105,46 @@ daily cap on new namespaces is what stops someone from filling the 200 slots wit
 only deleted by the hourly sweep, which also runs when the machine starts.
 
 The address comes from the `Fly-Client-IP` header (set by Fly's proxy), and from the socket when that header is absent.
+
+
+## The lab: server-authoritative games (`/lab`)
+
+`/kv` trusts the browsers. The lab doesn't: the server owns the rules and the state, so nobody can edit their own score. Use it when
+players share one world and must not be able to cheat (the universe version of Warp Traders is the first game).
+
+The lab gives a game everything around the rules: players, a secret token each, saving, limits, presence. A game is one type that implements
+`Game` (`src/lab/mod.rs`) and gets handed `now`, so it never touches sockets, files or clocks.
+
+```
+GET  /lab                         list games
+POST /lab/<game>/join {"name"}    -> 201 {id, name, token}   (the token is shown once; send it as Authorization: Bearer <token>)
+GET  /lab/<game>/me               what this player may see (auth)
+POST /lab/<game>/act  {...}       one action, game-defined (auth) -> 200 {...} or 400 {error:"refused", message}
+GET  /lab/<game>/board            public view, no login
+```
+
+Other statuses: 401 no or unknown token, 404 unknown game, 409 name taken, 429 slow down (`Retry-After`), 507 full.
+Names are 2 to 16 letters, digits, spaces, `_`, `-`. There are no accounts: the token is the player, and only its SHA-256 is saved.
+
+**Add a game:** copy `src/lab/clicker.rs` (40 lines), put your rules in `act`, add it to `games()` in `src/lab/mod.rs`, and write rules tests next to it.
+Anything in `act`'s JSON is untrusted. Return `Err(msg)` to refuse, which changes nothing and is not saved. State has to survive `save`/`load`.
+Keep time-based things lazy (store a timestamp, bring it up to date when someone looks), so the machine can sleep with nobody connected.
+
+**Persistence:** `/data/lab/<game>.json` (tmp + rename), saved every 3 s when something changed. A save that cannot be read is moved to
+`<game>.corrupt-<time>` and the game starts fresh, because the server must always come up. Single machine only.
+
+**Limits (env):** `LAB_MAX_PLAYERS` (1000), `LAB_IP_REQ_PER_MIN` (240), `LAB_IP_JOINS_PER_HOUR` (6), `LAB_ACT_PER_MIN` (90), `LAB_DIR` (`/data/lab`).
+
+### Warp Traders: the universe (`src/lab/tradewars.rs`)
+
+One galaxy for everybody. Ports have stock that buying drains and selling fills, so prices move for everyone and drift back over hours.
+Turns come back at 1 per 90 s up to 600, even while you're away. Stardock sells holds and fighters. Another trader in your sector can
+be attacked (3 turns, needs fighters, never at Stardock, not while protected). The loser goes back to Stardock with no fighters or cargo
+and keeps their credits. The winner takes what fits in their holds.
+
+Env: `LAB_TW_SEED`, `LAB_TW_SECTORS` (250), `LAB_TW_TURN_SECS` (90), `LAB_TW_TURN_CAP` (600), `LAB_TW_START_TURNS` (300),
+`LAB_TW_PORT_TAU` (14400, seconds for stock to drift about two thirds of the way back), `LAB_TW_PROTECT_NEW_SECS` (10800), `LAB_TW_PROTECT_DEATH_SECS` (3600).
+The galaxy is saved with the game, so it does not change if the seed or code does. Balance has not been tested with real players yet.
+Client: `warptraders/universe/`. To reset the universe, delete `/data/lab/warptraders.json` and restart.
+
+Tests: `cargo test --release` (rules and framework), `npm run test:lab` (several players over HTTP, with a restart in the middle).
