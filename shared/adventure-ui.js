@@ -23,10 +23,16 @@
     // HD-2D games (def.hd) draw a finer, lit picture through hd2d.js; the rest draw 160 x 100 EGA pixels
     const HD = def.hd && root.HD2D && root.HD2D.post ? root.HD2D : null;
     if (HD) { canvas.width = HD.DW; canvas.height = HD.DH; canvas.style.imageRendering = 'auto'; }
-    const ctx = canvas.getContext('2d');
-    ctx.imageSmoothingEnabled = false;
-    const pix = new Art.Pix(ctx);
-    const hdCache = {};
+    // HD pictures are lit on the graphics card when it can (hd2d-gl.js), else on the CPU with a 2D canvas (hd2d-post.js).
+    // A canvas has one kind of context for life, so WebGL2 is tried first.
+    let gpu = null;
+    if (HD && HD.gl) { try { gpu = HD.gl(canvas); } catch (e) { gpu = null; } }
+    const ctx = gpu ? null : canvas.getContext('2d');
+    if (ctx) ctx.imageSmoothingEnabled = false;
+    const pix = ctx ? new Art.Pix(ctx) : null;
+    const hdCache = {}, hdScene = HD ? new HD.Scene(HD.LOOKS.hd2d) : null;
+    // the room's background is drawn by a worker, so the main thread never waits for it
+    const hdRefresh = HD && HD.backdrop ? HD.backdrop(def, hdCache, def.id.toUpperCase()) : null;
     let hdOut = null, lastDraw = -1e9;
     // the camera effects cost time to draw; a phone that struggles can turn them off (saved on this device for every HD game)
     const FX = 'adv-hd-effects-v1';
@@ -84,7 +90,9 @@
     // ---------- the picture ----------
     function draw(t) {
       if (HD) {
-        const fr = HD.render(def, g, t, { moving, cache: hdCache, out: hdOut });
+        const opts = { moving, cache: hdCache, scene: hdScene, refresh: hdRefresh || undefined };
+        if (gpu) { gpu.draw(HD.render(def, g, t, Object.assign(opts, { raw: true })), { t, low: fxLow }); return; }
+        const fr = HD.render(def, g, t, Object.assign(opts, { out: hdOut }));
         hdOut = fr.rgba;
         HD.post(ctx, fr, { t, low: fxLow });
         return;
@@ -108,8 +116,8 @@
         if (dx || dy) g.nudge(dx, dy, dt); else g.update(dt);
       }
       moving = g.step !== lastStep; lastStep = g.step;
-      // HD pictures are drawn at most 30 times a second (20 with the effects off saves the most work on a phone)
-      if (!HD || now - lastDraw >= (fxLow ? 48 : 32)) { lastDraw = now; draw(now / 1000); }
+      // HD pictures lit by the graphics card are drawn every frame; on the CPU at most 30 times a second (20 with the effects off)
+      if (!HD || gpu || now - lastDraw >= (fxLow ? 48 : 32)) { lastDraw = now; draw(now / 1000); }
       flush();
       if (now - saveAt > 20000) { saveAt = now; persist(); }
       root.requestAnimationFrame(loop);
@@ -196,7 +204,7 @@
     if (!store.get(KEY) && !store.get(SEEN)) $('d-intro').showModal();
     flush();
     root.requestAnimationFrame(loop);
-    root.__adv = { get g() { return g; }, run };
+    root.__adv = { get g() { return g; }, run, get gpu() { return gpu; }, hd: { cache: hdCache, scene: hdScene, refresh: hdRefresh } }; // for browser checks
   }
 
   root.AdventureUI = { start };
