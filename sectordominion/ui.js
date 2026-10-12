@@ -571,7 +571,8 @@
 
   // Tell the other players this page is open. Their pages show "online" for 45 s after the last one.
   let lastBeat = 0;
-  function heartbeat() { lastBeat = Date.now(); if (ui.online) ui.online.beat(); }
+  // Having this page open is what makes me online, so every game with friends hears it, not only the one on screen.
+  function heartbeat() { lastBeat = Date.now(); for (const [id, s] of sessions) if (lib.has(id)) s.beat(); }
 
   let polling = false;
   async function syncOnline(quiet) {
@@ -590,7 +591,7 @@
       // who came and went since the last look, in plain words
       for (const ev of ui.online.takeEvents()) {
         const n = nameOf(ev.seat);
-        Sound.play(ev.kind === 'online' ? 'join' : 'leave');
+        friendPing(ev.kind, n);
         if (ev.kind === 'online') note(n + ' is online.', 'good');
         else note(n + ' went offline. The game keeps going, and their orders count whenever they send them.', 'info');
       }
@@ -698,12 +699,12 @@
   //   waiting, and somebody else is online -> every 3 s, so a turn plays almost at once
   //   waiting, nobody online               -> every 15 s, and every minute after 20 minutes (a forgotten tab costs almost nothing)
   //   still giving orders                  -> every 15 s, which keeps the who-is-online list fresh
-  let lastSync = 0, waitStart = 0;
+  let lastSync = 0, waitStart = 0, hiddenSince = 0;
   setInterval(() => {
+    const now = Date.now();
+    if (!document.hidden && now - lastBeat >= 15000) heartbeat();
     const o = ui.online;
     if (!o || document.hidden || o.base.over) { waitStart = 0; return; }
-    const now = Date.now();
-    if (now - lastBeat >= 15000) heartbeat();
     const me = G.empire(o.base, o.seat), waiting = o.sent || !me.human || !me.alive;
     let every = 15000;
     if (waiting) {
@@ -713,9 +714,10 @@
     if (now - lastSync >= every - 400 && !polling) { lastSync = now; syncOnline(true); }
   }, 1000);
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) return;
+    if (document.hidden) { hiddenSince = Date.now(); return; }
     document.title = baseTitle;
-    if (ui.online) { heartbeat(); syncOnline(true); }
+    heartbeat();
+    if (ui.online) syncOnline(true);
   });
 
   // the friends button opens the dialog directly: one place for starting and joining
@@ -1062,7 +1064,13 @@
 
   function renderGames() {
     const el = $('games-list');
-    el.innerHTML = lib.list.slice().reverse().map(g => {
+    const friends = Online.friendsOnline(onlineEntries());
+    const friendsHtml = lib.list.some(g => g.kind === 'online')
+      ? '<div class="friendsnow"><b>Friends online</b>' + (friends.length ? friends.map(f => '<div class="friendrow"><span class="good">● ' + esc(f.name) + '</span> ' +
+        f.games.map(x => '<button data-g="open" data-id="' + x.id + '" class="small">' + (x.id === lib.active ? 'here' : 'Open game') + '</button>').join(' ') + '</div>').join('')
+        : ' <span class="dim">nobody right now. You will hear it when a friend hops on.</span>') + '</div>'
+      : '';
+    el.innerHTML = friendsHtml + lib.list.slice().reverse().map(g => {
       const d = describe(g.id), open = g.id === lib.active;
       return '<div class="gamerow' + (open ? ' open' : '') + '"><div><b>' + esc(d.title) + '</b>' + (open ? ' <span class="dim">(open now)</span>' : '') +
         (d.need && !open ? ' <span class="badge">your move</span>' : '') + '</div><div class="dim">' + esc(d.detail) + '</div>' +
@@ -1074,6 +1082,13 @@
     let n = 0;
     for (const [id, s] of sessions) if (id !== lib.active && lib.has(id) && needsMe(s)) n++;
     $('b-new').innerHTML = 'Games' + (n ? ' <span class="badge">' + n + '</span>' : '');
+    // who is around, over every game with friends (hidden if I have none)
+    const chip = $('b-online'), hasOnline = lib.list.some(g => g.kind === 'online');
+    const friends = Online.friendsOnline(onlineEntries());
+    chip.hidden = !hasOnline;
+    chip.className = 'chip' + (friends.length ? ' on' : '');
+    chip.textContent = '● ' + friends.length + ' online';
+    chip.title = friends.length ? friends.map(f => f.name).join(', ') + ' online' : 'None of your friends are on right now';
   }
 
   function openGames() {
@@ -1093,12 +1108,49 @@
   $('b-games-new').onclick = () => { $('d-games').close(); openNew(); };
   $('b-games-friends').onclick = () => { $('d-games').close(); $('b-friends').click(); };
 
-  // The games that are not open get a look every 30 s while the page is visible, so the badge on Games stays true.
+  // ----- friends who are around, in any game -----
+
+  // "Bo is online": a sound, a note on screen, and (if I am in another tab) the tab title, even if I am in a solo game or another game.
+  const pinged = new Map(); // friend -> when I last told the person, so two games with the same friend are one ping
+  function friendPing(kind, name) {
+    const key = kind + ':' + name.toLowerCase(), now = Date.now();
+    if (now - (pinged.get(key) || 0) < 15000) return;
+    pinged.set(key, now);
+    Sound.play(kind === 'online' ? 'join' : 'leave');
+    if (kind === 'online') {
+      if (document.hidden) document.title = '● ' + name + ' is online · ' + baseTitle;
+      friendToast('● ' + name + ' is online');
+    }
+  }
+  let toastTimer = 0;
+  function friendToast(text) {
+    const t = $('friend-toast');
+    t.textContent = text; t.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { t.hidden = true; }, 5000);
+  }
+  $('friend-toast').onclick = () => { $('friend-toast').hidden = true; openGames(); };
+  $('b-online').onclick = () => openGames();
+
+  const onlineEntries = () => [...sessions].filter(([id]) => lib.has(id)).map(([id, session]) => ({ id, session }));
+
+  function presenceEvents(s) {
+    for (const ev of s.takeEvents()) friendPing(ev.kind, s.names[ev.seat] || G.empire(s.base, ev.seat).name.split(' ')[0]);
+  }
+
+  // The games that are not open get a look every 10 s, so the badge on Games, the friends who are online, and the sounds stay true.
+  // The page that is open and visible looks at its own game faster (above). A hidden page keeps looking, slowly, so a friend
+  // who hops on still makes the sound. After ten minutes hidden it only looks once a minute.
+  let bgTick = 0;
   setInterval(async () => {
-    if (document.hidden) return;
+    bgTick++;
+    if (sessions.size > 6 && bgTick % 2) return; // with many games, look every 20 s so the server is not asked too often
+    if (document.hidden && Date.now() - hiddenSince > 10 * 60e3 && bgTick % 6) return;
     for (const [id, s] of sessions) {
-      if (s === ui.online || !lib.has(id) || s.base.over) continue;
+      if (!lib.has(id) || s.base.over) continue;
+      if (s === ui.online) { if (document.hidden) await syncOnline(true); continue; }
       await s.sync(); persist(s);
+      presenceEvents(s);
     }
     renderGamesBadge();
     // a game I am not looking at has just become my move
@@ -1106,7 +1158,7 @@
     if ([...need].some(id => !ui.bgNeed.has(id))) Sound.play('yourmove');
     ui.bgNeed = need;
     if ($('d-games').open) renderGames();
-  }, 30000);
+  }, 10000);
 
   // ---------- boot ----------
 

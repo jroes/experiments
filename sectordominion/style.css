@@ -199,3 +199,10 @@ dialog label.check input { display: inline-block; width: auto; margin: 4px 0 0; 
 dialog label.check .fine { display: block; }
 dialog input[type=range] { padding: 0; accent-color: var(--accent); }
 dialog input[type=checkbox] { accent-color: var(--accent); }
+
+.chip { padding: 2px 10px; border-radius: 12px; color: var(--dim); font-size: 12px; }
+.chip.on { color: var(--accent); border-color: var(--accent); }
+#friend-toast { position: fixed; left: 50%; bottom: 76px; transform: translateX(-50%); z-index: 20; background: #123a2e; border: 1px solid var(--accent); color: var(--accent); padding: 8px 18px; border-radius: 18px; box-shadow: 0 6px 24px rgba(0,0,0,.5); }
+.friendsnow { padding: 6px 0 8px; }
+.friendrow { margin: 4px 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+@media (max-width: 1360px) { .brand span { display: none; } }

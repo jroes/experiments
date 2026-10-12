@@ -25,6 +25,12 @@ Each game is saved under its own key (`games.js` keeps the index), so one game c
 become entries in the list the first time the page loads. Opening a link for a game you are already in just switches to it. Deleting a game with friends only
 removes it from this device. It stays on the server, and the link still works.
 
+## Friends online
+
+The chip in the top bar (`● 2 online`) counts the friends who are around right now, over every game with friends you are in. The Games list shows who, with a button to open
+the game. When a friend hops on you hear it and see a small notice wherever you are, even in a solo game or a different game, and in a hidden tab the tab title says so too
+(a hidden page keeps checking in the background, slowly). Being on the page is what makes you online in all your games, not only the one that is open.
+
 ## Link another device
 
 The **Link another device** button (bottom of the side panel) shows a QR code and a private link. Opening it on your phone (or another computer) links that device to this one, a bit like signing in without an account:

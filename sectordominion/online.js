@@ -477,7 +477,25 @@
     }
   }
 
-  const api = { Session, Link, inviteCode, parseInvite, cleanGame, cleanEntry, cleanName, NAME_MAX, ONLINE_SECS, ROOM_LEN };
+  // Which of my friends are around right now, across every game with friends I am in. `entries` is [{ id, session }].
+  // A friend is someone else who plays a seat and whose page checked in lately. The same name in two games counts once, and
+  // `games` lists the games they are in, so "Bo is online" can say where.
+  function friendsOnline(entries) {
+    const byKey = new Map();
+    for (const { id, session: s } of entries) {
+      if (!s || !s.base || s.base.over) continue;
+      for (let seat = 1; seat <= s.game.humans; seat++) {
+        if (seat === s.seat || s.seatState(seat) !== 'human' || !s.isOnline(seat)) continue;
+        const name = s.names[seat] || G.empire(s.base, seat).name.split(' ')[0];
+        const key = s.names[seat] ? 'n:' + s.names[seat].toLowerCase() : id + ':' + seat;
+        if (!byKey.has(key)) byKey.set(key, { key, name, games: [] });
+        byKey.get(key).games.push({ id, seat });
+      }
+    }
+    return [...byKey.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  const api = { Session, Link, friendsOnline, inviteCode, parseInvite, cleanGame, cleanEntry, cleanName, NAME_MAX, ONLINE_SECS, ROOM_LEN };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Online = api;
 })(typeof window !== 'undefined' ? window : globalThis);
