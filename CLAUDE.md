@@ -23,7 +23,7 @@ key/value store. Live at https://jroes.github.io/experiments/. Written for whoev
 | `elf-punch/` | Rust server. The `/kv` store lives in `src/store.rs`. See its README for limits |
 | `tests/` | `node --test` suites. `fake-kv.js` is an in-memory stand-in for the server |
 | `verification/` | TLA+ models checked with TLC (`run-tlc.sh`) |
-| `tools/` | `make-og.js` renders the link-preview images |
+| `tools/` | `make-og.js` renders the link-preview images. `video/` makes each game's intro video (below) |
 
 ## Patterns that matter
 
@@ -91,6 +91,20 @@ with `route.fetch({ url })` and add CORS headers. Open several browser contexts 
 Only Chromium has been tried, not Safari or Firefox.
 
 Shell gotcha: `pkill -f <pattern>` can match and kill your own shell command. Use `pkill -x name` or bracket the pattern.
+
+## Intro videos
+
+`sectordominion/intro.mp4` and `warptraders/intro.mp4` (with `intro.jpg` posters) are made by scripts that play the real game in headless Chromium:
+`node tools/video/sectordominion.js` and `node tools/video/warptraders.js`. Needs Playwright, ffmpeg and python3 with numpy, a local elf-punch
+(the friends scenes use it; see Testing) on port 8135 (`KV_PORT` to change), and takes a few minutes. Rerun them after changing the UI they show.
+
+- `lib.js` records Chrome's screencast (full-quality frames with timestamps, not Playwright's low-bitrate recorder), adds captions, a ring to point at things, a visible cursor
+  and ripples, title and end cards, then encodes with ffmpeg. Overlays live in a popover so they stay above open dialogs. The page is zoomed (CSS `zoom`) so text reads at video size.
+- `music.py` makes the soundtrack from scratch with numpy (no samples, no licences): a loop plus click and hit sounds placed where the script clicked.
+- `common.js` serves the repo as `https://jroes.github.io/experiments/` and routes the store to the local server, so the videos show the real address.
+- The scripts use a fixed seed so the run is repeatable: Sector Dominion seed 10 (an empty world and natives close to the capital), Warp Traders seed 112 (a three-turn loop with no pirates that doubles the money; found by searching seeds with the game code).
+- Map clicks are computed with the game's own fit rule. Dispatch `resize` first so the game refits to what is on screen.
+- Videos are a few MB each and live in git, so do not regenerate them for small changes.
 
 ## UI conventions
 
