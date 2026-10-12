@@ -6,6 +6,8 @@
   const $ = id => document.getElementById(id);
   const canvas = $('map'), ctx = canvas.getContext('2d');
 
+  Sound.load().mount($('b-sound'));
+
   const ui = {
     state: null,
     vis: new Set(),
@@ -19,6 +21,7 @@
     onlineMsg: '',
     onlineBusy: false,
     name: null,     // what this player likes to be called (saved on this device)
+    bgNeed: new Set(), // games with friends, not open, that were waiting on me at the last look
     userView: false, // the player has panned or zoomed, so a resize should not refit the map
     notes: [],      // who came and went, and turns played: shown in the log, not saved
   };
@@ -90,8 +93,12 @@
     canvas.classList.remove('targeting');
     resetSend();
     fitView();
+    quietBaseline();
     refresh();
   }
+
+  // Sounds follow what changes on screen. After a game is opened, what is already there should not make a noise.
+  function quietBaseline() { ui.logKey = undefined; ui.wasOver = ui.state.over; }
 
   function resetSend() { for (const t of G.SHIP_ORDER) ui.send[t] = 0; }
 
@@ -99,6 +106,7 @@
     ui.vis = G.visibleWorlds(ui.state, ui.me);
     renderTop(); renderOnline(); renderDevice(); renderGamesBadge(); renderWorld(); renderEmpire(); renderLog(); draw();
     const s = ui.state, b = $('banner'), alive = meEmp().alive;
+    soundForChanges();
     if (s.over) {
       b.hidden = false;
       b.innerHTML = (s.winner === ui.me ? '<b class="good">Victory.</b><br>The sector is yours.' :
@@ -113,6 +121,16 @@
       b.hidden = false;
       b.innerHTML = '<b class="bad">Your empire is gone.</b><br><span class="dim">Spectating until the game ends.</span>';
     } else b.hidden = true;
+  }
+
+  // Plays a sound for the newest thing in my log (a world settled, a battle, a loss), and for the game ending.
+  function soundForChanges() {
+    const s = ui.state, own = s.log.filter(l => !l.to || l.to.includes(ui.me)), top = own[0];
+    const key = top ? top.turn + '|' + top.text : '';
+    if (ui.logKey !== undefined && key !== ui.logKey && top) Sound.play(top.kind === 'good' ? 'good' : top.kind === 'battle' ? 'battle' : top.kind === 'bad' ? 'bad' : null);
+    ui.logKey = key;
+    if (ui.wasOver === false && s.over) Sound.play(s.winner === ui.me ? 'win' : 'lose');
+    ui.wasOver = s.over;
   }
 
   // what this player is allowed to know about a world
@@ -427,7 +445,7 @@
       if (id != null) dispatchTo(id);
       return;
     }
-    if (id != null) { ui.selected = id; resetSend(); refresh(); }
+    if (id != null) { ui.selected = id; Sound.play('tick'); resetSend(); refresh(); }
   });
   canvas.addEventListener('pointercancel', e => { pts.delete(e.pointerId); if (pts.size < 2) pinch = null; if (!pts.size) drag = null; canvas.classList.remove('dragging'); });
   canvas.addEventListener('pointerleave', () => { $('tip').hidden = true; ui.hover = null; });
@@ -441,6 +459,8 @@
 
   function toast(msg) {
     ui.state.log.unshift({ turn: ui.state.turn, text: msg, kind: 'bad', to: [ui.me] });
+    ui.logKey = ui.state.turn + '|' + msg; // the "nope" below is the sound for this, not the log one
+    Sound.play('nope');
     renderLog();
   }
 
@@ -449,6 +469,7 @@
     const res = act({ op: 'send', from: ui.selected, to: toId, ships: { ...ui.send } });
     if (!res.ok) { toast(res.msg); return; }
     if (res.eta) ui.state.log.unshift({ turn: ui.state.turn, text: 'Fleet sent to ' + ui.state.worlds[toId].name + ', ' + res.eta + ' turn' + (res.eta > 1 ? 's' : '') + '.', kind: 'info', to: [ui.me] });
+    Sound.play('launch');
     ui.targeting = false; canvas.classList.remove('targeting'); resetSend(); refresh();
   }
 
@@ -470,6 +491,7 @@
     else if (a === 'target') ui.targeting = !ui.targeting;
     canvas.classList.toggle('targeting', ui.targeting);
     if (!res.ok) toast(res.msg);
+    else Sound.play(a === 'build' || a === 'fortify' ? 'build' : a === 'research' ? 'research' : 'tick');
     refresh();
   });
 
@@ -481,8 +503,9 @@
     ui.targeting = false;
     canvas.classList.remove('targeting');
     if (ui.online) { sendOnline(); return; }
-    const r = act({ op: 'ready' });
+    const turnBefore = s.turn, r = act({ op: 'ready' });
     if (!r.ok) toast(r.msg);
+    else { Sound.play('end'); if (ui.state.turn > turnBefore) setTimeout(() => Sound.play('turn'), 260); }
     refresh();
   }
 
@@ -541,6 +564,7 @@
     else if (session.names[session.seat]) { ui.name = session.names[session.seat]; try { localStorage.setItem(NAME_KEY, ui.name); } catch (e) { /* ignore */ } }
     adoptSession();
     ui.targeting = false; canvas.classList.remove('targeting');
+    quietBaseline();
     fitView(); save(); refresh();
     heartbeat();
   }
@@ -561,10 +585,12 @@
       if (r.advanced) {
         note('Everyone is in. Turn ' + before + ' was played. It is now turn ' + ui.online.base.turn + '.', 'good');
         if (document.hidden) document.title = '(new turn) ' + baseTitle;
+        Sound.play('turn');
       }
       // who came and went since the last look, in plain words
       for (const ev of ui.online.takeEvents()) {
         const n = nameOf(ev.seat);
+        Sound.play(ev.kind === 'online' ? 'join' : 'leave');
         if (ev.kind === 'online') note(n + ' is online.', 'good');
         else note(n + ' went offline. The game keeps going, and their orders count whenever they send them.', 'info');
       }
@@ -582,7 +608,7 @@
     if (ui.online !== o) { persist(o); return; }
     ui.onlineMsg = '';
     adoptSession();
-    if (!r.ok) toast(r.msg);
+    if (!r.ok) toast(r.msg); else Sound.play('end');
     save(); refresh();
   }
 
@@ -711,6 +737,7 @@
       const server = String(fd.get('server') || '').trim();
       const session = await Online.Session.create({ server, humans: +fd.get('humans'), difficulty: fd.get('difficulty'), worlds: +fd.get('worlds') });
       addOnline(session);
+      Sound.play('start');
       $('d-online').close();
       openInvites(); // straight to "how do I get my friends in"
     } catch (err) { msg.textContent = err.message; }
@@ -733,6 +760,7 @@
       let ok = false;
       try { await navigator.clipboard.writeText(url); ok = true; } catch (err) { input.select(); try { ok = document.execCommand('copy'); } catch (e2) { /* ignore */ } }
       copyBtn.textContent = ok ? 'Copied' : 'Press and hold to copy';
+      if (ok) Sound.play('tick');
       setTimeout(() => { copyBtn.textContent = 'Copy link'; }, 2000);
     };
   }
@@ -789,6 +817,7 @@
       const session = await Online.Session.join(invite, server);
       const there = findOnline(session.game.room, session.seat);
       if (there) openGame(there); else addOnline(session);
+      Sound.play('join');
       $('d-join').close(); $('d-online').close();
       // Someone arriving by a link sees the game first. Only if the game did not already know their name do we ask, and then once.
       await ensureName();
@@ -904,7 +933,7 @@
     linking = true;
     try {
       const r = await pullLinked(await Online.Link.list(serverUrl(), room));
-      if (r.added) { renderGamesBadge(); if ($('d-games').open) renderGames(); }
+      if (r.added) { Sound.play('good'); renderGamesBadge(); if ($('d-games').open) renderGames(); }
     } catch (err) { /* offline or busy: try again next time */ } finally { linking = false; }
   }
   setInterval(syncLinked, 60000);
@@ -1072,6 +1101,10 @@
       await s.sync(); persist(s);
     }
     renderGamesBadge();
+    // a game I am not looking at has just become my move
+    const need = new Set([...sessions].filter(([id, x]) => id !== lib.active && lib.has(id) && needsMe(x)).map(([id]) => id));
+    if ([...need].some(id => !ui.bgNeed.has(id))) Sound.play('yourmove');
+    ui.bgNeed = need;
     if ($('d-games').open) renderGames();
   }, 30000);
 

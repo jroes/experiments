@@ -176,3 +176,8 @@ details input { width: 100%; margin-top: 8px; }
 
 #v-intro { display: block; width: min(880px, 92vw); max-height: 70vh; background: #000; border-radius: 6px; }
 #d-intro { max-width: min(920px, 96vw); padding: 10px; }
+dialog label.check { display: flex; gap: 10px; align-items: flex-start; }
+dialog label.check input { display: inline-block; width: auto; margin: 4px 0 0; flex: none; }
+dialog label.check .fine { display: block; }
+dialog input[type=range] { padding: 0; accent-color: var(--accent); }
+dialog input[type=checkbox] { accent-color: var(--accent); }

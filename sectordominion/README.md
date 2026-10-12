@@ -8,6 +8,7 @@ Play: open `index.html`, or visit the GitHub Pages URL. No build step, no server
 - `ui.js`: canvas map and sidebar.
 - `games.js`: the list of games on this device (no rules in it, tested under node).
 - Your current game is saved to `localStorage` as soon as it starts, so a refresh brings it back. Solo play sends nothing anywhere.
+- Sound: short effects when friends join or leave, turns play, you build or launch, worlds fall, and the game ends, plus a very quiet space ambience that is off until you turn it on (the Sound button). Made in the browser, no files.
 - Works on phones: the map pans with one finger and zooms with a pinch, and End turn stays at the bottom of the screen.
 - `intro.mp4` is a 90-second intro video, made by `tools/video/sectordominion.js` (see `CLAUDE.md`). The Help button has a link to it.
 - Help (the Help button) has a first-turns walkthrough and a table of what each ship is for. A short tip also shows in the world panel for the first turns.
