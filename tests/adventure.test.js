@@ -72,6 +72,7 @@ test('every scene draws without error, on a fake canvas, at several moments', ()
   const c = new Art.Pix(ctx);
   for (const [name, { def }] of Object.entries(GAMES)) {
     const g = Adv.create(def);
+    if (def.hd) continue; // drawn by hd2d.js, checked below
     for (const [rid, r] of Object.entries(def.rooms)) {
       g.state.room = rid;
       for (const t of [0, 0.4, 1.7]) {
@@ -83,6 +84,36 @@ test('every scene draws without error, on a fake canvas, at several moments', ()
     for (const it of Object.values(def.items)) if (it.draw) it.draw(c, 10, 10, g);
   }
   assert.ok(calls.n > 1000);
+});
+
+test('HD-2D games: every room renders lit pixels, with and without the things in it, facing every way', () => {
+  const HD = require('../shared/hd2d.js');
+  for (const [name, { def }] of Object.entries(GAMES)) {
+    if (!def.hd) continue;
+    for (const [rid, r] of Object.entries(def.rooms)) {
+      assert.ok(Object.prototype.hasOwnProperty.call(HD.LOOKS, r.look || 'hd2d'), name + '/' + rid + ' look');
+      for (const [t, dir, flagsOn] of [[0, 'd', false], [0.4, 'l', true], [1.7, 'u', false], [3.1, 'r', true]]) {
+        const g = Adv.create(def); g.state.room = rid; g.state.dir = dir;
+        if (flagsOn) { for (const f of ['slime_gone', 'bay_open', 'eel_fed', 'mopped', 'jackpot']) g.set(f); g.give('mop'); g.state.drops.push({ item: 'brick', room: rid, x: 60, y: 90 }); }
+        const fr = HD.render(def, g, t, { moving: true });
+        assert.equal(fr.rgba.length, HD.W * HD.H * 4);
+        let lit = 0, bad = 0;
+        for (let i = 0; i < fr.rgba.length; i += 4) { const v = fr.rgba[i] + fr.rgba[i + 1] + fr.rgba[i + 2]; if (v > 60) lit++; if (Number.isNaN(v)) bad++; }
+        assert.equal(bad, 0);
+        assert.ok(lit > HD.W * HD.H * 0.25, name + '/' + rid + ' is mostly dark (' + lit + ')');
+        for (const sh of fr.shafts) assert.ok(['window', 'cone', 'sun', 'sweep'].includes(sh.kind), rid + ' shaft kind');
+      }
+    }
+  }
+});
+
+test('HD-2D: a cached background gives the same picture as drawing it fresh', () => {
+  const HD = require('../shared/hd2d.js'), def = GAMES.starsweeper.def;
+  const g = Adv.create(def), cache = {};
+  HD.render(def, g, 1, { cache });
+  const a = HD.render(def, g, 1.05, { cache }).rgba, b = HD.render(def, g, 1, {}).rgba;
+  let diff = 0; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) diff++;
+  assert.ok(diff < a.length * 0.02, 'cached frame drifted: ' + diff);
 });
 
 for (const [name, { def, walk }] of Object.entries(GAMES)) {

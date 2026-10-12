@@ -28,7 +28,7 @@ main { flex: 1; display: flex; min-height: 0; }
   #topbar .brand { display: none; }
   #topbar .stat { white-space: nowrap; }
   #topbar .spacer { flex: 1; height: auto; }
-  #s-room-wrap, #b-save, #b-load { display: none; }
+  #s-room-wrap, #b-save, #b-load, #b-fx { display: none; } /* Effects is also in the help dialog */
   #topbar button { flex: none; padding: 4px 10px; }
   #inv button { min-height: 44px; }
   #f-cmd { position: sticky; bottom: 0; background: var(--panel); padding-bottom: calc(8px + env(safe-area-inset-bottom)); }

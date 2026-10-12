@@ -20,7 +20,7 @@ key/value store. Live at https://jroes.github.io/experiments/. Written for whoev
 | `warptraders/` | Space trading game. Challenge seeds, plus a live race over WebRTC (`shared/p2p.js`, `lobby.js`) |
 | `tankwars/` | Artillery game. `game.js` (rules, AI, no DOM), `online.js` (play with friends, lockstep through the `/kv` store), `ui.js`, `index.html`, `style.css` |
 | `hollowmere/`, `gullrock/`, `starsweeper/` | Three adventures. Each is `game.js` (plain data: rooms, items, handlers) plus a page; the engine is in `shared/` |
-| `shared/` | `store.js` (KV client), `config.js` (`KV_URL`), `qrcode.js` (vendored, MIT), p2p and lobby code. `adventure.js` (engine, no DOM), `adventure-art.js` (EGA pixel helpers), `adventure-ui.js`, `arcade.css` (look shared by Tank Wars and the adventures) |
+| `shared/` | `store.js` (KV client), `config.js` (`KV_URL`), `qrcode.js` (vendored, MIT), p2p and lobby code. `adventure.js` (engine, no DOM), `adventure-art.js` (EGA pixel helpers), `hd2d.js` + `hd2d-post.js` (HD-2D pictures, below), `adventure-ui.js`, `arcade.css` (look shared by Tank Wars and the adventures) |
 | `j/` | Invite landing page: OpenGraph tags for link previews, then hands `#<code>` to the game |
 | `elf-punch/` | Rust server: `/kv` store (`src/store.rs`), the lab for server-authoritative games (`src/lab/`), the original elf toy (`src/elf.rs`). See its README |
 | `warptraders/universe/` | Client for the shared-universe Warp Traders (talks to `/lab/warptraders`) |
@@ -95,7 +95,13 @@ Seats are 1-based in keys and invites and 0-based in the game. If a change would
 - Each game has a scripted walkthrough in `tests/walk-<game>.js` (a win with every point, and a list of ways to die). Add to both when you add a puzzle. The tests also check that every clickable thing can be walked up to and every exit can be walked to,
   and fuzz random commands. `maxScore` must equal what the walkthrough earns.
 - Art is code (`adventure-art.js`, 16 EGA colours, dither for extra shades), 160 x 100, scaled up with `image-rendering: pixelated`. Objects with a `draw()` are sorted by `base` (or the bottom of `rect`) against the hero, so the hero walks behind and in front of things.
-- A game can set `music` (a mood for `Sound.mount`, default `'storybook'`) and `hero` (its own sprite function, same arguments as `AdvArt.hero`). Star Sweeper uses both.
+- A game can set `music` (a mood for `Sound.mount`, default `'storybook'`) and `hero` (its own sprite function, same arguments as `AdvArt.hero`), or `musicFor(g, { intro })` to pick the loop by scene (Star Sweeper).
+- **HD-2D pictures** (`def.hd`, Star Sweeper only so far). The world stays 160 x 100; pictures are drawn at 480 x 300 by `shared/hd2d.js` (no DOM, runs under node) with
+  shaded shapes in world units (`rect`, `rrect`, `ell`, `poly` with `cyl`/`vcyl` rounding, `shadow` for contact shadows, `text`, `stars`), more than 16 colours (ramps of eight
+  shades per material), and real lights (`c.light`), worked out on a quarter-size map and banded. `shared/hd2d-post.js` is the camera: depth of field around the hero, bloom,
+  light shafts (`c.shaft`), dust, fog, tint, vignette. Each room picks a `look` (`hd2d`, `golden`, `mystery`, `diorama`, `neon`). Sky and space are `unlit`; things you can use get
+  `outline`. The room background is cached for 0.1 s and redrawn only when the state changes, so moving the hero is cheap. **Effects** (top bar, or the help dialog on phones)
+  turns the camera off for slow phones. `room.back`, objects' `draw` and `def.hd.hero` get the HD scene, not an `AdvArt.Pix`; the test draws every room with `HD.render`.
 - A room entered only by a handler (`g.goto`) and not by an edge, like landing the pod, can say so with `reachedBy`; the reachability test starts from those rooms too.
 - Phone: the verb buttons plus the inventory do everything the keyboard does. Tapping a thing looks at it; pick Use or Give, then tap what you carry, then the target.
 
@@ -173,7 +179,7 @@ Nothing should be lost on an update:
 leaves, a turn plays, a build, a launch, a world settled, a battle, winning or losing) and a very quiet generative space ambience that is **off until the player turns it on**.
 Settings (effects, music, volume) are saved on the device under one key shared by all the games. Rules for adding sounds:
 
-- Music has moods: `Sound.mount(button, { music: 'march' })` (Tank Wars) or `'storybook'` (the adventures); the default is the space ambience. Each mood has its own loop and its own level in `STYLE_GAIN`. The same sound within 90 ms plays once, except `adjust` (the click on angle and power) which allows 30 ms.
+- Music has moods: `Sound.mount(button, { music: 'march' })` (Tank Wars) or `'storybook'` (the adventures); the default is the space ambience. Star Sweeper switches between four step-sequenced loops (`chase`, `fm`, `pursuit`, `curious` in `STEP_TRACKS`) with `Sound.setMusicStyle`, which crossfades. Keep a new loop near -37 dB RMS like the others (render it in an `OfflineAudioContext` in Chromium and measure). Each mood has its own loop and its own level in `STYLE_GAIN`. The same sound within 90 ms plays once, except `adjust` (the click on angle and power) which allows 30 ms.
 - Sounds only listen to what the page already knows. They never touch game rules or state. Play them from UI code (`Sound.play('join')`), never from `game.js`.
 - Browsers only allow audio after a tap or key press, so the context is made on the first one. Nothing plays before that, and that is fine.
 - Opening or switching to a game must be silent: set the baseline first (`quietBaseline()` in Sector Dominion), then play sounds for what changes.
