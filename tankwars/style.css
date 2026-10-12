@@ -1,0 +1,36 @@
+main { flex: 1; display: flex; flex-direction: column; min-height: 0; align-items: center; }
+#stage { position: relative; width: 100%; max-width: 1100px; flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 8px; }
+#view { width: 100%; height: auto; max-height: 100%; aspect-ratio: 16 / 9; image-rendering: pixelated; border: 1px solid var(--line); background: #000; touch-action: none; cursor: crosshair; }
+#banner {
+  position: absolute; left: 50%; top: 40%; transform: translate(-50%, -50%);
+  padding: 18px 28px; background: rgba(5, 7, 13, 0.94); border: 1px solid var(--accent); text-align: center; font-size: 18px; max-width: 90%;
+}
+#banner button { margin-top: 12px; }
+#hud { width: 100%; max-width: 1100px; padding: 6px 12px calc(10px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: var(--panel); }
+#who { margin-bottom: 6px; }
+#who .swatch, .swatch { display: inline-block; width: 12px; height: 12px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+#ctl { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
+.knob { display: flex; align-items: center; gap: 6px; margin: 0; }
+.knob span { color: var(--dim); min-width: 52px; }
+.knob b { min-width: 3ch; text-align: center; font-size: 18px; }
+.knob button { min-width: 36px; }
+#b-fire { flex: 1 1 120px; font-size: 18px; padding: 8px 18px; }
+#score { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px 18px; color: var(--dim); font-size: 13px; }
+#score .me { color: var(--text); }
+.hp { display: inline-block; width: 46px; height: 6px; background: #1c2a44; vertical-align: middle; margin: 0 4px; }
+.hp i { display: block; height: 100%; background: var(--accent); }
+.shop-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.shop-row .name { flex: 1; }
+.shop-row .name small { display: block; color: var(--dim); }
+.shop-row b { min-width: 3ch; text-align: right; }
+.seat { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
+.seat input { flex: 1; margin: 0; }
+.seat select { width: 7.5em; margin: 0; }
+.seat .swatch { flex: none; margin: 0; }
+@media (max-width: 760px) {
+  #stage { padding: 4px; flex: none; }
+  #hud { flex: 1; overflow-y: auto; }
+  .knob span { min-width: 0; }
+  .knob button { min-width: 44px; min-height: 44px; }
+  #sel-weapon { max-width: 11em; }
+}

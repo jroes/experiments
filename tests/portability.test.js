@@ -60,7 +60,7 @@ test('Sector Dominion: whole games replay the same whatever the sort algorithm',
 test('the rules only use exactly-rounded arithmetic', () => {
   // Math.hypot, Math.pow, Math.exp, trig and friends may differ in the last bit between engines
   const banned = /Math\.(hypot|pow|exp|expm1|log|log1p|log2|log10|sin|cos|tan|asin|acos|atan|atan2|sinh|cosh|tanh|cbrt|random)\b|\*\*/;
-  for (const file of ['../sectordominion/game.js', '../warptraders/game.js']) {
+  for (const file of ['../sectordominion/game.js', '../warptraders/game.js', '../tankwars/game.js', '../shared/adventure.js']) {
     const lines = fs.readFileSync(path.join(__dirname, file), 'utf8').split('\n');
     lines.forEach((line, i) => {
       if (/^\s*(\/\/|\*|\/\*)/.test(line)) return;

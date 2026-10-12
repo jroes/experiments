@@ -18,7 +18,9 @@ key/value store. Live at https://jroes.github.io/experiments/. Written for whoev
 | --- | --- |
 | `sectordominion/` | Space-empire game. `game.js` (rules, AI, no DOM), `online.js` (play with friends), `ui.js`, `index.html`, `style.css` |
 | `warptraders/` | Space trading game. Challenge seeds, plus a live race over WebRTC (`shared/p2p.js`, `lobby.js`) |
-| `shared/` | `store.js` (KV client), `config.js` (`KV_URL`), `qrcode.js` (vendored, MIT), p2p and lobby code |
+| `tankwars/` | Artillery game. `game.js` (rules, AI, no DOM), `ui.js`, `index.html`, `style.css`. Single device, no server |
+| `hollowmere/`, `gullrock/` | Two adventures. Each is `game.js` (plain data: rooms, items, handlers) plus a page; the engine is in `shared/` |
+| `shared/` | `store.js` (KV client), `config.js` (`KV_URL`), `qrcode.js` (vendored, MIT), p2p and lobby code. `adventure.js` (engine, no DOM), `adventure-art.js` (EGA pixel helpers), `adventure-ui.js`, `arcade.css` (look shared by Tank Wars and the adventures) |
 | `j/` | Invite landing page: OpenGraph tags for link previews, then hands `#<code>` to the game |
 | `elf-punch/` | Rust server: `/kv` store (`src/store.rs`), the lab for server-authoritative games (`src/lab/`), the original elf toy (`src/elf.rs`). See its README |
 | `warptraders/universe/` | Client for the shared-universe Warp Traders (talks to `/lab/warptraders`) |
@@ -70,6 +72,23 @@ The preview cannot be tested from here: check it by sending a fresh link to your
 
 **Friends-only trust.** No accounts, so anyone who has a game's name can read and write it. Say so in the UI and docs. "Only the host can skip"
 is a convention, not a server rule. Per-game write keys would be the next step if that stops being acceptable.
+
+## Tank Wars and the adventures
+
+**Tank Wars** is one device, no server. `game.js` keeps hills as one integer height per column (no overhangs: a hole lowers the column, so dirt always "falls"), wind, and one `flight()` that walks a shell
+step by step. The UI replays the path the rules returned, so animation and result cannot disagree. The computer players search every angle and power on the *real* `flight()` and then add error by level, so they
+cannot drift from the rules. It uses its own series for sin/cos (`sinD`), because `Math.sin` can differ in the last bit between engines; `tests/portability.test.js` bans it there.
+Weapon and item names come from the player's saved game too: look them up with `has()`, never `WEAPONS[name]` (`'constructor'` is a key).
+
+**Adventure engine** (`shared/adventure.js`). A game is data: `items`, `rooms` (each with `back()` that draws, `exits`, `blocks` the hero cannot walk on, `objects`) and handlers keyed by canonical verb
+(`verbs: { take, open, use: { rope: fn }, give: { coin: fn } }`). For two-thing commands the handler lives on the thing acted upon, keyed by what is used on it. The parser maps many words to one verb (see `VERBS`).
+`g.die(text)` ends the game with a message; the page offers "Try again" from a checkpoint taken when you *leave* a room, so a death in the next room puts you back outside it. Score is `g.score(n, key)`, once per key.
+- State is JSON (`room`, position, `inv`, `flags`, `drops`). Flags are stored in a null-prototype object and `cleanState` checks everything read back; add a hostile case to `tests/adventure.test.js` if you add a saved field.
+- Nothing in the engine uses randomness. Animations in `back()` may use `Math.sin`; rules may not.
+- Each game has a scripted walkthrough in `tests/walk-<game>.js` (a win with every point, and a list of ways to die). Add to both when you add a puzzle. The tests also check that every clickable thing can be walked up to and every exit can be walked to,
+  and fuzz random commands. `maxScore` must equal what the walkthrough earns.
+- Art is code (`adventure-art.js`, 16 EGA colours, dither for extra shades), 160 x 100, scaled up with `image-rendering: pixelated`. Objects with a `draw()` are sorted by `base` (or the bottom of `rect`) against the hero, so the hero walks behind and in front of things.
+- Phone: the verb buttons plus the inventory do everything the keyboard does. Tapping a thing looks at it; pick Use or Give, then tap what you carry, then the target.
 
 **Two ways to host a game.** Browsers hold the rules (lockstep, `/kv`, Sector Dominion) when friends are playing and cheating does not matter. The server holds
 them (`/lab`, `elf-punch/src/lab/`) when players share one world or the score has to be real. A lab game is one `Game` impl (copy `clicker.rs`); the lab handles players, tokens, saving

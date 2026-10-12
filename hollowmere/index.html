@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b1220">
+<title>The Crown of Hollowmere</title>
+<link rel="stylesheet" href="../shared/arcade.css">
+<link rel="stylesheet" href="../shared/adventure.css">
+</head>
+<body>
+<header id="topbar">
+  <div class="brand">HOLLOWMERE<span>an adventure</span></div>
+  <div class="stat">Score <b id="s-score"></b></div>
+  <div class="stat" id="s-room-wrap">Place <b id="s-room"></b></div>
+  <div class="spacer"></div>
+  <button id="b-help">Help</button>
+  <button id="b-sound">Sound</button>
+  <button id="b-save">Save</button>
+  <button id="b-load">Restore</button>
+  <button id="b-new">New game</button>
+</header>
+<main>
+  <div id="stage"><canvas id="pic" width="160" height="100" aria-label="The scene"></canvas></div>
+  <aside id="side">
+    <div id="msgs" aria-live="polite"></div>
+    <form id="f-cmd" autocomplete="off"><span>&gt;</span><input id="cmd" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go" placeholder="what do you do?" aria-label="Type a command"></form>
+    <div id="panel"><div id="hint"></div><div id="verbs"></div><div id="inv"></div></div>
+  </aside>
+</main>
+
+<dialog id="d-intro">
+  <h2>The Crown of Hollowmere</h2>
+  <p id="intro-text"></p>
+  <p class="fine">Walk with the arrow keys or by clicking. Type commands like <i>take rope</i> or <i>give coin to crow</i>, or use the buttons. Some things here can kill you. You can always try again from where you were.</p>
+  <form method="dialog"><button class="primary" id="b-go">Begin</button></form>
+</dialog>
+<dialog id="d-help">
+  <h2>How to play</h2>
+  <p id="help-text"></p>
+  <ul>
+    <li>Click or tap a thing to look at it. Pick a button (Take, Open, Use...) first to do that to the next thing you tap.</li>
+    <li><b>Use</b> and <b>Give</b> take two things: tap what you carry, then what to use it on.</li>
+    <li>Walk off the edge of the picture to go to the next place.</li>
+    <li>Type <i>save</i> or use the Save button to keep a copy. The game also saves itself as you play.</li>
+  </ul>
+  <p class="row" style="justify-content:flex-start"><button type="button" id="b-save2">Save game</button><button type="button" id="b-load2">Restore saved game</button></p>
+  <ul hidden>
+  </ul>
+  <p class="fine">Inspired by the old Sierra adventures. Original story, code and art.</p>
+  <form method="dialog"><button class="primary">Got it</button></form>
+</dialog>
+<dialog id="d-dead">
+  <h2>You are dead</h2>
+  <p id="dead-text"></p>
+  <div class="row"><button id="b-restart">Start over</button><button id="b-restore" class="primary" autofocus>Try again</button></div>
+</dialog>
+<dialog id="d-win">
+  <h2>You win</h2>
+  <p id="win-text"></p>
+  <p>Final score: <b id="win-score"></b></p>
+  <div class="row"><button id="b-again" class="primary">Play again</button></div>
+</dialog>
+
+<script src="../shared/sound.js"></script>
+<script src="../shared/version.js"></script>
+<script src="../shared/update.js"></script>
+<script src="../shared/adventure-art.js"></script>
+<script src="../shared/adventure.js"></script>
+<script src="game.js"></script>
+<script src="../shared/adventure-ui.js"></script>
+<script>AdventureUI.start(window.HOLLOWMERE);</script>
+</body>
+</html>

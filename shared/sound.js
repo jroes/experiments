@@ -89,6 +89,12 @@
       // Warp Traders
       warp: t => { hiss({ at: t, dur: 0.5, from: 250, to: 2200, q: 1.0, gain: 0.2 }); tone({ f: 110, to: 700, at: t, dur: 0.45, gain: 0.12, type: 'triangle' }); },
       coin: t => { tone({ f: 1568, at: t, dur: 0.08, type: 'square', gain: 0.07 }); tone({ f: 2093, at: t + 0.07, dur: 0.18, type: 'square', gain: 0.07 }); },
+      // Tank Wars and the adventures
+      shoot: t => { hiss({ at: t, dur: 0.18, from: 1400, to: 300, type: 'lowpass', q: 0.8, gain: 0.3 }); tone({ f: 150, to: 60, at: t, dur: 0.16, gain: 0.22, type: 'triangle' }); },
+      boom: t => { hiss({ at: t, dur: 0.6, from: 1100, to: 90, type: 'lowpass', q: 0.7, gain: 0.4 }); tone({ f: 90, to: 38, at: t, dur: 0.5, gain: 0.35 }); },
+      thud: t => { hiss({ at: t, dur: 0.18, from: 500, to: 120, type: 'lowpass', q: 0.7, gain: 0.2 }); tone({ f: 110, to: 55, at: t, dur: 0.15, gain: 0.2 }); },
+      ding: t => { bell(NOTE.E6, t, 0.4, 0.12); bell(NOTE.G6, t + 0.09, 0.5, 0.1); },
+      die: t => [[NOTE.E4, 0], [NOTE.D4, 0.2], [NOTE.C4, 0.4], [NOTE.C4 / 2, 0.7]].forEach(([f, d]) => tone({ f, at: t + d, dur: 0.5, type: 'square', gain: 0.06 })),
       alarm: t => { for (let i = 0; i < 4; i++) tone({ f: i % 2 ? 330 : 440, at: t + i * 0.13, dur: 0.12, type: 'square', gain: 0.07 }); },
     };
 
