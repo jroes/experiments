@@ -36,6 +36,7 @@
 
   const nsName = room => 'sdo-' + room;
   const orderKey = (turn, seat) => 'o-' + turn + '-' + seat;
+  const presenceKey = seat => 'p-' + seat;
 
   async function call(base, method, path, opts) {
     opts = opts || {};
@@ -58,12 +59,17 @@
   // Read keys by exact name, in as many requests as needed. Returns { status, values: { key: value } }.
   async function readKeys(base, room, keys) {
     const values = {};
+    let now = null;
     for (let i = 0; i < keys.length; i += KEYS_PER_READ) {
       const r = await call(base, 'GET', '/kv/' + nsName(room) + '?keys=' + keys.slice(i, i + KEYS_PER_READ).join(','));
       if (r.status !== 200 || !r.data || typeof r.data.values !== 'object' || r.data.values === null) return { status: r.status, data: r.data, retryAfter: r.retryAfter, values: {} };
-      for (const [k, v] of Object.entries(r.data.values)) if (v && typeof v === 'object') values[k] = { value: v.value, rev: v.rev };
+      for (const [k, v] of Object.entries(r.data.values)) if (v && typeof v === 'object') values[k] = { value: v.value, rev: v.rev, t: Number.isFinite(v.t) ? v.t : null };
+      if (Number.isFinite(r.data.now)) now = r.data.now;
     }
-    return { status: 200, values };
+    // `now` is the server's clock, so age = now - t never depends on anybody's computer being set right. Older servers do not
+    // send it; then the newest write we can see is the best guess.
+    if (now === null) for (const v of Object.values(values)) if (v.t !== null && (now === null || v.t > now)) now = v.t;
+    return { status: 200, values, now };
   }
 
   // Write a key only if nobody has yet. The server does this atomically, so exactly one writer wins.
@@ -88,7 +94,9 @@
   }
 
   const api = {
-    LIMIT_CODE, KEYS_PER_READ, randomId, cleanBase, call, nsName, orderKey, readKeys, putOnce,
+    LIMIT_CODE, KEYS_PER_READ, randomId, cleanBase, call, nsName, orderKey, presenceKey, readKeys, putOnce,
+    // "I am here": overwrites my presence key. The server stamps the write time, and that is all anyone reads from it.
+    beat: (base, room, seat) => call(base, 'PUT', '/kv/' + nsName(room) + '/' + presenceKey(seat), { body: { v: 1 } }),
     // the game's meta row: who is playing and with what rules
     createGame: (base, room, meta) => call(base, 'PUT', '/kv/' + nsName(room) + '/meta', { body: meta, ifNoneMatch: true }),
     readMeta: async (base, room) => {

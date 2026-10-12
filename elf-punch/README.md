@@ -54,7 +54,7 @@ namespace name is the only way in. Per-namespace write keys would be the next st
 | | |
 | --- | --- |
 | `GET /kv/<ns>/<key>` | `{"value": <json>, "rev": 12, "t": 1760000000}` or `404` |
-| `GET /kv/<ns>?keys=a,b,c` | several keys by exact name in one request (at most 60): `{"values": {"a": {"value","rev","t"}, ...}}`. Missing keys are left out. |
+| `GET /kv/<ns>?keys=a,b,c` | several keys by exact name in one request (at most 60): `{"now": 1760000100, "values": {"a": {"value","rev","t"}, ...}}`. Missing keys are left out. `now` is the server's clock, so `now - t` is how long ago a key was written, with no need to trust yours. |
 | `PUT /kv/<ns>/<key>` | body is any JSON value; `201 {"rev","created":true}` or `200 {"rev","created":false}` |
 | `DELETE /kv/<ns>/<key>` | `{"deleted": true|false}` |
 | `GET /kv/<ns>` or `?prefix=` | `404 no_listing` unless the operator sets `KV_ALLOW_LIST=1` |

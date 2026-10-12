@@ -2,25 +2,14 @@
 
 Two layers. Neither one is a proof that the game has no bugs.
 
-## 1. TLA+ model of the multiplayer turn handshake (`TurnSync.tla`)
+## History worth keeping
 
-Checks the protocol design with TLC: a host and two guests, ordered reliable channels, guests that can
-send ready/unready at any time, disconnect at any time, and a host that notices late and hands the empire to the AI.
+An earlier live (peer-to-peer) mode of Sector Dominion had its turn handshake model-checked with TLA+. It found a real bug: with no turn number
+on messages, a double-clicked "End turn" could leave a second `ready` in flight when the turn advanced, and the host counted it for the
+next turn. The fix was to tag orders with the turn they were issued in and have the host reject stale ones. That live mode is gone (online
+play through the shared store replaced it), but the rule stayed in `Game.apply` and has a regression test, because lockstep play needs it too.
 
-Checked in every reachable state (about 123k states, 2 guests, 3 turns, queues of up to 3):
-
-- `AdvanceNeededAll`: the turn only advances when every living human is ready.
-- `ReadyIsFresh`: nobody is counted ready for a turn they had not yet seen.
-- `NoStuckAllReady`: the host never sits in an all-ready state without playing the turn.
-- `NoZombieReady`: a player handed to the AI is never counted ready.
-- `GuestsCatchUp` (liveness): a connected guest eventually sees the current turn.
-
-It found a real bug in the first version. Messages had no turn number, so a guest who double-clicked "End turn"
-could have a second `ready` still in flight when the turn advanced, and the host counted it for the next turn.
-`TurnSyncUntagged.cfg` reproduces that counterexample and is expected to fail. `TurnSync.cfg` is the fix (orders carry the turn
-they were issued in, the host rejects stale ones) and passes. The real code does the same in `Game.apply`.
-
-## 1b. TLA+ model of online play through the shared store (`LockstepBoard.tla`)
+## 1. TLA+ model of online play through the shared store (`LockstepBoard.tla`)
 
 Checks the design of Sector Dominion's online mode: each player's browser holds its own game, players post orders to a
 key that can only be created once, the host can post a skip for someone who has not answered, and a browser plays a turn once
@@ -41,12 +30,12 @@ read (`cleanEntry`), orders that do not match their seat and turn count as no or
 the real owner, but a determined player who knows the name could still post a valid set of orders for someone else. It is built for
 friends. See `sectordominion/README.md`.
 
-Run both models: `verification/run-tlc.sh` (needs Java).
+Run it: `verification/run-tlc.sh` (needs Java).
 
-Play by mail is not in the TLA+ model. It has no concurrent messages to race: orders are replayed one code at a time through the same validated `Game.apply`, a repeated or wrong-turn code is refused, and `tests/` checks that the host's replay matches what the friend previewed.
+Nothing here covers presence (who is online): it is display only and cannot change the game.
 
-What this does not cover: the JavaScript itself, WebRTC, more than two guests or three turns (it is a bounded check),
-or cheating. A guest browser and the host both see the full game state, so this is built for friends, not for adversaries.
+What this does not cover: the JavaScript itself, more than three seats or three turns (it is a bounded check), or cheating. Every
+player's browser sees the whole game state, so this is built for friends, not for adversaries.
 
 ## 2. Property and fuzz tests on the real code (`tests/`)
 

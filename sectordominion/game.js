@@ -567,7 +567,8 @@
     if (!cmd || typeof cmd !== 'object') return { ok: false, msg: 'Bad command.' };
     const own = id => isInt(id) && state.worlds[id] && state.worlds[id].owner === empId;
     // Orders carry the turn they were issued in. A message that arrives after the turn moved on is stale.
-    // ready/unready must carry it; verification/TurnSync.tla shows why (a late ready would pre-ready the next turn).
+    // ready/unready must carry it: a late duplicate ready would otherwise be counted for the next turn (found by model checking an
+    // earlier live mode; lockstep play relies on the same rule).
     if (cmd.turn !== undefined && cmd.turn !== state.turn) return { ok: false, msg: 'Turn already moved on.', stale: true };
     if ((cmd.op === 'ready' || cmd.op === 'unready') && cmd.turn !== state.turn) return { ok: false, msg: 'Missing turn.', stale: true };
     switch (cmd.op) {
@@ -595,9 +596,9 @@
     }
   }
 
-  // ---------- play by mail ----------
-  // A friend plays their turn on their own copy, then sends back a short code with the orders they gave.
-  // The host replays those orders through apply(), so every rule above still decides what is allowed.
+  // ---------- orders codes ----------
+  // A player gives orders on their own copy of the game, and those orders travel as a short code. Everyone replays them through
+  // apply(), so every rule above still decides what is allowed.
 
   const MAX_ORDERS = 300;
 

@@ -54,6 +54,8 @@ const raw = (text) => new Promise((res) => {
   const mg = await (await fetch(url("/kv/demo?keys=run:1,run:2,missing"))).json();
   assert.deepStrictEqual(Object.keys(mg.values).sort(), ["run:1", "run:2"]);
   assert.strictEqual(mg.values["run:2"].value, 2);
+  assert(Math.abs(mg.now - Math.floor(Date.now() / 1000)) <= 5, "multi-get carries the server clock");
+  assert(mg.values["run:2"].t <= mg.now && mg.now - mg.values["run:2"].t < 30, "t is the write time on that same clock");
   r = await fetch(url("/kv/demo?keys=bad%20key")); assert.strictEqual(r.status, 400);
   assert.strictEqual((await (await fetch(url("/kv/never-written?keys=a,b"))).json()).values.a, undefined);
 
