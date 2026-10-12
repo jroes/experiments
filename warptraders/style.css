@@ -181,3 +181,6 @@ dialog label.check input { display: inline-block; width: auto; margin: 4px 0 0; 
 dialog label.check .fine { display: block; }
 dialog input[type=range] { padding: 0; accent-color: var(--accent); }
 dialog input[type=checkbox] { accent-color: var(--accent); }
+
+a.btn { font: inherit; color: var(--text); background: #101b30; border: 1px solid var(--line); border-radius: 4px; padding: 4px 10px; text-decoration: none; }
+@media (max-width: 760px) { a.btn { flex: 1 1 auto; min-height: 40px; text-align: center; line-height: 30px; } }
