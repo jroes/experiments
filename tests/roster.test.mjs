@@ -258,3 +258,30 @@ test('validState refuses games that are not something the rules could have made'
   };
   for (const [name, s] of Object.entries(bads)) assert.equal(G.validState(s), false, name);
 });
+
+test('friends online across games: counted once by name, only people who are around, never me, the AI or finished games', { skip: !!REAL }, async () => {
+  const n = install();
+  const g1 = await setup(3), g2 = await setup(2), g3 = await setup(2);
+  for (const p of [...g1, ...g2, ...g3]) await p.beat();
+  g1[1].setName('Bo'); g2[1].setName('Bo'); g1[2].setName('Cy'); g3[1].setName('Di');
+  for (const p of [g1[1], g2[1], g1[2], g3[1]]) await p.beat();
+  const mine = [g1[0], g2[0], g3[0]];
+  for (const p of mine) await p.sync();
+  const names = () => Online.friendsOnline(mine.map((session, i) => ({ id: 'g' + i, session }))).map(f => f.name);
+  assert.deepEqual(names(), ['Bo', 'Cy', 'Di']);
+  const bo = Online.friendsOnline(mine.map((session, i) => ({ id: 'g' + i, session }))).find(f => f.name === 'Bo');
+  assert.equal(bo.games.length, 2, 'Bo is in two of my games but is one friend');
+  // Bo goes away in both games (no more heartbeats), the others keep checking in
+  n.clock.now += 60;
+  for (const p of [g1[2], g3[1]]) await p.beat();
+  for (const p of mine) await p.sync();
+  assert.deepEqual(names(), ['Cy', 'Di']);
+  // a friend handed to the AI is not a friend who is around
+  await g1[0].hostSkip(3, true); await g1[0].sync();
+  assert.deepEqual(names(), ['Di']);
+  // a game that is over does not count
+  g3[0].base.over = true;
+  assert.deepEqual(names(), []);
+  assert.deepEqual(Online.friendsOnline([]), []);
+  assert.deepEqual(Online.friendsOnline([{ id: 'x', session: null }]), []);
+});

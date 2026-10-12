@@ -54,6 +54,12 @@ board, because handing a seat to the AI takes two steps (a posted entry, then th
 (invite links, joining, skip buttons, the panel, the end-turn button) uses it. The first version built the invite list from "all seats", then
 from the game alone, and both offered a link to an AI seat. `verification/SeatRoster.tla` models this and fails for both older designs.
 
+**Friends online, in any game.** Having the page open and visible is what makes someone online, so the page heartbeats in *every* game with friends it has loaded, not only the open one.
+Every 10 s (20 s with more than 6 games) it also looks at the games that are not open, and `Online.friendsOnline` turns that into "who is around": the count chip in the top
+bar and the list in Games. A friend hopping on or off plays a sound and shows a small toast wherever I am (solo game, another game), and the tab title changes if the page is hidden.
+A hidden page keeps looking slowly (once a minute after ten minutes) so the sound still plays; Safari on iOS suspends hidden pages, which nothing here can fix. Heartbeats stop while hidden.
+The first look at a game is quiet, so loading the page does not announce everyone.
+
 **Presence is a hint, never a rule.** "Online" is a heartbeat written every 15 s, read with the orders in the same request, and judged with the
 server's clock. Nothing in the game depends on it. Polling is 3 s when someone else is online and a turn is waiting, slower otherwise.
 
