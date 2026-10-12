@@ -784,6 +784,8 @@
       const there = findOnline(session.game.room, session.seat);
       if (there) openGame(there); else addOnline(session);
       $('d-join').close(); $('d-online').close();
+      // Someone arriving by a link sees the game first. Only if the game did not already know their name do we ask, and then once.
+      await ensureName();
     } catch (err) { msg.textContent = err.message; close.textContent = 'Close'; }
   }
 
@@ -1003,8 +1005,9 @@
   setTimeout(() => { for (const g of lib.list) if (g.kind === 'online') sessionFor(g.id); renderGamesBadge(); }, 0);
   // first visit: ask for a name once, then show the intro. A link is handled after that.
   (async () => {
-    await ensureName();
-    if (firstRun && !/^#join=/.test(location.hash)) {
+    const viaLink = /^#join=/.test(location.hash);
+    if (!viaLink) await ensureName(); // a link goes straight to the game: the name is asked after, and only if still needed
+    if (firstRun && !viaLink) {
       try {
         if (!localStorage.getItem('sectordominion-help-seen')) { localStorage.setItem('sectordominion-help-seen', '1'); $('d-help').showModal(); }
       } catch (e) { /* storage blocked: skip the intro */ }
