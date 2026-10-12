@@ -11,9 +11,8 @@ const SEED = '112';
   const rec = new Recorder({
     url: 'https://jroes.github.io/experiments/warptraders/',
     route: route(process.env.KV_PORT || 8135),
-    width: 1100,
     promptAnswer: SEED,
-    musicSeed: 9,
+    musicSeed: 9, zoom: 1.05,
     poster: path.join(ROOT, 'warptraders', 'intro.jpg'), posterAt: 12,
     init: `try { if (!localStorage.getItem('wt-vo')) { localStorage.setItem('wt-vo','1'); localStorage.setItem('warptraders-help-seen','1'); } } catch (e) {}`,
   });

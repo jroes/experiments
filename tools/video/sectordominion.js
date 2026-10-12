@@ -8,7 +8,7 @@ const { route, ROOT } = require('./common');
   const rec = new Recorder({
     url: 'https://jroes.github.io/experiments/sectordominion/',
     route: route(process.env.KV_PORT || 8135),
-    musicSeed: 3,
+    musicSeed: 3, zoom: 1.1,
     poster: path.join(ROOT, 'sectordominion', 'intro.jpg'), posterAt: 12,
     init: `try { if (!localStorage.getItem('sd-vo')) { localStorage.setItem('sd-vo','1'); localStorage.setItem('sectordominion-help-seen','1'); localStorage.setItem('sectordominion-name-asked','1'); localStorage.setItem('sectordominion-name-v1','Ada'); } } catch (e) {}`,
   });

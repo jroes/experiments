@@ -13,8 +13,8 @@ const { chromium } = require('playwright');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 const OVERLAY_CSS = `
-#vo-cap { position: fixed; left: var(--vo-cap-x, 50%); bottom: 26px; transform: translateX(-50%) translateY(14px); max-width: var(--vo-cap-w, 84%); pointer-events: none;
-  background: rgba(5,7,13,.88); border: 1px solid #5ee0b0; border-radius: 12px; padding: 11px 20px; color: #eaf3ff; font: 600 23px/1.25 ui-monospace, Menlo, Consolas, monospace;
+#vo-cap { position: fixed; left: var(--vo-cap-x, 50%); bottom: 30px; transform: translateX(-50%) translateY(14px); max-width: var(--vo-cap-w, 84%); pointer-events: none;
+  background: rgba(5,7,13,.88); border: 1px solid #5ee0b0; border-radius: 12px; padding: 13px 24px; color: #eaf3ff; font: 600 28px/1.25 ui-monospace, Menlo, Consolas, monospace;
   text-align: center; opacity: 0; transition: opacity .35s, transform .35s; box-shadow: 0 8px 40px rgba(0,0,0,.6), 0 0 24px rgba(94,224,176,.25); }
 #vo-cap.on { opacity: 1; transform: translateX(-50%) translateY(0); }
 #vo-cap b { color: #5ee0b0; font-weight: 700; }
@@ -33,10 +33,10 @@ const OVERLAY_CSS = `
 #vo-card canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 #vo-card .in { position: relative; animation: vozoom 6s ease-out forwards; }
 @keyframes vozoom { from { transform: scale(.92); letter-spacing: 2px; } to { transform: scale(1.04); } }
-#vo-card .kick { color: #7d90b0; letter-spacing: 6px; font-size: 18px; margin-bottom: 18px; }
-#vo-card h1 { margin: 0; font-size: 80px; line-height: 1.02; color: #5ee0b0; letter-spacing: 10px; text-shadow: 0 0 40px rgba(94,224,176,.55); }
-#vo-card p { font-size: 25px; margin: 26px 0 0; color: #cfe3ff; }
-#vo-card .pill { display: inline-block; margin-top: 34px; border: 2px solid #5ee0b0; color: #5ee0b0; background: #123a2e; padding: 9px 24px; font-size: 22px; border-radius: 10px; }
+#vo-card .kick { color: #7d90b0; letter-spacing: 8px; font-size: 22px; margin-bottom: 18px; }
+#vo-card h1 { margin: 0; font-size: 100px; line-height: 1.02; color: #5ee0b0; letter-spacing: 10px; text-shadow: 0 0 40px rgba(94,224,176,.55); }
+#vo-card p { font-size: 32px; margin: 26px 0 0; color: #cfe3ff; }
+#vo-card .pill { display: inline-block; margin-top: 34px; border: 2px solid #5ee0b0; color: #5ee0b0; background: #123a2e; padding: 11px 28px; font-size: 28px; border-radius: 10px; }
 `;
 
 const OVERLAY_JS = `
@@ -104,15 +104,12 @@ const OVERLAY_JS = `
 
 class Recorder {
   constructor(opts) {
-    // The page is a little smaller than the video (default 1060 wide, drawn at 1280/1060), so text comes out bigger than at 1:1
-    // while the desktop layout still fits.
-    this.opts = { width: 1060, ...opts };
-    this.opts.height = this.opts.height || Math.round(this.opts.width * 9 / 16);
-    this.opts.scale = 1280 / this.opts.width;
-    this.frames = [];
-    this.marks = []; // { t, kind }: where sound effects go
-    this.t0 = null;
+    // The page is 1280x720, the size of the video, and the game is zoomed a little (CSS zoom) so its text reads well at video size.
+    // Chrome's screencast gives frames at CSS pixel size, so shrinking the viewport instead would make a blurry video.
+    this.opts = { width: 1280, height: 720, zoom: 1.2, ...opts };
+    this.opts.scale = 1;
     this.dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vo-'));
+    this.frames = []; this.marks = []; this.t0 = null;
   }
 
   async start() {
@@ -124,6 +121,7 @@ class Recorder {
     this.page.on('dialog', d => d.accept(this.opts.promptAnswer || ''));
     this.page.on('pageerror', e => console.log('page error:', e.message));
     await this.page.addInitScript(OVERLAY_JS);
+    await this.page.addInitScript(`document.addEventListener('DOMContentLoaded', () => { const st = document.createElement('style'); st.textContent = 'body > :not(#vo-top):not(#vo-card):not(script):not(style) { zoom: ${this.opts.zoom}; }'; document.head.appendChild(st); });`);
     if (this.opts.init) await this.page.addInitScript(this.opts.init);
     this.client = await this.ctx.newCDPSession(this.page);
     this.client.on('Page.screencastFrame', async f => {
@@ -135,7 +133,7 @@ class Recorder {
       try { await this.client.send('Page.screencastFrameAck', { sessionId: f.sessionId }); } catch (e) { /* closing */ }
     });
     await this.page.goto(this.opts.url);
-    await this.client.send('Page.startScreencast', { format: 'jpeg', quality: 92, maxWidth: Math.round(width * this.opts.scale), maxHeight: Math.round(height * this.opts.scale), everyNthFrame: 1 });
+    await this.client.send('Page.startScreencast', { format: 'jpeg', quality: 92, maxWidth: width, maxHeight: height, everyNthFrame: 1 });
     this.wall0 = Date.now() / 1000;
     return this.page;
   }
