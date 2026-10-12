@@ -96,7 +96,7 @@ Seats are 1-based in keys and invites and 0-based in the game. If a change would
   and fuzz random commands. `maxScore` must equal what the walkthrough earns.
 - Art is code (`adventure-art.js`, 16 EGA colours, dither for extra shades), 160 x 100, scaled up with `image-rendering: pixelated`. Objects with a `draw()` are sorted by `base` (or the bottom of `rect`) against the hero, so the hero walks behind and in front of things.
 - A game can set `music` (a mood for `Sound.mount`, default `'storybook'`) and `hero` (its own sprite function, same arguments as `AdvArt.hero`), or `musicFor(g, { intro })` to pick the loop by scene (Star Sweeper).
-- **HD-2D pictures** (`def.hd`, Star Sweeper only so far). The world stays 160 x 100; pictures are drawn at 480 x 300 by `shared/hd2d.js` (no DOM, runs under node) with
+- **HD-2D pictures** (`def.hd`, all three adventures; the 16-colour `AdvArt` canvas is still supported for a game without `hd`). The world stays 160 x 100; pictures are drawn at 480 x 300 by `shared/hd2d.js` (no DOM, runs under node) with
   shaded shapes in world units (`rect`, `rrect`, `ell`, `poly` with `cyl`/`vcyl` rounding, `shadow` for contact shadows, `text`, `stars`), more than 16 colours (ramps of eight
   shades per material), and real lights (`c.light`), worked out on a quarter-size map and banded. `shared/hd2d-post.js` is the camera: depth of field around the hero, bloom,
   light shafts (`c.shaft`), dust, fog, tint, vignette. Each room picks a `look` (`hd2d`, `golden`, `mystery`, `diorama`, `neon`); a game adds its own materials and looks with `HD2D.addMaterials` and `HD2D.addLook` instead of editing `hd2d.js`. Sky and space are `unlit`; things you can use get

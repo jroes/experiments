@@ -83,7 +83,8 @@ test('every scene draws without error, on a fake canvas, at several moments', ()
     }
     for (const it of Object.values(def.items)) if (it.draw) it.draw(c, 10, 10, g);
   }
-  assert.ok(calls.n > 1000);
+  // (every adventure draws in HD-2D now; this covers any game that goes back to the 16-colour canvas)
+  if (Object.values(GAMES).some(x => !x.def.hd)) assert.ok(calls.n > 1000);
 });
 
 test('HD-2D games: every room renders lit pixels, with and without the things in it, facing every way', () => {
@@ -94,7 +95,13 @@ test('HD-2D games: every room renders lit pixels, with and without the things in
       assert.ok(Object.prototype.hasOwnProperty.call(HD.LOOKS, r.look || 'hd2d'), name + '/' + rid + ' look');
       for (const [t, dir, flagsOn] of [[0, 'd', false], [0.4, 'l', true], [1.7, 'u', false], [3.1, 'r', true]]) {
         const g = Adv.create(def); g.state.room = rid; g.state.dir = dir;
-        if (flagsOn) { for (const f of ['slime_gone', 'bay_open', 'eel_fed', 'mopped', 'jackpot', 'lit', 'oil_in', 'wick_in', 'fished', 'glasses_found', 'glass_found', 'gave_glasses', 'gave_fish']) g.set(f); for (const it of ['mop', 'fish']) if (def.items[it]) g.give(it); g.state.drops.push({ item: Object.keys(def.items)[0], room: rid, x: 60, y: 90 }); }
+        if (flagsOn) { // every game's own items: carry all but one, and drop that one here
+          const ids = Object.keys(def.items);
+          for (const f of ['slime_gone', 'bay_open', 'eel_fed', 'mopped', 'jackpot', 'troll_asleep', 'crow_paid', 'bear_gone', 'rope_tied', 'bucket_up', 'drawer_open', 'flute_found', 'lamp_lit', 'veil_on',
+            'lit', 'oil_in', 'wick_in', 'fished', 'glasses_found', 'glass_found', 'gave_glasses', 'gave_fish']) g.set(f);
+          for (const id of ids.slice(0, -1)) g.give(id);
+          g.state.drops.push({ item: ids[ids.length - 1], room: rid, x: 60, y: 90 });
+        }
         const fr = HD.render(def, g, t, { moving: true });
         assert.equal(fr.rgba.length, HD.W * HD.H * 4);
         let lit = 0, bad = 0;
