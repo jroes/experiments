@@ -16,6 +16,7 @@
   <div class="spacer"></div>
   <button id="b-help">Help</button>
   <button id="b-sound">Sound</button>
+  <button id="b-fx" hidden>Effects on</button>
   <button id="b-save">Save</button>
   <button id="b-load">Restore</button>
   <button id="b-new">New game</button>
@@ -44,10 +45,10 @@
     <li>Walk off the edge of the picture to go to the next place.</li>
     <li>Type <i>save</i> or use the Save button to keep a copy. The game also saves itself as you play.</li>
   </ul>
-  <p class="row" style="justify-content:flex-start"><button type="button" id="b-save2">Save game</button><button type="button" id="b-load2">Restore saved game</button></p>
+  <p class="row" style="justify-content:flex-start"><button type="button" id="b-save2">Save game</button><button type="button" id="b-load2">Restore saved game</button><button type="button" id="b-fx2" hidden>Effects on</button></p>
   <ul hidden>
   </ul>
-  <p class="fine">Inspired by the old Sierra adventures. Original story, code and art.</p>
+  <p class="fine">Inspired by the old Sierra adventures. Original story, code and art. The picture is pixel art lit in code; if it runs slowly, turn <b>Effects</b> off.</p>
   <form method="dialog"><button class="primary">Got it</button></form>
 </dialog>
 <dialog id="d-dead">
@@ -67,6 +68,8 @@
 <script src="../shared/update.js"></script>
 <script src="../shared/adventure-art.js"></script>
 <script src="../shared/adventure.js"></script>
+<script src="../shared/hd2d.js"></script>
+<script src="../shared/hd2d-post.js"></script>
 <script src="game.js"></script>
 <script src="../shared/adventure-ui.js"></script>
 <script>AdventureUI.start(window.GULLROCK);</script>

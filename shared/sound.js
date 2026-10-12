@@ -107,8 +107,10 @@
     const BAR = 9; // seconds per chord
     let mus = null;
     // Other moods for other games. 'space' is the default above; each plays a loop of its own, and stays far under the effects.
-    const STYLE_LEN = { space: BAR, march: 6, storybook: 6 };
-    const STYLE_GAIN = { space: 1, march: 2, storybook: 1.8 }; // the new beds are made of sparser sounds, so they need a little more to sit at the same loudness
+    // Star Sweeper's four loops are one bar of sixteen steps each, so a bar lasts four beats at their tempo.
+    const STEP_TRACKS = {};
+    const STYLE_LEN = { space: BAR, march: 6, storybook: 6, chase: 240 / 150, fm: 240 / 132, pursuit: 240 / 124, curious: 240 / 92 };
+    const STYLE_GAIN = { space: 1, march: 2, storybook: 1.8, chase: 0.49, fm: 0.68, pursuit: 0.59, curious: 0.59 }; // the new beds are made of sparser sounds, so they need a little more to sit at the same loudness
 
     // a soft note into the music bus (not the effects bus)
     function mnote(o) {
@@ -162,25 +164,116 @@
       const cv = ctx.createConvolver(); cv.buffer = buf; return cv;
     }
 
-    function startMusic(level, horizon, style) { // horizon: how many seconds ahead to schedule (tests render a whole stretch at once)
+    function startMusic(level, horizon, style, fade) { // horizon: how many seconds ahead to schedule (tests render a whole stretch at once); fade: seconds to come in
       if (mus) return;
       style = Object.prototype.hasOwnProperty.call(STYLE_LEN, style) ? style : 'space'; // never STYLE_LEN[name] on its own: 'constructor' is a key too
       const out = ctx.createGain(); out.gain.value = 0.0001; out.connect(dest);
-      out.gain.setTargetAtTime(level * STYLE_GAIN[style], ctx.currentTime, 2.5);   // fades in over a few seconds
+      out.gain.setTargetAtTime(level * STYLE_GAIN[style], ctx.currentTime, fade || 2.5);   // fades in over a few seconds
       const dry = ctx.createGain(); dry.gain.value = 0.8; dry.connect(out);
       const rv = reverb(3.2), wet = ctx.createGain(); wet.gain.value = 0.9; rv.connect(wet); wet.connect(out);
       const send = ctx.createGain(); send.gain.value = 0.7; send.connect(rv);
       const echo = ctx.createDelay(2); echo.delayTime.value = 0.62;
       const fb = ctx.createGain(); fb.gain.value = 0.42; echo.connect(fb); fb.connect(echo);
       const eo = ctx.createGain(); eo.gain.value = 0.5; echo.connect(eo); eo.connect(send); eo.connect(dry);
+      if (Object.prototype.hasOwnProperty.call(STEP_TRACKS, style)) echo.delayTime.value = STYLE_LEN[style] / 16 * 3; // the echo lands on the beat
       mus = { out, dry, send, echo, style, len: STYLE_LEN[style], next: ctx.currentTime + 0.1, bar: 0, timer: 0, stars: ctx.currentTime + 4 };
       const pump = () => {
         if (!mus) return;
-        while (mus.next < ctx.currentTime + (horizon || 12)) { (mus.style === 'march' ? scheduleMarch : mus.style === 'storybook' ? scheduleStory : scheduleBar)(mus.next, mus.bar++); mus.next += mus.len; }
-        mus.timer = setTimeout(pump, 2000);
+        const busy = Object.prototype.hasOwnProperty.call(STEP_TRACKS, mus.style), sched = busy ? scheduleSteps : mus.style === 'march' ? scheduleMarch : mus.style === 'storybook' ? scheduleStory : scheduleBar;
+        // the busy loops schedule a few seconds ahead, not twelve, so a change of scene is heard soon and fewer notes wait in memory
+        while (mus.next < ctx.currentTime + (horizon || (busy ? 4 : 12))) { sched(mus.next, mus.bar++); mus.next += mus.len; }
+        mus.timer = setTimeout(pump, busy ? 1000 : 2000);
       };
       pump();
     }
+
+    // ----- Star Sweeper: four loops, picked by where you are -----
+    // A few small instruments on the music bus: a shaped oscillator, a two-operator FM voice (like an old FM sound card), and noise drums.
+    function mt(o) { // f, at, dur, gain, type, lp, lpEnd, q, detune, vib, glide, a, rel, wet
+      const t = o.at, g = ctx.createGain(), a = o.a || 0.005, rel = o.rel || Math.min(0.08, o.dur * 0.5);
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(o.gain, t + a);
+      g.gain.setValueAtTime(o.gain, t + Math.max(a, o.dur - rel)); g.gain.exponentialRampToValueAtTime(0.0001, t + o.dur);
+      let node = g;
+      if (o.lp) { const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.Q.value = o.q || 1; f.frequency.setValueAtTime(o.lp, t); if (o.lpEnd) f.frequency.exponentialRampToValueAtTime(o.lpEnd, t + o.dur); g.connect(f); node = f; }
+      node.connect(mus.dry); if (o.wet) { const w = ctx.createGain(); w.gain.value = o.wet; node.connect(w); w.connect(mus.echo); }
+      for (const d of o.detune ? [-o.detune, o.detune] : [0]) {
+        const osc = ctx.createOscillator(); osc.type = o.type || 'square'; osc.detune.value = d;
+        osc.frequency.setValueAtTime(o.glide || o.f, t); if (o.glide) osc.frequency.exponentialRampToValueAtTime(o.f, t + 0.16);
+        if (o.vib) { const lfo = ctx.createOscillator(), lg = ctx.createGain(); lfo.frequency.value = 6; lg.gain.value = o.f * 0.012; lfo.connect(lg); lg.connect(osc.frequency); lfo.start(t + 0.08); lfo.stop(t + o.dur + 0.05); }
+        osc.connect(g); osc.start(t); osc.stop(t + o.dur + 0.05);
+      }
+    }
+    function mf(o) { // FM: f, at, dur, gain, ratio, index, decay, a, wet
+      const t = o.at, g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(o.gain, t + (o.a || 0.004)); g.gain.exponentialRampToValueAtTime(0.0001, t + o.dur);
+      g.connect(mus.dry); if (o.wet) { const w = ctx.createGain(); w.gain.value = o.wet; g.connect(w); w.connect(mus.echo); }
+      const car = ctx.createOscillator(), mod = ctx.createOscillator(), mg = ctx.createGain();
+      car.frequency.value = o.f; mod.frequency.value = o.f * o.ratio;
+      mg.gain.setValueAtTime(o.f * o.index, t); mg.gain.exponentialRampToValueAtTime(o.f * o.index * (o.decay || 0.2) + 0.01, t + o.dur);
+      mod.connect(mg); mg.connect(car.frequency); car.connect(g);
+      car.start(t); mod.start(t); car.stop(t + o.dur + 0.05); mod.stop(t + o.dur + 0.05);
+    }
+    function mk(t, gain) { const o = ctx.createOscillator(), g = ctx.createGain(); o.frequency.setValueAtTime(150, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.12); g.gain.setValueAtTime(gain, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22); o.connect(g); g.connect(mus.dry); o.start(t); o.stop(t + 0.25); }
+    function mn(t, gain, freq, dur, band) { const src = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain(); src.buffer = noise(); f.type = band ? 'bandpass' : 'highpass'; f.frequency.value = freq; g.gain.setValueAtTime(gain, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur); src.connect(f); f.connect(g); g.connect(mus.dry); src.start(t, Math.random()); src.stop(t + dur + 0.02); }
+    const msn = (t, gain) => { mn(t, gain, 1800, 0.16, true); mt({ type: 'triangle', f: 190, at: t, dur: 0.08, gain: gain * 0.5 }); };
+    const mh = (t, gain) => mn(t, gain, 7000, 0.04);
+    const _ = null;
+    // Square-wave chase: a bouncy chiptune loop for the escape and the bar's jukebox. E minor, 150 beats a minute.
+    STEP_TRACKS.chase = {
+      chords: [40, 36, 38, 35], quality: [[0, 3, 7], [0, 4, 7], [0, 4, 7], [0, 4, 7]],
+      lead: [[76, _, 79, _, 83, _, 81, 79, 76, _, _, 74, 76, _, _, _], [72, _, 76, _, 79, _, 84, 83, 79, _, 76, _, 79, _, _, _], [74, _, 78, _, 81, _, 86, 84, 81, _, 78, 81, 86, _, _, _], [83, _, 87, _, 90, _, 87, 83, 78, _, 82, _, 83, _, 81, 79]],
+      step(n, t, sp) {
+        const bar = Math.floor(n / 16) % 4, s = n % 16, r = this.chords[bar], q = this.quality[bar];
+        mt({ type: 'square', f: hz(r + [0, 12, 0, 12, 7, 12, 0, 12][s % 8]), at: t, dur: sp * 0.9, gain: 0.08, lp: 1800 });
+        mt({ type: 'square', f: hz(r + 36 + q[s % 3]), at: t, dur: sp * 0.5, gain: 0.025, lp: 4000 });
+        const m = this.lead[bar][s]; if (m) mt({ type: 'square', f: hz(m), at: t, dur: sp * 1.8, gain: 0.06, lp: 3500, vib: true, wet: 0.25 });
+        if (s % 8 === 0 || s === 6 || s === 10) mk(t, 0.5); if (s === 4 || s === 12) msn(t, 0.3); if (s % 2 === 0) mh(t, 0.08);
+      },
+    };
+    // FM adventure: punchy FM bass and a brassy lead with some swagger. A minor, 132 beats a minute.
+    STEP_TRACKS.fm = {
+      chords: [45, 41, 43, 40], bass: [0, _, 12, 0, _, 0, 12, _, 0, _, 12, 0, 7, _, 12, _],
+      lead: [[69, _, _, 72, _, 76, _, 74, 72, _, 71, _, 69, _, _, _], [65, _, _, 69, _, 72, _, 77, 76, _, 74, _, 72, _, _, _], [67, _, _, 71, _, 74, _, 79, 77, _, 76, _, 74, _, 71, _], [68, _, 71, _, 76, _, 80, _, 83, _, _, 80, 76, _, 71, _]],
+      step(n, t, sp) {
+        const bar = Math.floor(n / 16) % 4, s = n % 16, r = this.chords[bar];
+        const b = this.bass[s]; if (b !== null) mf({ f: hz(r + b), at: t, dur: sp * 1.4, gain: 0.16, ratio: 1, index: 2.2, decay: 0.15 });
+        const m = this.lead[bar][s]; if (m) mf({ f: hz(m), at: t, dur: sp * 2.6, gain: 0.07, ratio: 1, index: 3.4, decay: 0.35, a: 0.02, wet: 0.3 });
+        if (s % 4 === 2) mf({ f: hz(r + 24 + (bar === 3 ? 4 : 3)), at: t, dur: sp * 0.6, gain: 0.025, ratio: 3.5, index: 1.5, decay: 0.1 });
+        if (s === 0 || s === 6 || s === 8 || s === 11) mk(t, 0.45); if (s === 4 || s === 12) msn(t, 0.26); if (s % 2 === 1) mh(t, 0.06);
+      },
+    };
+    // Synth pursuit: a rolling saw bass, a wide pad and an arpeggio over a steady kick. D minor, 124 beats a minute.
+    STEP_TRACKS.pursuit = {
+      chords: [50, 46, 48, 45], quality: [[0, 3, 7, 10], [0, 4, 7, 11], [0, 4, 7, 10], [0, 4, 7, 10]],
+      step(n, t, sp) {
+        const bar = Math.floor(n / 16) % 4, s = n % 16, r = this.chords[bar], q = this.quality[bar];
+        mt({ type: 'sawtooth', f: hz(r - 12 + (s % 4 === 3 ? 12 : 0)), at: t, dur: sp * 0.85, gain: 0.09, lp: 1400, lpEnd: 220, q: 6 });
+        if (s === 0) for (const k of q) mt({ type: 'sawtooth', f: hz(r + 12 + k), at: t, dur: sp * 16, gain: 0.018, lp: 1100, detune: 9, a: 0.4, rel: 0.6 });
+        const ar = [0, 1, 2, 3, 2, 1][s % 6]; if (s % 2 === 0) mt({ type: 'square', f: hz(r + 24 + q[ar]), at: t, dur: sp * 0.7, gain: 0.03, lp: 2600, lpEnd: 900, wet: 0.5 });
+        if (bar === 3 && (s === 8 || s === 10 || s === 12)) mt({ type: 'sawtooth', f: hz(r + 24 + [7, 10, 12][(s - 8) / 2]), at: t, dur: sp * 1.8, gain: 0.04, lp: 3000, detune: 6, wet: 0.4 });
+        if (s % 4 === 0) mk(t, 0.55); if (s === 4 || s === 12) msn(t, 0.32); if (s % 4 === 2) mh(t, 0.1); else if (s % 2 === 1) mh(t, 0.04);
+      },
+    };
+    // Curious: ticking bells, a walking bass, brushes, and a theremin that slides between notes every other time round. D minor with odd turns, 92 beats a minute.
+    STEP_TRACKS.curious = {
+      chords: [50, 46, 43, 45],
+      ost: [[12, 19, 24, 26, 27, 26, 24, 19], [12, 16, 18, 23, 28, 23, 18, 16], [12, 15, 19, 21, 24, 21, 19, 15], [12, 16, 19, 22, 25, 22, 19, 16]],
+      pad: [[0, 7, 14], [4, 11, 18], [3, 9, 14], [4, 10, 13]],
+      lead: [[[4, 74, 6, 69], [12, 77, 4, 0]], [[2, 76, 6, 74], [10, 74, 6, 0]], [[4, 70, 4, 74], [8, 74, 7, 0]], [[2, 73, 4, 0], [6, 70, 4, 0], [10, 69, 6, 73]]],
+      step(n, t, sp) {
+        const bar = Math.floor(n / 16) % 4, s = n % 16, r = this.chords[bar], phrase = Math.floor(n / 64) % 2;
+        if (s % 2 === 0) mf({ f: hz(r + 12 + this.ost[bar][s / 2]), at: t, dur: sp * 3, gain: 0.045, ratio: 3.5, index: 1.8, decay: 0.08, wet: 0.4 });
+        if (s === 0 || s === 8) mt({ type: 'triangle', f: hz(r - 12 + (s === 8 ? 7 : 0)), at: t, dur: sp * 7, gain: 0.13, lp: 700 });
+        if (s === 14) mt({ type: 'triangle', f: hz(r - 12 + 10), at: t, dur: sp * 2, gain: 0.09, lp: 700 });
+        if (s === 0) for (const k of this.pad[bar]) mt({ type: 'triangle', f: hz(r + 12 + k), at: t, dur: sp * 16, gain: 0.014, a: 0.7, rel: 0.9, detune: 7 });
+        if (phrase) for (const [at, m, len, from] of this.lead[bar]) if (at === s) mt({ type: 'sine', f: hz(m), glide: from ? hz(from) : 0, at: t, dur: sp * len, gain: 0.07, vib: true, a: 0.06, rel: 0.25, wet: 0.45 });
+        if (s === 0) mk(t, 0.22); if (s === 10) mk(t, 0.15);
+        if (s === 4 || s === 12) mn(t, 0.06, 2600, 0.24, true);
+        if (s % 2 === 1) mh(t, 0.02);
+        if (bar === 3 && s === 15) mt({ type: 'triangle', f: hz(r + 37), at: t, dur: sp, gain: 0.03 });
+      },
+    };
+    function scheduleSteps(t0, n) { const tr = STEP_TRACKS[mus.style], sp = mus.len / 16; for (let s = 0; s < 16; s++) tr.step(n * 16 + s, t0 + s * sp, sp); }
 
     function scheduleBar(t0, n) {
       const chord = CHORDS[n % CHORDS.length];
@@ -221,7 +314,7 @@
     return {
       names: Object.keys(SOUNDS),
       play(name, at, arg) { const f = SOUNDS[name]; if (f) f(at === undefined ? ctx.currentTime + 0.005 : at, arg); return !!f; },
-      startMusic, stopMusic, get musicOn() { return !!mus; }, setMusicLevel(l) { if (mus) mus.out.gain.setTargetAtTime(l * STYLE_GAIN[mus.style], ctx.currentTime, 0.2); },
+      startMusic, stopMusic, get musicOn() { return !!mus; }, get musicStyle() { return mus ? mus.style : null; }, styles: Object.keys(STYLE_LEN), setMusicLevel(l) { if (mus) mus.out.gain.setTargetAtTime(l * STYLE_GAIN[mus.style], ctx.currentTime, 0.2); },
     };
   }
 
@@ -274,6 +367,13 @@
       else if (!want && this.eng.musicOn) this.eng.stopMusic();
     },
 
+    // A game with music that follows the scene changes the mood here; a playing loop fades out as the new one fades in.
+    setMusicStyle(style) {
+      if (style === this.musicStyle) return;
+      this.musicStyle = style;
+      if (this.eng && this.eng.musicOn) { this.eng.stopMusic(); this.eng.startMusic(this.MUSIC_LEVEL, undefined, style, 0.8); }
+    },
+
     play(name, arg) {
       if (!this.settings.sfx || !this.eng || !this.ctx || this.ctx.state !== 'running') return false;
       const now = Date.now();
@@ -293,9 +393,10 @@
 
     // wires a button to a small settings dialog (made here, styled by the page's own dialog styles)
     // opts.music: 'march' or 'storybook' picks the mood of the music for this game (the default is the quiet space one)
+    // opts.label: [name, description] for the music switch, for a game whose music changes with the scene
     mount(button, opts) {
       this.button = button;
-      const mood = ({ march: ['Marching music', 'Slow drums and low horns.'], storybook: ['Storybook music', 'Soft plucked strings.'] })[opts && opts.music] || ['Quiet space music', 'A soft, slow drift.'];
+      const mood = (opts && opts.label) || ({ march: ['Marching music', 'Slow drums and low horns.'], storybook: ['Storybook music', 'Soft plucked strings.'] })[opts && opts.music] || ['Quiet space music', 'A soft, slow drift.'];
       this.musicStyle = opts && opts.music;
       const d = root.document.createElement('dialog');
       d.id = 'd-sound';

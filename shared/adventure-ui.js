@@ -16,11 +16,25 @@
       set(k, v) { try { root.localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* ignore */ } },
       del(k) { try { root.localStorage.removeItem(k); } catch (e) { /* ignore */ } },
     };
-    Sound.load().mount($('b-sound'), { music: def.music || 'storybook' });
+    // a game whose music follows the scene says which loop goes where (musicFor); the others have one mood
+    Sound.load().mount($('b-sound'), def.musicFor ? { music: def.musicFor(null, { intro: true }), label: def.musicLabel } : { music: def.music || 'storybook' });
 
-    const canvas = $('pic'), ctx = canvas.getContext('2d');
+    const canvas = $('pic');
+    // HD-2D games (def.hd) draw a finer, lit picture through hd2d.js; the rest draw 160 x 100 EGA pixels
+    const HD = def.hd && root.HD2D && root.HD2D.post ? root.HD2D : null;
+    if (HD) { canvas.width = HD.DW; canvas.height = HD.DH; canvas.style.imageRendering = 'auto'; }
+    const ctx = canvas.getContext('2d');
     ctx.imageSmoothingEnabled = false;
     const pix = new Art.Pix(ctx);
+    const hdCache = {};
+    let hdOut = null, lastDraw = -1e9;
+    // the camera effects cost time to draw; a phone that struggles can turn them off (saved on this device for every HD game)
+    const FX = 'adv-hd-effects-v1';
+    let fxLow = store.get(FX) === 'low';
+    const fxButtons = ['b-fx', 'b-fx2'].map($).filter(Boolean); // one in the top bar, one in the help dialog for phones
+    function paintFx() { for (const b of fxButtons) { b.textContent = fxLow ? 'Effects off' : 'Effects on'; b.setAttribute('aria-pressed', String(!fxLow)); } }
+    for (const b of fxButtons) { b.hidden = !HD; b.onclick = () => { fxLow = !fxLow; store.set(FX, fxLow ? 'low' : 'full'); paintFx(); }; }
+    paintFx();
     const touch = root.matchMedia && root.matchMedia('(pointer: coarse)').matches;
 
     let g = Adv.create(def, store.get(KEY) || undefined);
@@ -49,6 +63,7 @@
         else if (e === 'cmd:restore') loadSlot();
         else if (e === 'cmd:restart') confirmRestart();
       }
+      if (def.musicFor) Sound.setMusicStyle(def.musicFor(g, { intro: $('d-intro').open }));
       $('s-score').textContent = g.state.points + ' of ' + def.maxScore;
       $('s-room').textContent = g.room().name;
       paintInv();
@@ -68,6 +83,12 @@
 
     // ---------- the picture ----------
     function draw(t) {
+      if (HD) {
+        const fr = HD.render(def, g, t, { moving, cache: hdCache, out: hdOut });
+        hdOut = fr.rgba;
+        HD.post(ctx, fr, { t, low: fxLow });
+        return;
+      }
       const r = g.room(), s = g.state;
       r.back(pix, g, t);
       const list = [];
@@ -87,7 +108,8 @@
         if (dx || dy) g.nudge(dx, dy, dt); else g.update(dt);
       }
       moving = g.step !== lastStep; lastStep = g.step;
-      draw(now / 1000);
+      // HD pictures are drawn at most 30 times a second (20 with the effects off saves the most work on a phone)
+      if (!HD || now - lastDraw >= (fxLow ? 48 : 32)) { lastDraw = now; draw(now / 1000); }
       flush();
       if (now - saveAt > 20000) { saveAt = now; persist(); }
       root.requestAnimationFrame(loop);
