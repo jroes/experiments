@@ -994,9 +994,12 @@
 
   // ---------- several games at once ----------
 
-  function dropBroken(id) { sessions.delete(id); lib.remove(id); }
+  // A game that cannot be read (for example saved by a different version of the rules) is left alone, never deleted: it stays in the list
+  // marked "could not be read", so a later version, or going back to the older one, can still open it.
+  const unreadable = new Set();
+  function dropBroken(id) { sessions.delete(id); unreadable.add(id); }
 
-  // Opens a game on this device: the one on screen is saved first. Returns false (and forgets the game) if its data is unusable.
+  // Opens a game on this device: the one on screen is saved first. Returns false (and marks the game unreadable) if its data is unusable.
   function openGame(id) {
     if (!lib.has(id)) return false;
     if (ui.state && lib.active && lib.active !== id) save();
@@ -1017,10 +1020,8 @@
   }
 
   function openFirst() {
-    while (lib.list.length) {
-      const id = lib.active && lib.has(lib.active) ? lib.active : lib.list[lib.list.length - 1].id;
-      if (openGame(id)) return true;
-    }
+    const order = [lib.active, ...lib.list.map(g => g.id).reverse()];
+    for (const id of order) if (id && lib.has(id) && !unreadable.has(id) && openGame(id)) return true;
     return false;
   }
 
@@ -1074,7 +1075,7 @@
       const d = describe(g.id), open = g.id === lib.active;
       return '<div class="gamerow' + (open ? ' open' : '') + '"><div><b>' + esc(d.title) + '</b>' + (open ? ' <span class="dim">(open now)</span>' : '') +
         (d.need && !open ? ' <span class="badge">your move</span>' : '') + '</div><div class="dim">' + esc(d.detail) + '</div>' +
-        '<div class="row">' + (open ? '' : '<button data-g="open" data-id="' + g.id + '" class="primary">Open</button>') + '<button data-g="del" data-id="' + g.id + '">' + (g.kind === 'online' ? 'Remove' : 'Delete') + '</button></div></div>';
+        '<div class="row">' + (open || unreadable.has(g.id) ? '' : '<button data-g="open" data-id="' + g.id + '" class="primary">Open</button>') + '<button data-g="del" data-id="' + g.id + '">' + (g.kind === 'online' ? 'Remove' : 'Delete') + '</button></div></div>';
     }).join('') || '<p class="dim">No games yet.</p>';
   }
 
@@ -1179,6 +1180,14 @@
     }
     handleHash();
   })();
+  // Everything is written down all the time, so an update never loses anything: after every action, when the page is hidden or closed,
+  // and every 20 s as a backstop. Refresh in the update bar does it once more first.
+  function saveEverything() {
+    save();
+    for (const [id, s] of sessions) if (lib.has(id) && s !== ui.online) persist(s);
+  }
+  setInterval(saveEverything, 20000);
+  Updater.start({ url: '../version.json', beforeReload: saveEverything });
   // phones can drop a page without warning, so write the game down whenever the page is hidden or closed
   window.addEventListener('pagehide', save);
   document.addEventListener('visibilitychange', () => { if (document.hidden) save(); });

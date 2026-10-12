@@ -25,6 +25,11 @@ Each game is saved under its own key (`games.js` keeps the index), so one game c
 become entries in the list the first time the page loads. Opening a link for a game you are already in just switches to it. Deleting a game with friends only
 removes it from this device. It stays on the server, and the link still works.
 
+## Updates
+
+When a new version is deployed, a bar at the top says so, with Refresh and Later. Nothing reloads on its own. Your games are saved after every action, when the page is hidden or closed,
+and every 20 seconds, and Refresh saves once more before it reloads. A game that a newer version cannot read is kept in the list as "Could not be read" and never deleted.
+
 ## Friends online
 
 The chip in the top bar (`● 2 online`) counts the friends who are around right now, over every game with friends you are in. The Games list shows who, with a button to open
