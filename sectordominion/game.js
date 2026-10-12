@@ -683,6 +683,36 @@
     return { ok: true, advanced: state.turn !== turn };
   }
 
+  // Is this something newGame and play could have produced? Used on a game that came from somewhere else (another device,
+  // via the shared store), so a broken or hostile copy is refused instead of crashing the page.
+  function validState(s) {
+    try {
+      const num = x => typeof x === 'number' && Number.isFinite(x);
+      const int = x => Number.isInteger(x);
+      const ships = o => o && typeof o === 'object' && SHIP_ORDER.every(t => int(o[t]) && o[t] >= 0 && o[t] < 1e6);
+      if (!s || typeof s !== 'object' || s.version !== 2 || !int(s.turn) || s.turn < 1 || s.turn > 100000) return false;
+      if (!int(s.seed) || !num(s.rng) || !has(DIFFICULTY, s.difficulty) || !(s.width > 0 && s.width <= 1000) || !(s.height > 0 && s.height <= 1000)) return false;
+      if (!Array.isArray(s.empires) || s.empires.length !== 4 || !Array.isArray(s.worlds) || s.worlds.length < 24 || s.worlds.length > 80) return false;
+      if (!Array.isArray(s.fleets) || s.fleets.length > 5000 || !Array.isArray(s.log) || s.log.length > 1000) return false;
+      if (!s.ready || typeof s.ready !== 'object' || !s.known || typeof s.known !== 'object') return false;
+      if (typeof s.over !== 'boolean' || !int(s.nextFleetId)) return false;
+      for (let i = 0; i < s.empires.length; i++) {
+        const e = s.empires[i];
+        if (!e || e.id !== i + 1 || typeof e.name !== 'string' || typeof e.human !== 'boolean' || typeof e.alive !== 'boolean' || !num(e.credits) || !int(e.tech) || e.tech < 1 || e.tech > MAX_TECH) return false;
+      }
+      for (let i = 0; i < s.worlds.length; i++) {
+        const w = s.worlds[i];
+        if (!w || w.id !== i || typeof w.name !== 'string' || !has(WORLD_TYPES, w.type) || !num(w.x) || !num(w.y) || !num(w.pop) || !num(w.cap)) return false;
+        if (!int(w.owner) || w.owner < 0 || w.owner > 4 || !int(w.fort) || !int(w.troops) || !ships(w.garrison) || !Array.isArray(w.queue) || w.queue.length > 1000) return false;
+        if (!w.queue.every(t => typeof t === 'string' && has(SHIPS, t))) return false;
+      }
+      for (const f of s.fleets) {
+        if (!f || !int(f.owner) || f.owner < 1 || f.owner > 4 || !int(f.to) || !s.worlds[f.to] || !num(f.x) || !num(f.y) || !num(f.speed) || !ships(f.ships)) return false;
+      }
+      return true;
+    } catch (e) { return false; }
+  }
+
   // hand an empire over to the AI (player left or was dropped)
   function dropPlayer(state, empId) {
     const e = empire(state, empId);
@@ -699,7 +729,7 @@
 
   const api = {
     has, PLAYER, MAX_TECH, TROOPS_PER_TRANSPORT, WIN_SHARE, SHIPS, SHIP_ORDER, WORLD_TYPES, DIFFICULTY,
-    RULES, newGame, endTurn, apply, maybeAdvance, dropPlayer, encodeOrders, decodeOrders, applyOrders, hashState, missingSeats, advanceWith, build, fortify, research, sendFleet, eta,
+    RULES, newGame, endTurn, apply, maybeAdvance, dropPlayer, encodeOrders, decodeOrders, applyOrders, hashState, validState, missingSeats, advanceWith, build, fortify, research, sendFleet, eta,
     visibleWorlds, refreshKnown, fleetVisibleTo, worldDefense, maxTroops, worldIncome, empireIncome,
     researchCost, fortifyCost, techMult, shipCount, shipValue, dist, empire,
   };

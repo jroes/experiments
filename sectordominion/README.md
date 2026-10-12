@@ -6,9 +6,30 @@ Play: open `index.html`, or visit the GitHub Pages URL. No build step, no server
 
 - `game.js`: game rules, AI, combat. No DOM, runs under node too.
 - `ui.js`: canvas map and sidebar.
+- `games.js`: the list of games on this device (no rules in it, tested under node).
 - Your current game is saved to `localStorage` as soon as it starts, so a refresh brings it back. Solo play sends nothing anywhere.
 - Works on phones: the map pans with one finger and zooms with a pinch, and End turn stays at the bottom of the screen.
+- Help (the Help button) has a first-turns walkthrough and a table of what each ship is for. A short tip also shows in the world panel for the first turns.
+- You can set a name. It is saved on this device and friends see it next to "online".
 - `../j/index.html` is the invite landing page, and `../tools/` makes the link-preview images.
+
+## Several games at once
+
+The **Games** button lists every game on this device, solo and with friends, and you can start as many as you like (up to 24) and switch between them.
+A game with friends that is waiting on you shows a "your move" tag, and a count on the button for the ones you are not looking at. Games you are not in are
+looked at every 30 seconds while the page is open, and again when you open the list. Only the game on screen checks in as "online" and polls quickly.
+
+Each game is saved under its own key (`games.js` keeps the index), so one game cannot damage another. Games from the older single-game version are kept: they
+become entries in the list the first time the page loads. Opening a link for a game you are already in just switches to it. Deleting a game with friends only
+removes it from this device. It stays on the server, and the link still works.
+
+## Play on another device
+
+The **Play on another device** button (bottom of the side panel) shows a QR code and a private link.
+
+- In a game with friends the link is for your own seat. Opening it elsewhere puts you back in the same game, in the same seat. Both devices can stay open, and the first one to send orders wins the turn.
+- For a solo game it uploads a copy of the game to the store (as text, up to 60 KB) and the link opens that copy. From then on the two copies are separate. The copy is checked with `Game.validState` before it is used, and it expires after 60 days like any other game.
+- Anyone with the link gets in, so keep it private, same as an invite.
 
 ## Play with friends
 
@@ -49,7 +70,9 @@ Regenerate the pictures with `node tools/make-og.js` (needs Playwright and Chrom
 What this does not do: there are no accounts, so anyone who has a game's name can read it and write to it. That means friends only.
 Everything read back is validated before use, a stranger's junk in a slot is ignored and replaced by the real owner, and orders have to
 match their seat and turn, but a player who really wants to could post orders for someone else, and "only the host can skip" is a
-convention in the game and not a server rule. If a game ever needs real protection, the next step is a write key per namespace on
+convention in the game and not a server rule. A seat can be handed to the AI by the host. After that its link no longer works, it is left out of the invite list, and the player's page says what happened. `Session.seatState` is the one place that decides who plays a seat, and `verification/SeatRoster.tla` checks the rules around it.
+
+If a game ever needs real protection, the next step is a write key per namespace on
 the server. "Online" is only as good as the 45-second check-in: it is a hint for people, not something the game depends on.
 
 Cost: while someone has a game page open, the server machine stays awake (it normally stops when idle), a few requests a minute per

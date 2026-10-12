@@ -1,0 +1,105 @@
+# Notes for working in this repo
+
+Small browser games inspired by old DOS classics (original code, art and text), plus a tiny Rust server on Fly that hosts a shared
+key/value store. Live at https://jroes.github.io/experiments/. Written for whoever (person or Claude) picks this up next.
+
+## Ground rules
+
+- **The repo is public. Never commit secrets.** No keys, tokens or private URLs. The KV store has no accounts on purpose.
+- **`main` is the default branch.** Pages (`.github/workflows/pages.yml`) and the Fly deploy (`deploy-elf-punch.yml`, only for changes under `elf-punch/**`) both run on pushes to `main`.
+- **Do not run `fly deploy` by hand and do not touch `FLY_API_TOKEN`.** Merging to `main` deploys. Keep the server a single machine: atomic create-only writes depend on it (see `verification/`).
+- Work on a branch, open a PR, wait for CI (`tests`, `tlc`, `elf-punch`), merge. The owner said merging is fine without asking.
+- Plain, casual writing in the UI, READMEs and PR text. Short sentences, no hype, no sales words, no over-explaining.
+- The sandbox cannot reach `fly.dev` or other outside hosts. Test against a local build of `elf-punch` instead (below).
+
+## Layout
+
+| Path | What |
+| --- | --- |
+| `sectordominion/` | Space-empire game. `game.js` (rules, AI, no DOM), `online.js` (play with friends), `ui.js`, `index.html`, `style.css` |
+| `warptraders/` | Space trading game. Challenge seeds, plus a live race over WebRTC (`shared/p2p.js`, `lobby.js`) |
+| `shared/` | `store.js` (KV client), `config.js` (`KV_URL`), `qrcode.js` (vendored, MIT), p2p and lobby code |
+| `j/` | Invite landing page: OpenGraph tags for link previews, then hands `#<code>` to the game |
+| `elf-punch/` | Rust server. The `/kv` store lives in `src/store.rs`. See its README for limits |
+| `tests/` | `node --test` suites. `fake-kv.js` is an in-memory stand-in for the server |
+| `verification/` | TLA+ models checked with TLC (`run-tlc.sh`) |
+| `tools/` | `make-og.js` renders the link-preview images |
+
+## Patterns that matter
+
+**Deterministic lockstep.** Every player's browser holds the whole game and plays each turn itself from the same orders. That only works if the
+rules are deterministic: seeded RNG kept in the state (`rand(state)`), exact arithmetic, no `Math.random`, `Math.hypot`, `Math.pow` or sort
+comparators that use randomness (`tests/portability.test.js` bans them). Players are applied in seat order, never arrival order. `hashState`
+rides along with every set of orders so a drift is flagged. If you change a rule so an old game would replay differently, bump `RULES`.
+
+**Many games per device.** `sectordominion/games.js` (`Library`) owns the list: one index key plus one key per game, with the open game's id. `ui.js` never writes a
+game's data anywhere else. When something async finishes after the player switched games (a poll, sending orders), check the open game is still the one you started with and
+`persist(session)` to its own key. Add games with `lib.add(kind)` before writing, and always check `lib.full` before doing anything on the server that cannot be undone.
+
+**The store is the source of truth, localStorage is a cache.** One game is one namespace `sdo-<16 random chars>`. Keys: `meta` (settings, create-only),
+`o-<turn>-<seat>` (orders, create-only with `If-None-Match: *`), `p-<seat>` (presence heartbeat, overwrite; carries the display name),
+`snap` (a solo game moved to another device). The server will not list keys, so you can only read what you already know the name of.
+Namespaces starting `sdo-` expire after 60 days without writes.
+
+**Everything read from the store is untrusted.** Orders go through `cleanEntry`, names through `cleanName`, settings through `cleanGame`,
+a moved solo game through `G.validState`, and commands through `Game.apply` (own-property checks with `has()`, never `obj[userKey]`; turn-tagged).
+Add a validator and a hostile-input test whenever a new kind of value comes back from the store.
+
+**Store numbers as text.** The real server can round-trip a decimal differently in its last digit. A game snapshot is stored as a JSON *string* for
+that reason. This only showed up when running the tests against the real binary, not the fake. Run both.
+
+**One derived view for "who plays what".** `Session.seatState(seat)` is `human`, `ai-pending`, `ai` or `out`. It looks at the game *and* the
+board, because handing a seat to the AI takes two steps (a posted entry, then the turn playing). Anything that lists or reacts to seats
+(invite links, joining, skip buttons, the panel, the end-turn button) uses it. The first version built the invite list from "all seats", then
+from the game alone, and both offered a link to an AI seat. `verification/SeatRoster.tla` models this and fails for both older designs.
+
+**Presence is a hint, never a rule.** "Online" is a heartbeat written every 15 s, read with the orders in the same request, and judged with the
+server's clock. Nothing in the game depends on it. Polling is 3 s when someone else is online and a turn is waiting, slower otherwise.
+
+**Invites.** `room + seat digit` (17 characters), in a link like `.../j/#<code>`. The `#` part never reaches a web server. Settings come from the
+`meta` row. iMessage and Slack previews fetch the page without the `#` and run no JS, so the preview is static OpenGraph tags in `j/index.html`.
+The preview cannot be tested from here: check it by sending a fresh link to yourself after a deploy (previews are cached).
+
+**Friends-only trust.** No accounts, so anyone who has a game's name can read and write it. Say so in the UI and docs. "Only the host can skip"
+is a convention, not a server rule. Per-game write keys would be the next step if that stops being acceptable.
+
+## Testing
+
+```
+npm test                                   # unit, property, fuzz, lockstep (fake store)
+verification/run-tlc.sh                    # TLA+ models (needs Java)
+cd elf-punch && cargo test --release       # server
+```
+
+Run the store-backed suites against the real binary too. Raise the limits or the suite trips the per-address ones (CI does the same):
+
+```
+export PORT=8135 WORLD_FILE=/tmp/w.json KV_DIR=/tmp/kv KV_IP_REQ_PER_MIN=1000000 KV_IP_WRITE_PER_MIN=1000000 \
+  KV_NS_REQ_PER_MIN=1000000 KV_NS_WRITE_PER_MIN=1000000 KV_IP_NEW_NS_PER_HOUR=1000000 KV_NEW_NS_PER_DAY=1000000 KV_NS_COUNT=100000
+elf-punch/target/release/elf-punch &
+KV_URL=http://127.0.0.1:8135 node --test tests/lockstep.test.mjs tests/roster.test.mjs
+```
+
+**Verification approach.** TLA+ for protocol and roster questions (races, who may do what, derived views that can disagree). Property and fuzz tests on
+the real JavaScript for arithmetic, hostile input and invariants. A model that "must fail" for a known-bad design (`must_fail` in `run-tlc.sh`)
+proves the model can see the bug. When a bug turns up, add the property to the model or the fuzz tests so the whole class is covered, not just the one case.
+
+**Browser checks.** Playwright with Chromium (`/opt/pw-browsers/chromium`, global `NODE_PATH=$(npm root -g)`). Emulate a phone with `devices['iPhone 13']`
+and serve the repo with `python3 -m http.server`. To use a local server in place of Fly, route `https://elf-castle-wood-puncher.fly.dev/**` to it
+with `route.fetch({ url })` and add CORS headers. Open several browser contexts to play as several people. Look at screenshots, not just assertions.
+Only Chromium has been tried, not Safari or Firefox.
+
+Shell gotcha: `pkill -f <pattern>` can match and kill your own shell command. Use `pkill -x name` or bracket the pattern.
+
+## UI conventions
+
+- Works on a phone first: 16px fields (iOS zooms smaller ones), 40px tap targets on coarse pointers, `100dvh`, safe-area padding, the main action pinned to the bottom, map with one-finger pan and pinch zoom.
+- Dialogs are `<dialog>`; they scroll when tall. Keep first-run flow short: name (once), then the intro, then any link in the URL.
+- A game in progress is saved to localStorage as soon as it exists, and again when the page is hidden. A refresh must never start a new game.
+- Help should say what things are for, not just list controls. Ship stats in the help table come from the rules, so they cannot drift.
+- Copy that mentions limits or trust (friends only, links are private, copies diverge) belongs in the dialog where the choice is made.
+
+## Adding a game
+
+Folder with `index.html`, `game.js` (no DOM, runs under node), `ui.js`, `style.css`. Add it to the root `index.html` and README, give it
+property/fuzz tests in `tests/`, make it deterministic if it will ever be played in lockstep, and use `shared/store.js` for anything shared.

@@ -12,3 +12,5 @@ Sector Dominion is played with friends through the key/value store in `elf-punch
 
 Live once GitHub Pages is on (Settings > Pages > Source: GitHub Actions):
 https://jroes.github.io/experiments/
+
+Working on this repo: see [CLAUDE.md](CLAUDE.md) for the patterns, testing and ground rules.

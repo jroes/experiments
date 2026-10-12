@@ -95,8 +95,9 @@
 
   const api = {
     LIMIT_CODE, KEYS_PER_READ, randomId, cleanBase, call, nsName, orderKey, presenceKey, readKeys, putOnce,
-    // "I am here": overwrites my presence key. The server stamps the write time, and that is all anyone reads from it.
-    beat: (base, room, seat) => call(base, 'PUT', '/kv/' + nsName(room) + '/' + presenceKey(seat), { body: { v: 1 } }),
+    // "I am here": overwrites my presence key. The server stamps the write time, which is what decides online or not.
+    // `name` is optional: what the player likes to be called, so friends see it next to "online".
+    beat: (base, room, seat, name) => call(base, 'PUT', '/kv/' + nsName(room) + '/' + presenceKey(seat), { body: name ? { v: 1, name } : { v: 1 } }),
     // the game's meta row: who is playing and with what rules
     createGame: (base, room, meta) => call(base, 'PUT', '/kv/' + nsName(room) + '/meta', { body: meta, ifNoneMatch: true }),
     readMeta: async (base, room) => {
