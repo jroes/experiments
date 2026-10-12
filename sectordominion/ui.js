@@ -424,7 +424,7 @@
       tip.hidden = false;
       const od = ui.targeting ? oddsFor(id) : null;
       tip.textContent = w.name + ' - ' + (i.natives && !i.owner ? 'Natives' : i.owner ? ui.state.empires[i.owner - 1].name : 'Unclaimed') + ', pop ' + i.pop +
-        (od ? ' | ' + ODDS_WORDS[od.verdict] + ' (' + od.attAtk + ' atk, ' + od.attHp + ' hull vs ' + od.defAtk + ' atk, ' + od.defHp + ' hull)' : '');
+        (od ? ' | ' + ODDS_WORDS[od.verdict] + ' (' + od.attAtk + ' atk, ' + od.attHp + ' hull vs ' + od.defAtk + ' atk, ' + od.defHp + ' hull)' + (od.canTake ? '' : ' | can win the fight but not take it: ' + troopNote(od)) : '');
       tip.style.left = (p.x + 14) + 'px'; tip.style.top = (p.y + 14) + 'px';
     }
   });
@@ -473,11 +473,15 @@
     if (!G.shipCount(ui.send)) return null;
     return G.estimateBattle(ui.state, ui.send, ui.me, w);
   }
+  // "needs 2 transports (has 1)": winning in space does not take a world, troops do
+  function troopNote(od) { return 'needs ' + od.needTransports + ' transport' + (od.needTransports > 1 ? 's' : '') + ' (' + od.transports + ' in this fleet; the world has ' + od.troops + ' troops, ' + G.TROOPS_PER_TRANSPORT + ' per transport)'; }
   const ODDS_WORDS = { win: 'you should win', close: 'a close fight', lose: 'you would lose', free: 'nothing to fight' };
 
   function dispatchTo(toId) {
     if (toId === ui.selected) { toast('Pick a different world.'); return; }
     const odds = oddsFor(toId);
+    if (odds && odds.verdict !== 'lose' && !odds.canTake && !confirm('You may win the fight, but you will not take ' + ui.state.worlds[toId].name + ': ' + troopNote(odds) +
+      '. Without enough troops the fleet just goes home. Send anyway?')) return;
     if (odds && odds.verdict === 'lose' && !confirm('This looks like a losing fight. Your fleet: attack ' + odds.attAtk + ', hull ' + odds.attHp + '. ' +
       'Their side: attack ' + odds.defAtk + ', hull ' + odds.defHp + (odds.defense ? ' (the world\'s own defense is ' + odds.defense + ')' : '') + '. Send anyway?')) return;
     const res = act({ op: 'send', from: ui.selected, to: toId, ships: { ...ui.send } });
