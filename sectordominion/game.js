@@ -317,6 +317,13 @@
     return s;
   }
 
+  const round1 = x => Math.round(x * 10) / 10;
+  // "3 Frigates, 1 Transport", or "no ships"
+  function describeShips(ships) {
+    const parts = SHIP_ORDER.filter(t => ships[t]).map(t => ships[t] + ' ' + SHIPS[t].name + (ships[t] > 1 ? 's' : ''));
+    return parts.length ? parts.join(', ') : 'no ships';
+  }
+
   function mergeInto(dst, src) { for (const t of SHIP_ORDER) dst[t] += src[t] || 0; }
 
   function ownerName(state, id) { return id ? empire(state, id).name : 'natives'; }
@@ -371,6 +378,9 @@
     const D = worldDefense(w);
     if (D > 0) def.push({ t: 'defense', atk: 2 * D * techMult(defTech), hp: 8 * D * techMult(defTech) });
     const startAtt = shipCount(f.ships), startDef = shipCount(w.garrison);
+    const attBefore = describeShips(f.ships), defBefore = describeShips(w.garrison);
+    const defUnit = def.find(u => u.t === 'defense'); // the world's own guns: they count as one tough unit that shoots back
+    const defGuns = defUnit ? { atk: defUnit.atk, hp: defUnit.hp } : null; // as they were before the fight
 
     battle(state, att, def);
 
@@ -378,9 +388,11 @@
     const defenseUp = def.some(u => u.t === 'defense');
     w.garrison = defLeft;
 
-    log(state, 'Battle at ' + w.name + ': ' + who + ' (' + startAtt + ' ships) vs ' + ownerName(state, w.owner) +
-      ' (' + startDef + ' ships' + (D ? ', defense ' + D : '') + '). Attacker lost ' +
-      (startAtt - shipCount(attLeft)) + ', defender lost ' + (startDef - shipCount(defLeft)) + '.', 'battle', aud);
+    // The report says what each side had, so a lost fight can be understood afterwards. (The log is not part of the game's hash.)
+    log(state, 'Battle at ' + w.name + ': ' + who + ' (' + attBefore + ') vs ' + ownerName(state, w.owner) +
+      ' (' + (startDef ? defBefore : 'no ships') + (D ? '; defense ' + D + ': attack ' + round1(defGuns.atk) + ', hull ' + round1(defGuns.hp) : '') + '). Attacker lost ' +
+      (startAtt - shipCount(attLeft)) + ' of ' + startAtt + ', defender lost ' + (startDef - shipCount(defLeft)) + ' of ' + startDef +
+      (defenseUp ? '; the defense survived.' : D ? '; the defense was destroyed.' : '.'), 'battle', aud);
 
     f.ships = attLeft;
     if (!att.length) return true; // fleet destroyed
@@ -683,6 +695,34 @@
     return { ok: true, advanced: state.turn !== turn };
   }
 
+  // What a fight would look like, worked out the same way the battle is (ships, tech, and the world's own defense), without playing it.
+  // Used to warn before sending a fleet. `ships` is what would be sent, `w` the world it would attack.
+  function estimateBattle(state, ships, attackerId, w) {
+    const attTech = ownerTech(state, attackerId), defTech = w.owner ? ownerTech(state, w.owner) : 1;
+    const att = makeUnits(ships, attTech), def = makeUnits(w.garrison, defTech);
+    const D = worldDefense(w);
+    if (D > 0) def.push({ t: 'defense', atk: 2 * D * techMult(defTech), hp: 8 * D * techMult(defTech) });
+    const sum = (u, k) => u.reduce((n, x) => n + x[k], 0);
+    const r = { attAtk: round1(sum(att, 'atk')), attHp: round1(sum(att, 'hp')), defAtk: round1(sum(def, 'atk')), defHp: round1(sum(def, 'hp')), defense: D };
+    if (!def.length) r.verdict = 'free';                    // nothing to fight
+    else if (sum(att, 'atk') <= 0) r.verdict = 'lose';      // no guns against something that has them
+    else {
+      // each side's strength is attack times hull (it kills faster and lasts longer): the bigger one wins, and by how much matters
+      const ratio = sum(def, 'atk') <= 0 ? Infinity : (sum(att, 'atk') * sum(att, 'hp')) / (sum(def, 'atk') * sum(def, 'hp'));
+      r.verdict = ratio >= 1.5 ? 'win' : ratio >= 0.67 ? 'close' : 'lose';
+    }
+    return r;
+  }
+
+  // A compact copy of a game for someone else to look at (the player's save, without the map memory and with the log trimmed).
+  // It passes validState, so it can be loaded back.
+  function reviewExport(state) {
+    const copy = JSON.parse(JSON.stringify(state));
+    copy.known = {};
+    copy.log = copy.log.slice(0, 150);
+    return copy;
+  }
+
   // Is this something newGame and play could have produced? Used on a game that came from somewhere else (another device,
   // via the shared store), so a broken or hostile copy is refused instead of crashing the page.
   function validState(s) {
@@ -729,7 +769,7 @@
 
   const api = {
     has, PLAYER, MAX_TECH, TROOPS_PER_TRANSPORT, WIN_SHARE, SHIPS, SHIP_ORDER, WORLD_TYPES, DIFFICULTY,
-    RULES, newGame, endTurn, apply, maybeAdvance, dropPlayer, encodeOrders, decodeOrders, applyOrders, hashState, validState, missingSeats, advanceWith, build, fortify, research, sendFleet, eta,
+    RULES, newGame, endTurn, apply, maybeAdvance, dropPlayer, encodeOrders, decodeOrders, applyOrders, hashState, validState, estimateBattle, reviewExport, describeShips, missingSeats, advanceWith, build, fortify, research, sendFleet, eta,
     visibleWorlds, refreshKnown, fleetVisibleTo, worldDefense, maxTroops, worldIncome, empireIncome,
     researchCost, fortifyCost, techMult, shipCount, shipValue, dist, empire,
   };

@@ -25,6 +25,12 @@ Each game is saved under its own key (`games.js` keeps the index), so one game c
 become entries in the list the first time the page loads. Opening a link for a game you are already in just switches to it. Deleting a game with friends only
 removes it from this device. It stays on the server, and the link still works.
 
+## Fights and exports
+
+A world's defense (fortification plus population divided by 25) counts as one unit with attack 2 and hull 8 per point, so unarmed ships cannot hurt it. Battle reports list both sides.
+While you pick a target, the tooltip says whether the fight looks like a win, a close one or a loss, and sending a fleet that would lose asks first. **Export game** (side panel) gives
+the game as a file or text; `tools/review.js` reads it.
+
 ## Updates
 
 When a new version is deployed, a bar at the top says so, with Refresh and Later. Nothing reloads on its own. Your games are saved after every action, when the page is hidden or closed,

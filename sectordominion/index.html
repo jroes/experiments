@@ -82,6 +82,7 @@
       <li><b>Empty world</b> (no red ring): send a Transport. It colonizes it. A fleet with no Transport just looks around and goes home.</li>
       <li><b>Natives</b> (red ring) and <b>enemy worlds</b> have defenses and troops. Send warships first: they fight the garrison and the world's defense. If the defenders are all dead, your Transports land.</li>
       <li>Each Transport lands <b>5 troops</b> and is used up. You take the world if you land <b>more troops than it has</b> (see Troops in the world panel). Bring a few extra.</li>
+      <li>A world's own <b>defense</b> counts as one tough unit that shoots back (attack 2 and hull 8 for each point of Defense). Ships with no guns, like Transports and Scouts, cannot hurt it. While you pick a target, the tooltip says how the fight would go, and you are asked before you send a fleet that would lose. Battle reports in the log say what each side had.</li>
       <li>If you do not kill all defenders, the fight is a stalemate and your fleet retreats. Check <b>Defense</b> and the garrison before you attack, and send more than you think you need.</li>
       <li><b>Fortify</b> adds permanent defense to a world of yours. Use it on border worlds.</li>
     </ul>
@@ -121,6 +122,14 @@
 </dialog>
 
 <button id="friend-toast" hidden></button>
+
+<dialog id="d-export">
+  <h2>Export game</h2>
+  <p class="fine">Your game as it stands, as text, so someone can look at it (to see why a fight went wrong, say). It has no name, link or secret in it, so it is not a way into a game with friends. <span id="export-size"></span></p>
+  <textarea id="export-text" rows="6" readonly spellcheck="false" style="width:100%;font:11px monospace;background:#060b16;color:inherit;border:1px solid var(--line);border-radius:4px"></textarea>
+  <div class="row"><button type="button" id="b-export-copy">Copy</button><button type="button" id="b-export-download" class="primary">Download file</button></div>
+  <form method="dialog"><button>Close</button></form>
+</dialog>
 
 <dialog id="d-games">
   <h2>Your games</h2>
