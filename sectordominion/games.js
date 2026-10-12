@@ -68,14 +68,14 @@
     has(id) { return this.list.some(g => g.id === id); }
     kind(id) { const g = this.list.find(x => x.id === id); return g ? g.kind : null; }
 
-    // Adds an empty slot for a game and opens it. The caller writes the game with write().
-    add(kind) {
+    // Adds a slot for a game and (unless open is false) makes it the open one. The caller writes the game with write().
+    add(kind, open) {
       if (kind !== 'solo' && kind !== 'online') throw new Error('Unknown kind of game.');
       if (this.full) throw new Error('You are in ' + MAX_GAMES + ' games. Delete one first.');
       let id;
       do { id = newId(); } while (this.has(id));
       this.list.push({ id, kind });
-      this.active = id;
+      if (open !== false || !this.active) this.active = id;
       this._save();
       return id;
     }

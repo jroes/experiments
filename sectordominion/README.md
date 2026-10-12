@@ -23,13 +23,19 @@ Each game is saved under its own key (`games.js` keeps the index), so one game c
 become entries in the list the first time the page loads. Opening a link for a game you are already in just switches to it. Deleting a game with friends only
 removes it from this device. It stays on the server, and the link still works.
 
-## Play on another device
+## Link another device
 
-The **Play on another device** button (bottom of the side panel) shows a QR code and a private link.
+The **Link another device** button (bottom of the side panel) shows a QR code and a private link. Opening it on your phone (or another computer) links that device to this one, a bit like signing in without an account:
 
-- In a game with friends the link is for your own seat. Opening it elsewhere puts you back in the same game, in the same seat. Both devices can stay open, and the first one to send orders wins the turn.
-- For a solo game it uploads a copy of the game to the store (as text, up to 60 KB) and the link opens that copy. From then on the two copies are separate. The copy is checked with `Game.validState` before it is used, and it expires after 60 days like any other game.
-- Anyone with the link gets in, so keep it private, same as an invite.
+- Your name comes along.
+- Every game with friends you are in shows up there, in the same seat, and games you start or join on either device later show up on both. Each device checks the shared list once a minute. Both devices can be open at once: orders from either count, and the first to send wins the turn.
+- Solo games are copied once when the link is shown. After that the two copies go on separately, so pick one to keep playing.
+- Removing a game on purpose on one device stops it coming back there. It stays on the other device.
+- Opening the same link again adds nothing twice.
+
+How it works: the link is `d-` plus a random 16-character name for a small shared record in the store. It holds `games` (a list of `{ room, seat }`, added to with a compare-and-set so two devices adding at once never lose one), `profile` (the name) and `solo-<n>` (the solo copies, stored as text because the server may change the last digit of a stored decimal). Everything read from it is checked before use (`Online.Link.open`, `Game.validState`). It expires after 60 days without writes like any game, and showing the link again refreshes it.
+
+Anyone who has the link gets all your games, so keep it private, same as an invite. There are no accounts, so this is the whole identity story.
 
 ## Play with friends
 

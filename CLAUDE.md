@@ -37,12 +37,13 @@ game's data anywhere else. When something async finishes after the player switch
 `persist(session)` to its own key. Add games with `lib.add(kind)` before writing, and always check `lib.full` before doing anything on the server that cannot be undone.
 
 **The store is the source of truth, localStorage is a cache.** One game is one namespace `sdo-<16 random chars>`. Keys: `meta` (settings, create-only),
-`o-<turn>-<seat>` (orders, create-only with `If-None-Match: *`), `p-<seat>` (presence heartbeat, overwrite; carries the display name),
-`snap` (a solo game moved to another device). The server will not list keys, so you can only read what you already know the name of.
+`o-<turn>-<seat>` (orders, create-only with `If-None-Match: *`), `p-<seat>` (presence heartbeat, overwrite; carries the display name).
+A *link* between devices is its own namespace (`d-<16 chars>` in URLs): `games` (shared list, compare-and-set with `If-Match`), `profile`, `solo-<n>`.
+ The server will not list keys, so you can only read what you already know the name of.
 Namespaces starting `sdo-` expire after 60 days without writes.
 
 **Everything read from the store is untrusted.** Orders go through `cleanEntry`, names through `cleanName`, settings through `cleanGame`,
-a moved solo game through `G.validState`, and commands through `Game.apply` (own-property checks with `has()`, never `obj[userKey]`; turn-tagged).
+a copied solo game through `G.validState`, the link's game list through `cleanList`, and commands through `Game.apply` (own-property checks with `has()`, never `obj[userKey]`; turn-tagged).
 Add a validator and a hostile-input test whenever a new kind of value comes back from the store.
 
 **Store numbers as text.** The real server can round-trip a decimal differently in its last digit. A game snapshot is stored as a JSON *string* for

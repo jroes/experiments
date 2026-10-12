@@ -40,42 +40,123 @@
     return m ? { room: m[1], seat: +m[2] } : null;
   }
 
-  // Moving a solo game to another device: a copy of the game goes into the store under a fresh random name, and the code for it is
-  // 't-' plus that name. There is no seat: the game is yours alone, so whoever has the link has your game.
-  function parseTransfer(text) {
-    const t = String(text || '').trim().toLowerCase().replace(/\s+/g, '');
-    const m = /^t-([a-z0-9]{16})$/.exec(t.slice(t.lastIndexOf('#') + 1).replace(/^join=/, ''));
-    return m ? m[1] : null;
-  }
+  // ----- linking devices -----
+  // "Link a device" ties this browser to another one, a bit like signing in without an account. There is a small shared record in the
+  // store (its name is the link, 'd-' plus 16 letters and digits) that both devices know about:
+  //   games      the games with friends this person is in: [{ room, seat }]. Both devices add to it with a compare-and-set, and each
+  //              joins any game it does not have yet, so a game started on one shows up on the other.
+  //   profile    the name, and how many solo games were copied
+  //   solo-<i>   a copy of a solo game, made at the moment the link was shown. Solo games are copied once, not kept in sync.
+  // Anyone who has the link is that person (it opens all their games), so it is private, like an invite.
   const MAX_SNAPSHOT = 60000; // the store takes 64 KB per value
+  const MAX_SOLOS = 8;
+  const MAX_LINKED = 24;
 
-  async function shareSolo(state, server) {
-    const base = S.cleanBase(server);
-    if (!base) throw new Error('The server address must start with https:// (or http://localhost).');
-    if (!G.validState(state)) throw new Error('This game cannot be moved.');
-    // Stored as text, not as JSON numbers: the server may round-trip a decimal number differently (the last digit of a float),
-    // and one changed digit in the random-number state would make the copy play differently.
-    const text = JSON.stringify({ ...state, log: state.log.slice(0, 60) });
-    if (text.length > MAX_SNAPSHOT) throw new Error('This game is too big to move.');
-    const room = S.randomId(ROOM_LEN);
-    const r = await S.call(base, 'PUT', '/kv/' + S.nsName(room) + '/snap', { body: { v: 1, game: text }, ifNoneMatch: true });
-    if (r.status !== 201) throw new Error(friendly(r));
-    return 't-' + room;
+  const validEntry = e => !!e && typeof e === 'object' && typeof e.room === 'string' && ROOM_RE.test(e.room) && Number.isInteger(e.seat) && e.seat >= 1 && e.seat <= 4;
+  function cleanList(list) {
+    const out = [], seen = new Set();
+    if (!Array.isArray(list)) return out;
+    for (const e of list) {
+      if (!validEntry(e) || seen.has(e.room + e.seat)) continue;
+      seen.add(e.room + e.seat); out.push({ room: e.room, seat: e.seat });
+      if (out.length >= MAX_LINKED) break;
+    }
+    return out;
   }
+  const textOf = state => JSON.stringify({ ...state, log: state.log.slice(0, 60) });
 
-  async function fetchSolo(text, server) {
-    const room = parseTransfer(text);
-    if (!room) throw new Error('That does not look like a link to a game.');
-    const base = S.cleanBase(server);
-    if (!base) throw new Error('The server address must start with https:// (or http://localhost).');
-    const r = await S.call(base, 'GET', '/kv/' + S.nsName(room) + '/snap');
-    if (r.status !== 200) throw new Error(friendly(r));
-    const v = r.data && r.data.value;
-    let game = null;
-    try { game = v && v.v === 1 && typeof v.game === 'string' && v.game.length <= MAX_SNAPSHOT ? JSON.parse(v.game) : null; } catch (e) { /* not JSON */ }
-    if (!G.validState(game)) throw new Error('That link does not hold a game this page can play.');
-    return game;
-  }
+  const Link = {
+    parse(text) {
+      const t = String(text || '').trim().toLowerCase().replace(/\s+/g, '');
+      const m = /^d-([a-z0-9]{16})$/.exec(t.slice(t.lastIndexOf('#') + 1).replace(/^join=/, ''));
+      return m ? m[1] : null;
+    },
+    code: room => 'd-' + room,
+
+    async create(server) {
+      const base = S.cleanBase(server);
+      if (!base) throw new Error('The server address must start with https:// (or http://localhost).');
+      const room = S.randomId(ROOM_LEN);
+      const r = await S.createGame(base, room, { v: 1, kind: 'link' });
+      if (r.status !== 201) throw new Error(friendly(r));
+      return room;
+    },
+
+    // Adds one game to the shared list. Safe when two devices do it at the same moment: a lost race just reads again and retries.
+    async add(server, room, entries) {
+      const add = cleanList(entries), path = '/kv/' + S.nsName(room) + '/games';
+      for (let attempt = 0; attempt < 10; attempt++) {
+        const cur = await S.call(server, 'GET', path);
+        if (cur.status !== 200 && cur.status !== 404) throw new Error(friendly(cur));
+        const have = cur.status === 200 && cur.data && cur.data.value ? cleanList(cur.data.value.list) : [];
+        const merged = cleanList([...have, ...add]);
+        if (cur.status === 200 && merged.length === have.length) return merged; // nothing new
+        const r = cur.status === 404
+          ? await S.call(server, 'PUT', path, { body: { v: 1, list: merged }, ifNoneMatch: true })
+          : await S.call(server, 'PUT', path, { body: { v: 1, list: merged }, ifMatch: cur.data.rev });
+        if (r.status === 200 || r.status === 201) return merged;
+        if (r.status !== 412) throw new Error(friendly(r));
+        await new Promise(res => setTimeout(res, 5 + Math.random() * 40));
+      }
+      throw new Error('The game server is busy. Try again.');
+    },
+
+    // Everything this device has goes into the shared record: the name, the games with friends, and copies of solo games.
+    async publish(server, room, { name, online, solos }) {
+      const base = S.cleanBase(server);
+      if (!base) throw new Error('The server address must start with https:// (or http://localhost).');
+      const texts = [];
+      for (const st of (solos || []).slice(0, MAX_SOLOS)) {
+        if (!G.validState(st)) continue;
+        const t = textOf(st);
+        if (t.length <= MAX_SNAPSHOT) texts.push(t);
+      }
+      // stored as text, not as JSON numbers: the server may round-trip a decimal differently (the last digit of a float), and one
+      // changed digit in the random-number state would make the copy play differently
+      for (let i = 0; i < texts.length; i++) {
+        const r = await S.call(base, 'PUT', '/kv/' + S.nsName(room) + '/solo-' + i, { body: { v: 1, game: texts[i] } });
+        if (r.status !== 200 && r.status !== 201) throw new Error(friendly(r));
+      }
+      const pn = cleanName(name);
+      const r = await S.call(base, 'PUT', '/kv/' + S.nsName(room) + '/profile', { body: pn ? { v: 1, name: pn, solos: texts.length } : { v: 1, solos: texts.length } });
+      if (r.status !== 200 && r.status !== 201) throw new Error(friendly(r));
+      if (online && online.length) await Link.add(base, room, online);
+    },
+
+    // Reads a link: { name, online: [{room, seat}], solos: [state] }. Everything in it is checked first.
+    async open(server, room) {
+      const base = S.cleanBase(server);
+      if (!base) throw new Error('The server address must start with https:// (or http://localhost).');
+      const keys = ['meta', 'profile', 'games'];
+      for (let i = 0; i < MAX_SOLOS; i++) keys.push('solo-' + i);
+      const r = await S.readKeys(base, room, keys);
+      if (r.status !== 200) throw new Error(friendly(r));
+      if (!r.values.meta || !r.values.meta.value || r.values.meta.value.kind !== 'link') throw new Error('That link does not go anywhere. It may have expired.');
+      const prof = r.values.profile && r.values.profile.value && typeof r.values.profile.value === 'object' ? r.values.profile.value : {};
+      const solos = [];
+      const count = Number.isInteger(prof.solos) ? Math.min(prof.solos, MAX_SOLOS) : 0;
+      for (let i = 0; i < count; i++) {
+        const v = r.values['solo-' + i] && r.values['solo-' + i].value;
+        let game = null;
+        try { game = v && v.v === 1 && typeof v.game === 'string' && v.game.length <= MAX_SNAPSHOT ? JSON.parse(v.game) : null; } catch (e) { /* not JSON */ }
+        if (G.validState(game)) solos.push(game);
+      }
+      const g = r.values.games && r.values.games.value;
+      return { name: cleanName(prof.name), online: cleanList(g && g.list), solos };
+    },
+
+    async list(server, room) {
+      const r = await S.readKeys(S.cleanBase(server) || server, room, ['games']);
+      if (r.status !== 200) throw new Error(friendly(r));
+      const g = r.values.games && r.values.games.value;
+      return cleanList(g && g.list);
+    },
+
+    // which games in the shared list this device does not have, and has not removed on purpose
+    newEntries(list, have, dismissed) {
+      return cleanList(list).filter(e => !have(e) && !(dismissed && dismissed.has(e.room + e.seat)));
+    },
+  };
 
   // Everything about a game that must be valid before we play it. Used for saved games and for meta read from the store.
   function cleanGame(o) {
@@ -396,7 +477,7 @@
     }
   }
 
-  const api = { Session, shareSolo, fetchSolo, parseTransfer, inviteCode, parseInvite, cleanGame, cleanEntry, cleanName, NAME_MAX, ONLINE_SECS, ROOM_LEN };
+  const api = { Session, Link, inviteCode, parseInvite, cleanGame, cleanEntry, cleanName, NAME_MAX, ONLINE_SECS, ROOM_LEN };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Online = api;
 })(typeof window !== 'undefined' ? window : globalThis);
