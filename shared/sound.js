@@ -70,6 +70,8 @@
     const bell = (f, at, dur, gain) => { tone({ f, at, dur, gain }); tone({ f: f * 2.01, at, dur: dur * 0.6, gain: (gain || 0.25) * 0.25 }); };
 
     const SOUNDS = {
+      // a small click for each press of an angle or power button. x (0 to 1) is how far along the dial it is, so it climbs as the number does
+      adjust: (t, x) => { const f = 380 + 760 * Math.min(1, Math.max(0, x || 0)); tone({ f, to: f * 0.8, at: t, dur: 0.045, type: 'square', gain: 0.13 }); },
       tick: t => tone({ f: 1500, to: 950, at: t, dur: 0.05, gain: 0.14 }),
       build: t => { tone({ f: 520, at: t, dur: 0.08, type: 'triangle', gain: 0.18 }); tone({ f: 780, at: t + 0.07, dur: 0.1, type: 'triangle', gain: 0.18 }); },
       launch: t => { hiss({ at: t, dur: 0.45, from: 300, to: 2600, q: 1.4, gain: 0.22 }); tone({ f: 180, to: 520, at: t, dur: 0.4, gain: 0.1, type: 'triangle' }); },
@@ -104,6 +106,55 @@
     const PENT = [69, 72, 74, 76, 79, 81, 84]; // A minor pentatonic-ish, the "stars"
     const BAR = 9; // seconds per chord
     let mus = null;
+    // Other moods for other games. 'space' is the default above; each plays a loop of its own, and stays far under the effects.
+    const STYLE_LEN = { space: BAR, march: 6, storybook: 6 };
+    const STYLE_GAIN = { space: 1, march: 2, storybook: 1.8 }; // the new beds are made of sparser sounds, so they need a little more to sit at the same loudness
+
+    // a soft note into the music bus (not the effects bus)
+    function mnote(o) {
+      const t = o.at, osc = ctx.createOscillator(), g = ctx.createGain(), f = ctx.createBiquadFilter();
+      osc.type = o.type || 'triangle'; osc.frequency.value = o.f;
+      f.type = 'lowpass'; f.frequency.value = o.lp || 1200;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(o.gain, t + (o.a || 0.02));
+      g.gain.exponentialRampToValueAtTime(0.0001, t + o.dur);
+      osc.connect(f); f.connect(g); g.connect(mus.dry); if (o.wet) { const w = ctx.createGain(); w.gain.value = o.wet; g.connect(w); w.connect(mus.send); }
+      osc.start(t); osc.stop(t + o.dur + 0.05);
+    }
+    function mdrum(t, kind, gain) { // kind: 'kick' a low thump, 'snare' a soft tap of noise
+      if (kind === 'kick') { const osc = ctx.createOscillator(), g = ctx.createGain(); osc.frequency.setValueAtTime(95, t); osc.frequency.exponentialRampToValueAtTime(48, t + 0.18); g.gain.setValueAtTime(gain, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.28); osc.connect(g); g.connect(mus.dry); osc.start(t); osc.stop(t + 0.3); return; }
+      const src = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
+      src.buffer = noise(); f.type = 'bandpass'; f.frequency.value = 1700; f.Q.value = 0.9;
+      g.gain.setValueAtTime(gain, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
+      src.connect(f); f.connect(g); g.connect(mus.dry); src.start(t, 0.3); src.stop(t + 0.12);
+    }
+
+    // Tank Wars: a slow march. Low drum on every other beat, soft snare taps, a walking bass and a mellow horn tune. 80 beats a minute.
+    const MARCH_ROOTS = [38, 41, 43, 45];                      // D F G A, the bass for each bar of the loop
+    const MARCH_TUNES = [
+      [[0, 62, 1.5], [1.5, 65, 0.5], [2, 69, 2], [4, 67, 1.5], [5.5, 65, 0.5], [6, 62, 2]],
+      [[0, 65, 1.5], [1.5, 67, 0.5], [2, 70, 2], [4, 69, 1.5], [5.5, 67, 0.5], [6, 65, 2]],
+      [[0, 67, 1.5], [1.5, 70, 0.5], [2, 74, 2], [4, 72, 1.5], [5.5, 70, 0.5], [6, 67, 2]],
+      [[0, 69, 1], [1, 72, 1], [2, 69, 1], [3, 67, 1], [4, 65, 2], [6, 69, 1.5]],
+    ];
+    function scheduleMarch(t0, n) {
+      const beat = 0.75, k = n % 4;
+      for (let b = 0; b < 8; b++) {
+        if (b % 2 === 0) mdrum(t0 + b * beat, 'kick', b % 4 === 0 ? 0.2 : 0.12); else mdrum(t0 + b * beat, 'snare', 0.07);
+      }
+      mdrum(t0 + 7.5 * beat, 'snare', 0.05);
+      for (const b of [0, 2, 4, 6]) mnote({ f: hz(MARCH_ROOTS[k] + (b % 4 === 2 ? 7 : 0)), at: t0 + b * beat, dur: beat * 1.7, gain: 0.1, lp: 420, type: 'triangle' });
+      for (const [b, m, d] of MARCH_TUNES[k]) mnote({ f: hz(m), at: t0 + b * beat, dur: d * beat * 0.95, gain: 0.07, lp: 900, a: 0.06, wet: 0.5 });
+    }
+
+    // Adventures: soft plucked strings, a slow chord loop (C G Am F) with now and then a high bell note.
+    const STORY_CHORDS = [[48, 55, 60, 64], [43, 50, 55, 59], [45, 52, 57, 60], [41, 48, 53, 57]];
+    function scheduleStory(t0, n) {
+      const ch = STORY_CHORDS[n % 4], beat = 0.75, order = [0, 1, 2, 3, 2, 1, 2, 1];
+      for (let b = 0; b < 8; b++) mnote({ f: hz(ch[order[b]] + (order[b] > 1 ? 12 : 0)), at: t0 + b * beat, dur: 1.1, gain: b % 4 === 0 ? 0.11 : 0.08, lp: 1500, a: 0.008, wet: 0.5 });
+      mnote({ f: hz(ch[0] - 12), at: t0, dur: 3.2, gain: 0.09, lp: 300, a: 0.1, type: 'sine' });
+      if (n % 2) { const m = PENT[(Math.random() * PENT.length) | 0] - 12, t = t0 + 2 + Math.random() * 3; mnote({ f: hz(m), at: t, dur: 1.6, gain: 0.05, lp: 3000, a: 0.01, type: 'sine', wet: 0.8 }); }
+    }
 
     function reverb(seconds) {
       const len = Math.floor(ctx.sampleRate * seconds), buf = ctx.createBuffer(2, len, ctx.sampleRate);
@@ -111,20 +162,21 @@
       const cv = ctx.createConvolver(); cv.buffer = buf; return cv;
     }
 
-    function startMusic(level, horizon) { // horizon: how many seconds ahead to schedule (tests render a whole stretch at once)
+    function startMusic(level, horizon, style) { // horizon: how many seconds ahead to schedule (tests render a whole stretch at once)
       if (mus) return;
+      style = Object.prototype.hasOwnProperty.call(STYLE_LEN, style) ? style : 'space'; // never STYLE_LEN[name] on its own: 'constructor' is a key too
       const out = ctx.createGain(); out.gain.value = 0.0001; out.connect(dest);
-      out.gain.setTargetAtTime(level, ctx.currentTime, 2.5);   // fades in over a few seconds
+      out.gain.setTargetAtTime(level * STYLE_GAIN[style], ctx.currentTime, 2.5);   // fades in over a few seconds
       const dry = ctx.createGain(); dry.gain.value = 0.8; dry.connect(out);
       const rv = reverb(3.2), wet = ctx.createGain(); wet.gain.value = 0.9; rv.connect(wet); wet.connect(out);
       const send = ctx.createGain(); send.gain.value = 0.7; send.connect(rv);
       const echo = ctx.createDelay(2); echo.delayTime.value = 0.62;
       const fb = ctx.createGain(); fb.gain.value = 0.42; echo.connect(fb); fb.connect(echo);
       const eo = ctx.createGain(); eo.gain.value = 0.5; echo.connect(eo); eo.connect(send); eo.connect(dry);
-      mus = { out, dry, send, echo, next: ctx.currentTime + 0.1, bar: 0, timer: 0, stars: ctx.currentTime + 4 };
+      mus = { out, dry, send, echo, style, len: STYLE_LEN[style], next: ctx.currentTime + 0.1, bar: 0, timer: 0, stars: ctx.currentTime + 4 };
       const pump = () => {
         if (!mus) return;
-        while (mus.next < ctx.currentTime + (horizon || 12)) { scheduleBar(mus.next, mus.bar++); mus.next += BAR; }
+        while (mus.next < ctx.currentTime + (horizon || 12)) { (mus.style === 'march' ? scheduleMarch : mus.style === 'storybook' ? scheduleStory : scheduleBar)(mus.next, mus.bar++); mus.next += mus.len; }
         mus.timer = setTimeout(pump, 2000);
       };
       pump();
@@ -168,8 +220,8 @@
 
     return {
       names: Object.keys(SOUNDS),
-      play(name, at) { const f = SOUNDS[name]; if (f) f(at === undefined ? ctx.currentTime + 0.005 : at); return !!f; },
-      startMusic, stopMusic, get musicOn() { return !!mus; }, setMusicLevel(l) { if (mus) mus.out.gain.setTargetAtTime(l, ctx.currentTime, 0.2); },
+      play(name, at, arg) { const f = SOUNDS[name]; if (f) f(at === undefined ? ctx.currentTime + 0.005 : at, arg); return !!f; },
+      startMusic, stopMusic, get musicOn() { return !!mus; }, setMusicLevel(l) { if (mus) mus.out.gain.setTargetAtTime(l * STYLE_GAIN[mus.style], ctx.currentTime, 0.2); },
     };
   }
 
@@ -178,6 +230,7 @@
     settings: { ...DEFAULTS },
     ctx: null, eng: null, master: null,
     last: {},       // sound name -> when it last played, so a burst of the same event is one sound
+    GAP: { adjust: 30 },    // the same sound again sooner than this many ms is dropped (90 for any other)
     MUSIC_LEVEL: 0.4,   // the ambience is meant to sit far under the effects
     SFX_GAIN: 2.2,
 
@@ -217,16 +270,16 @@
     applyMusic() {
       if (!this.eng || !this.ctx || this.ctx.state !== 'running') return;
       const want = this.settings.music && !root.document.hidden;
-      if (want && !this.eng.musicOn) this.eng.startMusic(this.MUSIC_LEVEL);
+      if (want && !this.eng.musicOn) this.eng.startMusic(this.MUSIC_LEVEL, undefined, this.musicStyle);
       else if (!want && this.eng.musicOn) this.eng.stopMusic();
     },
 
-    play(name) {
+    play(name, arg) {
       if (!this.settings.sfx || !this.eng || !this.ctx || this.ctx.state !== 'running') return false;
       const now = Date.now();
-      if (now - (this.last[name] || 0) < 90) return false;
+      if (now - (this.last[name] || 0) < (this.GAP[name] || 90)) return false;
       this.last[name] = now;
-      try { return this.eng.play(name); } catch (e) { return false; }
+      try { return this.eng.play(name, undefined, arg); } catch (e) { return false; }
     },
 
     set(patch) {
@@ -239,13 +292,16 @@
     },
 
     // wires a button to a small settings dialog (made here, styled by the page's own dialog styles)
-    mount(button) {
+    // opts.music: 'march' or 'storybook' picks the mood of the music for this game (the default is the quiet space one)
+    mount(button, opts) {
       this.button = button;
+      const mood = ({ march: ['Marching music', 'Slow drums and low horns.'], storybook: ['Storybook music', 'Soft plucked strings.'] })[opts && opts.music] || ['Quiet space music', 'A soft, slow drift.'];
+      this.musicStyle = opts && opts.music;
       const d = root.document.createElement('dialog');
       d.id = 'd-sound';
       d.innerHTML = '<h2>Sound</h2>' +
         '<label class="check"><input type="checkbox" id="snd-sfx"><span>Sound effects<span class="fine">When friends join or leave, turns play, and things happen.</span></span></label>' +
-        '<label class="check"><input type="checkbox" id="snd-music"><span>Quiet space music<span class="fine">Off until you turn it on. Stops when the page is hidden.</span></span></label>' +
+        '<label class="check"><input type="checkbox" id="snd-music"><span>' + mood[0] + '<span class="fine">' + mood[1] + ' Off until you turn it on. Stops when the page is hidden.</span></span></label>' +
         '<label>Volume <input type="range" id="snd-vol" min="0" max="100" step="5" aria-label="Volume"></label>' +
         '<div class="row"><button type="button" id="snd-test">Play a sound</button></div>' +
         '<form method="dialog"><button class="primary">Done</button></form>';

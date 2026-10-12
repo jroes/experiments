@@ -1,6 +1,6 @@
 main { flex: 1; display: flex; flex-direction: column; min-height: 0; align-items: center; }
 #stage { position: relative; width: 100%; max-width: 1100px; flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 8px; }
-#view { width: 100%; height: auto; max-height: 100%; aspect-ratio: 16 / 9; image-rendering: pixelated; border: 1px solid var(--line); background: #000; touch-action: none; cursor: crosshair; }
+#view { width: 100%; height: auto; max-height: 100%; image-rendering: pixelated; border: 1px solid var(--line); background: #000; touch-action: none; cursor: crosshair; }
 #banner {
   position: absolute; left: 50%; top: 40%; transform: translate(-50%, -50%);
   padding: 18px 28px; background: rgba(5, 7, 13, 0.94); border: 1px solid var(--accent); text-align: center; font-size: 18px; max-width: 90%;
@@ -34,3 +34,14 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; align-item
   .knob button { min-width: 44px; min-height: 44px; }
   #sel-weapon { max-width: 11em; }
 }
+
+#net { margin-bottom: 6px; color: var(--dim); font-size: 13px; }
+#net button { padding: 0 8px; margin-left: 4px; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; }
+.dot.on { background: var(--accent); }
+.dot.off { background: #3a4660; }
+#toast { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); padding: 8px 14px; background: rgba(5, 7, 13, 0.94); border: 1px solid var(--line); border-radius: 4px; max-width: 90%; }
+.invite { margin: 12px 0; }
+.invite input { width: 100%; margin: 4px 0 6px; font-size: 13px; }
+.invite .row { margin: 0; justify-content: flex-start; }
+#new-msg:empty { display: none; }

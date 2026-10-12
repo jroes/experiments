@@ -16,7 +16,7 @@
       set(k, v) { try { root.localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* ignore */ } },
       del(k) { try { root.localStorage.removeItem(k); } catch (e) { /* ignore */ } },
     };
-    Sound.load().mount($('b-sound'));
+    Sound.load().mount($('b-sound'), { music: 'storybook' });
 
     const canvas = $('pic'), ctx = canvas.getContext('2d');
     ctx.imageSmoothingEnabled = false;

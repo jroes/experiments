@@ -18,7 +18,7 @@ key/value store. Live at https://jroes.github.io/experiments/. Written for whoev
 | --- | --- |
 | `sectordominion/` | Space-empire game. `game.js` (rules, AI, no DOM), `online.js` (play with friends), `ui.js`, `index.html`, `style.css` |
 | `warptraders/` | Space trading game. Challenge seeds, plus a live race over WebRTC (`shared/p2p.js`, `lobby.js`) |
-| `tankwars/` | Artillery game. `game.js` (rules, AI, no DOM), `ui.js`, `index.html`, `style.css`. Single device, no server |
+| `tankwars/` | Artillery game. `game.js` (rules, AI, no DOM), `online.js` (play with friends, lockstep through the `/kv` store), `ui.js`, `index.html`, `style.css` |
 | `hollowmere/`, `gullrock/` | Two adventures. Each is `game.js` (plain data: rooms, items, handlers) plus a page; the engine is in `shared/` |
 | `shared/` | `store.js` (KV client), `config.js` (`KV_URL`), `qrcode.js` (vendored, MIT), p2p and lobby code. `adventure.js` (engine, no DOM), `adventure-art.js` (EGA pixel helpers), `adventure-ui.js`, `arcade.css` (look shared by Tank Wars and the adventures) |
 | `j/` | Invite landing page: OpenGraph tags for link previews, then hands `#<code>` to the game |
@@ -75,10 +75,17 @@ is a convention, not a server rule. Per-game write keys would be the next step i
 
 ## Tank Wars and the adventures
 
-**Tank Wars** is one device, no server. `game.js` keeps hills as one integer height per column (no overhangs: a hole lowers the column, so dirt always "falls"), wind, and one `flight()` that walks a shell
+**Tank Wars** keeps hills as one integer height per column (no overhangs: a hole lowers the column, so dirt always "falls"), wind, and one `flight()` that walks a shell
 step by step. The UI replays the path the rules returned, so animation and result cannot disagree. The computer players search every angle and power on the *real* `flight()` and then add error by level, so they
 cannot drift from the rules. It uses its own series for sin/cos (`sinD`), because `Math.sin` can differ in the last bit between engines; `tests/portability.test.js` bans it there.
 Weapon and item names come from the player's saved game too: look them up with `has()`, never `WEAPONS[name]` (`'constructor'` is a key).
+Every round picks one of five kinds of land, puts tanks anywhere (not closer than a gap), and gives each tank a random starting aim and a random first shooter, so a memorised angle and power stops working. Maps are 320, 480 or 640 wide (`s.w`);
+a shell's speed grows with the width (`s.speed`) so a full-power shot can always cross. Games saved before widths existed have no `w` and load as 320.
+
+**Tank Wars online** (`tankwars/online.js`) is lockstep, like Sector Dominion: each browser holds the whole game. `meta` (create-only) has the seed, width, rounds and seats. `m-<n>-<seat>` (create-only) is shot number `n`, carrying angle, power, weapon and a hash;
+`b-<round>-<seat>` is a seat's shopping; `p-<seat>` is presence. Computer seats need no entries (every copy works out their shots the same way, from the seeded state). The hash is taken *after* the shooter's aim is set, because a person's aim lives in the game state
+(and changing it must never touch the random numbers: aim on a clone). A friend gone quiet can be replaced for one turn by `{ ai: 1 }`, which any player may post. A refresh rebuilds the game by replaying from the store (`sync({ skipRoundOver: true })`), reading shots in batches.
+Seats are 1-based in keys and invites and 0-based in the game. If a change would make an old game replay differently, bump `RULES` in `online.js`. Invites are `.../tankwars/#<room><seat digit>`; there is no link preview page for them.
 
 **Adventure engine** (`shared/adventure.js`). A game is data: `items`, `rooms` (each with `back()` that draws, `exits`, `blocks` the hero cannot walk on, `objects`) and handlers keyed by canonical verb
 (`verbs: { take, open, use: { rope: fn }, give: { coin: fn } }`). For two-thing commands the handler lives on the thing acted upon, keyed by what is used on it. The parser maps many words to one verb (see `VERBS`).
@@ -111,7 +118,7 @@ Run the store-backed suites against the real binary too. Raise the limits or the
 export PORT=8135 WORLD_FILE=/tmp/w.json KV_DIR=/tmp/kv KV_IP_REQ_PER_MIN=1000000 KV_IP_WRITE_PER_MIN=1000000 \
   KV_NS_REQ_PER_MIN=1000000 KV_NS_WRITE_PER_MIN=1000000 KV_IP_NEW_NS_PER_HOUR=1000000 KV_NEW_NS_PER_DAY=1000000 KV_NS_COUNT=100000
 elf-punch/target/release/elf-punch &
-KV_URL=http://127.0.0.1:8135 node --test tests/lockstep.test.mjs tests/roster.test.mjs
+KV_URL=http://127.0.0.1:8135 node --test tests/lockstep.test.mjs tests/roster.test.mjs tests/tankwars-online.test.mjs
 ```
 
 **Verification approach.** TLA+ for protocol and roster questions (races, who may do what, derived views that can disagree). Property and fuzz tests on
@@ -164,6 +171,7 @@ Nothing should be lost on an update:
 leaves, a turn plays, a build, a launch, a world settled, a battle, winning or losing) and a very quiet generative space ambience that is **off until the player turns it on**.
 Settings (effects, music, volume) are saved on the device under one key shared by all the games. Rules for adding sounds:
 
+- Music has moods: `Sound.mount(button, { music: 'march' })` (Tank Wars) or `'storybook'` (the adventures); the default is the space ambience. Each mood has its own loop and its own level in `STYLE_GAIN`. The same sound within 90 ms plays once, except `adjust` (the click on angle and power) which allows 30 ms.
 - Sounds only listen to what the page already knows. They never touch game rules or state. Play them from UI code (`Sound.play('join')`), never from `game.js`.
 - Browsers only allow audio after a tap or key press, so the context is made on the first one. Nothing plays before that, and that is fine.
 - Opening or switching to a game must be silent: set the baseline first (`quietBaseline()` in Sector Dominion), then play sounds for what changes.
