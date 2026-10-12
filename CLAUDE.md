@@ -99,7 +99,7 @@ Seats are 1-based in keys and invites and 0-based in the game. If a change would
 - **HD-2D pictures** (`def.hd`, Star Sweeper only so far). The world stays 160 x 100; pictures are drawn at 480 x 300 by `shared/hd2d.js` (no DOM, runs under node) with
   shaded shapes in world units (`rect`, `rrect`, `ell`, `poly` with `cyl`/`vcyl` rounding, `shadow` for contact shadows, `text`, `stars`), more than 16 colours (ramps of eight
   shades per material), and real lights (`c.light`), worked out on a quarter-size map and banded. `shared/hd2d-post.js` is the camera: depth of field around the hero, bloom,
-  light shafts (`c.shaft`), dust, fog, tint, vignette. Each room picks a `look` (`hd2d`, `golden`, `mystery`, `diorama`, `neon`). Sky and space are `unlit`; things you can use get
+  light shafts (`c.shaft`), dust, fog, tint, vignette. Each room picks a `look` (`hd2d`, `golden`, `mystery`, `diorama`, `neon`); a game adds its own materials and looks with `HD2D.addMaterials` and `HD2D.addLook` instead of editing `hd2d.js`. Sky and space are `unlit`; things you can use get
   `outline`. The room background is cached for 0.1 s and redrawn only when the state changes, so moving the hero is cheap. **Effects** (top bar, or the help dialog on phones)
   turns the camera off for slow phones. `room.back`, objects' `draw` and `def.hd.hero` get the HD scene, not an `AdvArt.Pix`; the test draws every room with `HD.render`.
 - A room entered only by a handler (`g.goto`) and not by an edge, like landing the pod, can say so with `reachedBy`; the reachability test starts from those rooms too.

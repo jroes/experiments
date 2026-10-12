@@ -102,9 +102,16 @@
     neon: { grade: { shadow: [120, 60, 200], high: [255, 200, 230], amt: 0.45, sat: 1.15, contrast: 1.1 }, light: { ambient: 0.38, gain: 1.6, steps: 10 },
       post: { dof: { clear: 0.17, ramp: 0.34, bg: 0.45 }, bloom: 0.75, thr: 0.55, fog: { color: [170, 60, 200], a: 0.14 }, dust: { n: 60, color: [255, 200, 240] }, tint: { color: '#a040c0', a: 0.12 }, vignette: 0.6 } },
   };
-  for (const look of Object.values(LOOKS)) {
-    look.ramps = {};
-    for (const [k, v] of Object.entries(BASE)) look.ramps[k] = expand(v, k.endsWith('lamp') ? 2 : STEPS).map(c => grade(c, look.grade));
+  const rampsOf = (look, mats) => { for (const [k, v] of Object.entries(mats)) look.ramps[k] = expand(v, k.endsWith('lamp') ? 2 : STEPS).map(c => grade(c, look.grade)); };
+  for (const look of Object.values(LOOKS)) { look.ramps = {}; rampsOf(look, BASE); }
+  // A game can bring its own materials (name -> dark-to-light hex colours; a name ending in 'lamp' is a glow) and its own looks,
+  // without changing this file. Call these when the game's file loads, before anything is drawn.
+  function addMaterials(mats) {
+    for (const [k, v] of Object.entries(mats)) { if (!Array.isArray(v) || v.length < 2) throw new Error('material ' + k + ' needs two or more colours'); BASE[k] = v; }
+    for (const look of Object.values(LOOKS)) rampsOf(look, mats);
+  }
+  function addLook(name, spec) { // spec like the entries in LOOKS: { grade?, light: { ambient, gain, steps }, post: {...} }
+    const look = Object.assign({}, spec, { ramps: {} }); rampsOf(look, BASE); LOOKS[name] = look; return look;
   }
 
   // ---------- one picture being drawn ----------
@@ -302,7 +309,7 @@
     return { rgba, emit: S.emit, depth: S.depth, shafts: S.shafts, sun: S.sun, look, W, H, focus: (g.state.y - 9) / 100 };
   }
 
-  const api = { SCALE, W, H, DW, DH, LOOKS, BASE, Scene, render, hash, expand, grade, FONT };
+  const api = { SCALE, W, H, DW, DH, LOOKS, BASE, Scene, render, hash, expand, grade, FONT, addMaterials, addLook };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.HD2D = Object.assign(root.HD2D || {}, api);
 })(typeof window !== 'undefined' ? window : globalThis);
