@@ -152,7 +152,9 @@ test('display names: cleaned, short, shown to friends, and carried to a new devi
   assert.equal(again.names[3], 'b');
 });
 
-test('moving a solo game to another device: a copy goes through the store and arrives intact', async () => {
+const entry = (n, seat = 1) => ({ room: ('abcdefghijklmnop' + n).slice(-16).replace(/[^a-z0-9]/g, 'x'), seat });
+
+test('linking a device: name, games with friends and copies of solo games arrive intact', async () => {
   install();
   const rnd = driver(5);
   const state = G.newGame({ seed: 4242 });
@@ -164,26 +166,73 @@ test('moving a solo game to another device: a copy goes through the store and ar
     G.apply(state, 1, { op: 'ready', turn: state.turn });
     assert.ok(G.validState(state), 'turn ' + state.turn);
   }
-  const code = await Online.shareSolo(state, SERVER);
-  assert.match(code, /^t-[a-z0-9]{16}$/);
-  assert.equal(Online.parseTransfer('https://jroes.github.io/experiments/j/#' + code.toUpperCase()), code.slice(2));
-  const back = await Online.fetchSolo('#join=' + code, SERVER);
-  assert.equal(G.hashState(back), G.hashState(state), 'the same game');
+  const [host, a] = await setup(2);
+  const room = await Online.Link.create(SERVER);
+  assert.match(Online.Link.code(room), /^d-[a-z0-9]{16}$/);
+  await Online.Link.publish(SERVER, room, { name: 'Ada', online: [{ room: host.game.room, seat: 1 }, { room: a.game.room, seat: 2 }], solos: [state] });
+  const got = await Online.Link.open(SERVER, room);
+  assert.equal(got.name, 'Ada');
+  assert.deepEqual(got.online, [{ room: host.game.room, seat: 1 }, { room: a.game.room, seat: 2 }]);
+  assert.equal(got.solos.length, 1);
+  assert.equal(G.hashState(got.solos[0]), G.hashState(state), 'the same game, to the last digit');
   // and it plays on identically from there
-  const a = JSON.parse(JSON.stringify(state)), b = JSON.parse(JSON.stringify(back));
-  for (const s of [a, b]) { G.apply(s, 1, { op: 'research', turn: s.turn }); G.apply(s, 1, { op: 'ready', turn: s.turn }); }
-  assert.equal(G.hashState(a), G.hashState(b));
+  const x = JSON.parse(JSON.stringify(state)), y = JSON.parse(JSON.stringify(got.solos[0]));
+  for (const s2 of [x, y]) { G.apply(s2, 1, { op: 'research', turn: s2.turn }); G.apply(s2, 1, { op: 'ready', turn: s2.turn }); }
+  assert.equal(G.hashState(x), G.hashState(y));
 
-  await assert.rejects(() => Online.fetchSolo('t-zzzzzzzzzzzzzzzz', SERVER), /does not know this game/);
-  await assert.rejects(() => Online.fetchSolo('nonsense', SERVER), /does not look like a link/);
-  await assert.rejects(() => Online.shareSolo({ version: 2 }, SERVER), /cannot be moved/);
-  // junk in a snapshot is refused, not played
-  const room = 'c'.repeat(16);
-  await S.call(SERVER, 'PUT', '/kv/' + S.nsName(room) + '/snap', { body: { v: 1, game: JSON.stringify({ version: 2, turn: 1 }) } });
-  await assert.rejects(() => Online.fetchSolo('t-' + room, SERVER), /does not hold a game/);
-  const room2 = 'd'.repeat(16);
-  await S.call(SERVER, 'PUT', '/kv/' + S.nsName(room2) + '/snap', { body: { v: 1, game: { version: 2 } } });
-  await assert.rejects(() => Online.fetchSolo('t-' + room2, SERVER), /does not hold a game/, 'an object where text belongs');
+  assert.equal(Online.Link.parse('https://jroes.github.io/experiments/j/#' + Online.Link.code(room).toUpperCase()), room);
+  assert.equal(Online.Link.parse('#join=d-' + room), room);
+  for (const bad of ['', 'nonsense', 't-' + room, 'd-short', null, undefined]) assert.equal(Online.Link.parse(bad), null, String(bad));
+  await assert.rejects(() => Online.Link.open(SERVER, 'e'.repeat(16)), /does not go anywhere/);
+  await assert.rejects(() => Online.Link.open(SERVER, host.game.room), /does not go anywhere/, 'a game is not a link');
+});
+
+test('a link only ever hands back things that check out', async () => {
+  install();
+  const room = await Online.Link.create(SERVER);
+  const ns = '/kv/' + S.nsName(room) + '/';
+  const good = entry('g1', 2);
+  await S.call(SERVER, 'PUT', ns + 'games', { body: { v: 1, list: [good, good, { room: 'x', seat: 1 }, { room: 'a'.repeat(16), seat: 9 }, { room: '__proto__', seat: 1 }, null, 5, { room: 'a'.repeat(16) }, { room: 'b'.repeat(16), seat: 1, extra: 'ignored' }] } });
+  await S.call(SERVER, 'PUT', ns + 'profile', { body: { v: 1, name: '<script>alert(1)</script>', solos: 3 } });
+  await S.call(SERVER, 'PUT', ns + 'solo-0', { body: { v: 1, game: 'not json' } });
+  await S.call(SERVER, 'PUT', ns + 'solo-1', { body: { v: 1, game: { version: 2 } } });
+  await S.call(SERVER, 'PUT', ns + 'solo-2', { body: { v: 1, game: JSON.stringify({ version: 2, turn: 1 }) } });
+  const got = await Online.Link.open(SERVER, room);
+  assert.deepEqual(got.online, [good, { room: 'b'.repeat(16), seat: 1 }]);
+  assert.ok(!/[<>]/.test(got.name), got.name);
+  assert.deepEqual(got.solos, [], 'broken copies are dropped, not played');
+  await Online.Link.publish(SERVER, room, { name: '', online: [], solos: [{ version: 2 }, null] });
+  assert.deepEqual((await Online.Link.open(SERVER, room)).solos, []);
+  // a list can only grow so far
+  const many = Array.from({ length: 60 }, (_, i) => entry('m' + String(i).padStart(2, '0'), 1 + (i % 4)));
+  await Online.Link.add(SERVER, room, many);
+  assert.ok((await Online.Link.list(SERVER, room)).length <= 24);
+});
+
+test('two devices adding games at the same moment never lose one', async () => {
+  for (let round = 0; round < 12; round++) {
+    install();
+    const room = await Online.Link.create(SERVER);
+    const wanted = [];
+    const jobs = [];
+    for (let dev = 0; dev < 3; dev++) for (let k = 0; k < 2; k++) {
+      const e = entry('d' + dev + 'k' + k + 'r' + round, 1 + ((dev + k) % 4));
+      wanted.push(e);
+      jobs.push(Online.Link.add(SERVER, room, [e]));
+    }
+    await Promise.all(jobs);
+    const got = await Online.Link.list(SERVER, room);
+    assert.equal(got.length, wanted.length, 'round ' + round + ': ' + got.length);
+    for (const e of wanted) assert.ok(got.some(x => x.room === e.room && x.seat === e.seat), 'lost ' + JSON.stringify(e));
+  }
+});
+
+test('the games another device has that this one does not, minus ones removed on purpose', () => {
+  const list = [entry('a1'), entry('b2', 2), entry('c3', 3)];
+  const have = e => e.room === entry('a1').room && e.seat === 1;
+  assert.deepEqual(Online.Link.newEntries(list, have, new Set()), [entry('b2', 2), entry('c3', 3)]);
+  assert.deepEqual(Online.Link.newEntries(list, have, new Set([entry('b2', 2).room + 2])), [entry('c3', 3)]);
+  assert.deepEqual(Online.Link.newEntries('junk', have, null), []);
 });
 
 test('validState refuses games that are not something the rules could have made', () => {

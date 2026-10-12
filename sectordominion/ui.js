@@ -770,6 +770,10 @@
     sessions.set(id, session);
     ui.notes = [];
     startOnline(session);
+    // a game I start or join on purpose is mine again, and goes to my other devices
+    undismiss(session.game.room, session.seat);
+    const link = loadLink();
+    if (link) Online.Link.add(serverUrl(), link, [{ room: session.game.room, seat: session.seat }]).catch(() => { /* the next time the link is shown covers it */ });
   }
 
   // Joining. A link opens the game page with #join=<code>, and that joins straight away.
@@ -784,6 +788,8 @@
       const there = findOnline(session.game.room, session.seat);
       if (there) openGame(there); else addOnline(session);
       $('d-join').close(); $('d-online').close();
+      // Someone arriving by a link sees the game first. Only if the game did not already know their name do we ask, and then once.
+      await ensureName();
     } catch (err) { msg.textContent = err.message; close.textContent = 'Close'; }
   }
 
@@ -817,7 +823,7 @@
 
   function renderDevice() {
     $('p-device').innerHTML = '<h3>You</h3><p class="who dim">Playing as <b>' + esc(ui.name || 'no name yet') + '</b></p>' +
-      '<div class="btns"><button data-do="name">' + (ui.name ? 'Change name' : 'Set name') + '</button><button data-do="device">Play on another device</button></div>';
+      '<div class="btns"><button data-do="name">' + (ui.name ? 'Change name' : 'Set name') + '</button><button data-do="device">Link another device</button></div>';
   }
   $('p-device').addEventListener('click', e => {
     const b = e.target.closest('button[data-do]');
@@ -825,23 +831,36 @@
     if (b.dataset.do === 'name') askName(); else openDevice();
   });
 
+  // ----- the link between this device and others -----
+  const LINK_KEY = 'sectordominion-link-v1', DISMISSED_KEY = 'sectordominion-dismissed-v1', IMPORTED_KEY = 'sectordominion-imported-v1';
+  const readJson = (k, dflt) => { try { const v = JSON.parse(localStorage.getItem(k)); return v === null || v === undefined ? dflt : v; } catch (e) { return dflt; } };
+  const writeJson = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* storage blocked */ } };
+  const loadLink = () => { const v = readJson(LINK_KEY, null); return v && typeof v.room === 'string' && /^[a-z0-9]{16}$/.test(v.room) ? v.room : null; };
+  const dismissed = () => { const v = readJson(DISMISSED_KEY, []); return new Set(Array.isArray(v) ? v.filter(x => typeof x === 'string').slice(-200) : []); };
+  const dismiss = (room, seat) => { const d = dismissed(); d.add(room + seat); writeJson(DISMISSED_KEY, [...d]); };
+  const undismiss = (room, seat) => { const d = dismissed(); if (d.delete(room + seat)) writeJson(DISMISSED_KEY, [...d]); };
+
   async function openDevice() {
     const lead = $('device-lead'), note = $('device-note'), msg = $('device-msg'), link = $('device-link'), qr = $('device-qr');
     msg.textContent = ''; qr.innerHTML = ''; link.value = ''; note.textContent = '';
     $('device-btns').hidden = true;
+    lead.textContent = 'Getting your games ready...';
     $('d-device').showModal();
-    let code;
-    if (ui.online) {
-      code = Online.inviteCode(ui.online.game.room, ui.online.seat);
-      lead.textContent = 'Scan this with your phone camera, or send yourself the link. Opening it on another device puts you back in this game, in your seat.';
-      note.textContent = 'The link is for your seat only, so keep it private. Both devices can stay open: orders from either one count, and the first to send wins the turn.';
-    } else {
-      lead.textContent = 'Making a private link to a copy of this game...';
-      try { code = await Online.shareSolo(ui.state, serverUrl()); } catch (err) { lead.textContent = ''; msg.textContent = err.message; return; }
-      lead.textContent = 'Scan this with your phone camera, or send yourself the link. Opening it on another device carries this game over, as it is right now.';
-      note.textContent = 'This is a copy. From now on the game here and the one on the other device go on separately, so pick one to keep playing. The link works for 60 days, and anyone who has it can open your game, so keep it private.';
-    }
-    const url = new URL('../j/', location.href).href + '#' + code;
+    let room;
+    try {
+      room = loadLink();
+      if (!room) { room = await Online.Link.create(serverUrl()); writeJson(LINK_KEY, { room }); }
+      save(); // so what is stored is what is on screen
+      const online = [], solos = [];
+      for (const g of lib.list) {
+        if (g.kind === 'online') { const s = sessionFor(g.id); if (s) online.push({ room: s.game.room, seat: s.seat }); }
+        else { const st = lib.read(g.id); if (st && st.version === 2) solos.push(st); }
+      }
+      await Online.Link.publish(serverUrl(), room, { name: ui.name, online, solos });
+    } catch (err) { lead.textContent = ''; msg.textContent = err.message; return; }
+    lead.textContent = 'Scan this with the camera on your other device, or send yourself the link. That device then has your games, under your name.';
+    note.textContent = 'Games with friends show up on both devices, including ones you start or join later. Solo games are copied once, and after that the two copies go on separately. Anyone who has this link gets your games, so keep it private.';
+    const url = new URL('../j/', location.href).href + '#' + Online.Link.code(room);
     link.value = url;
     link.onfocus = () => link.select();
     try {
@@ -849,31 +868,90 @@
       qr.innerHTML = q.createSvgTag({ cellSize: 4, margin: 8, scalable: true });
     } catch (err) { qr.innerHTML = ''; }
     $('device-btns').hidden = false;
-    addCopyShare($('device-btns'), $('b-device-copy'), link, url, 'Pick up my Sector Dominion game here:');
+    addCopyShare($('device-btns'), $('b-device-copy'), link, url, 'Pick up my Sector Dominion games here:');
   }
 
-  // A link made by "Play on another device" for a solo game: fetch the copy and make it this device's game.
-  async function receiveSolo(invite) {
+  // Adds a game with friends without switching to it (used when another device has it and this one does not).
+  function addOnlineQuiet(session) {
+    if (lib.full) return false;
+    if (ui.name) session.setName(ui.name);
+    const id = lib.add('online', false);
+    sessions.set(id, session);
+    lib.write(id, session);
+    return true;
+  }
+
+  // Joins every game in the shared list that this device lacks and has not removed on purpose. Returns { added, failed }.
+  let linking = false;
+  async function pullLinked(entries, progress) {
+    const todo = Online.Link.newEntries(entries, e => !!findOnline(e.room, e.seat), dismissed());
+    let added = 0, failed = 0;
+    for (const e of todo) {
+      if (progress) progress(added + failed + 1, todo.length);
+      try {
+        const session = await Online.Session.join(Online.inviteCode(e.room, e.seat), serverUrl());
+        if (addOnlineQuiet(session)) added++; else failed++;
+      } catch (err) { failed++; }
+    }
+    return { added, failed };
+  }
+
+  async function syncLinked() {
+    const room = loadLink();
+    if (!room || linking || document.hidden) return;
+    linking = true;
+    try {
+      const r = await pullLinked(await Online.Link.list(serverUrl(), room));
+      if (r.added) { renderGamesBadge(); if ($('d-games').open) renderGames(); }
+    } catch (err) { /* offline or busy: try again next time */ } finally { linking = false; }
+  }
+  setInterval(syncLinked, 60000);
+  setTimeout(syncLinked, 3000);
+
+  // Opening a link from another device: take on its name, its games with friends, and copies of its solo games.
+  async function receiveLink(invite) {
     const msg = $('join-msg'), go = $('b-join-go'), close = $('b-join-close');
-    msg.textContent = 'Opening your game...'; go.hidden = true; close.textContent = 'Cancel';
+    msg.textContent = 'Linking this device...'; go.hidden = true; close.textContent = 'Cancel';
     if (!$('d-join').open) $('d-join').showModal();
-    let state;
-    try { state = await Online.fetchSolo(invite, serverUrl()); } catch (err) { msg.textContent = err.message; close.textContent = 'Close'; return; }
-    // a solo game on this device that has barely started is not worth keeping next to this one
-    if (!ui.online && ui.state.turn <= 1 && lib.kind(lib.active) === 'solo') lib.remove(lib.active);
-    else if (lib.full) { msg.textContent = 'You are in ' + Games.MAX_GAMES + ' games. Delete one first.'; close.textContent = 'Close'; return; }
-    else save();
-    lib.add('solo');
-    ui.online = null; ui.notes = []; document.title = baseTitle;
-    setState(state); save();
-    $('d-join').close();
+    const room = Online.Link.parse(invite);
+    linking = true;
+    try {
+      const data = await Online.Link.open(serverUrl(), room);
+      writeJson(LINK_KEY, { room });
+      if (data.name && !ui.name) { ui.name = data.name; try { localStorage.setItem(NAME_KEY, ui.name); } catch (e) { /* ignore */ } }
+      if (ui.state) save();
+      const fresh = lib.active && lib.kind(lib.active) === 'solo' && ui.state && ui.state.turn <= 1 ? lib.active : null; // a game nobody has played yet
+      const r = await pullLinked(data.online, (i, n) => { msg.textContent = 'Joining game ' + i + ' of ' + n + '...'; });
+      const imported = new Set(readJson(IMPORTED_KEY, []));
+      let solos = 0;
+      data.solos.forEach((st, i) => {
+        const key = room + ':' + i + ':' + G.hashState(st);
+        if (imported.has(key) || lib.full) return;
+        const id = lib.add('solo', false);
+        lib.write(id, st); imported.add(key); solos++;
+      });
+      writeJson(IMPORTED_KEY, [...imported].slice(-100));
+      if (fresh && r.added + solos > 0) { // the empty starter game makes way for the real ones
+        ui.state = null; ui.online = null;
+        lib.remove(fresh);
+        if (!openFirst()) newSolo();
+      }
+      const parts = [];
+      if (r.added) parts.push(r.added + ' game' + (r.added > 1 ? 's' : '') + ' with friends');
+      if (solos) parts.push(solos + ' solo game' + (solos > 1 ? 's' : ''));
+      msg.textContent = (parts.length ? 'Linked. Added ' + parts.join(' and ') + '.' : 'Linked. You already have everything from your other device.') +
+        (r.failed ? ' ' + r.failed + ' could not be added (it may have expired, or you are in too many games).' : '') + ' Games has the full list.';
+      close.textContent = 'Done';
+    } catch (err) { msg.textContent = err.message; close.textContent = 'Close'; } finally { linking = false; }
+    renderGamesBadge();
+    await ensureName();
   }
 
   function handleHash() {
     const m = /^#join=(.+)$/.exec(location.hash);
     if (!m) return;
     history.replaceState(null, '', location.pathname + location.search); // the code is not needed in the address bar any more
-    if (Online.parseTransfer(m[1])) { receiveSolo(m[1]); return; }
+    if (Online.Link.parse(m[1])) { receiveLink(m[1]); return; }
     const inv = Online.parseInvite(m[1]);
     const there = inv && findOnline(inv.room, inv.seat);
     if (there) { openGame(there); return; } // already in this game
@@ -917,6 +995,8 @@
     const online = lib.kind(id) === 'online';
     if (!confirm(online ? 'Remove this game from this device? It stays on the server, and you can come back with your invite link.' : 'Delete this game? This cannot be undone.')) return;
     const wasOpen = id === lib.active;
+    const gone = online ? sessionFor(id) : null;
+    if (gone) dismiss(gone.game.room, gone.seat); // removed on purpose: another linked device's list must not bring it back
     sessions.delete(id);
     lib.remove(id);
     if (wasOpen) {
@@ -1003,8 +1083,9 @@
   setTimeout(() => { for (const g of lib.list) if (g.kind === 'online') sessionFor(g.id); renderGamesBadge(); }, 0);
   // first visit: ask for a name once, then show the intro. A link is handled after that.
   (async () => {
-    await ensureName();
-    if (firstRun && !/^#join=/.test(location.hash)) {
+    const viaLink = /^#join=/.test(location.hash);
+    if (!viaLink) await ensureName(); // a link goes straight to the game: the name is asked after, and only if still needed
+    if (firstRun && !viaLink) {
       try {
         if (!localStorage.getItem('sectordominion-help-seen')) { localStorage.setItem('sectordominion-help-seen', '1'); $('d-help').showModal(); }
       } catch (e) { /* storage blocked: skip the intro */ }

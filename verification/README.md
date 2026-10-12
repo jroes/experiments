@@ -65,7 +65,7 @@ player's browser sees the whole game state, so this is built for friends, not fo
 - A player cannot touch another empire's worlds, credits or tech.
 - Trading has no free money at a single port.
 - Regression test for the stale-ready bug above.
-- A game moved to another device is checked by `validState` and a table of broken copies (`tests/roster.test.mjs`). Running those tests against the real server found that it can change the last digit of a stored decimal, so the copy is stored as text.
+- A solo game copied to another device is checked by `validState` and a table of broken copies, and the shared list of linked games is hammered by concurrent adds (`tests/roster.test.mjs`, also run against the real server). Running those tests against the real server found that it can change the last digit of a stored decimal, so the copy is stored as text.
 
 Tests also found a hole in Sector Dominion that had already shipped: a `build` order with the ship type `"constructor"` made credits `NaN`, after which everything was free. Keys that come from players now go through own-property checks, and a regression test covers them. They found four real bugs in Warp Traders while this was being written: a `NaN` quantity corrupted cargo, `buyFighters(NaN)` did the same, a
 buy-then-sell round trip at one port made a small profit that grew with the square of the amount, and fleeing a pirate on the last turn made

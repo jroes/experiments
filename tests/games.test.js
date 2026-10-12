@@ -19,6 +19,17 @@ test('a fresh device has no games, and added games are kept in order, newest ope
   assert.deepEqual(again.read(a), { turn: 3 });
 });
 
+test('a game added in the background does not take over the screen', () => {
+  const lib = new Library(memory()).load();
+  const a = lib.add('solo');
+  const b = lib.add('online', false);
+  assert.equal(lib.active, a);
+  assert.deepEqual(lib.list.map(g => g.id), [a, b]);
+  const empty = new Library(memory()).load();
+  const c = empty.add('solo', false);
+  assert.equal(empty.active, c, 'with nothing open, the first game opens');
+});
+
 test('removing a game forgets its data, and the open game falls back to the newest left', () => {
   const st = memory(), lib = new Library(st).load();
   const [a, b, c] = ['solo', 'online', 'solo'].map(k => { const id = lib.add(k); lib.write(id, { k }); return id; });
