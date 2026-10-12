@@ -1,8 +1,6 @@
 (function () {
   'use strict';
   const G = window.Game;
-  const SAVE_KEY = 'sectordominion-save-v1';
-  const ONLINE_KEY = 'sectordominion-online-v1';
   const COLORS = ['#6b7a94', '#5ee0b0', '#ffb454', '#ff6b6b', '#b48cff'];
 
   const $ = id => document.getElementById(id);
@@ -20,37 +18,67 @@
     online: null,   // the game with friends, through the shared store (online.js)
     onlineMsg: '',
     onlineBusy: false,
+    name: null,     // what this player likes to be called (saved on this device)
     userView: false, // the player has panned or zoomed, so a resize should not refit the map
     notes: [],      // who came and went, and turns played: shown in the log, not saved
+  };
+
+  // what each ship is for, in plain words (the numbers next to them come from the rules in game.js)
+  const SHIP_ROLE = {
+    scout: 'Fast and cheap, but weak. Sends back a view of far-off worlds. Use it to explore.',
+    frigate: 'Light warship. Your everyday fighter early on.',
+    cruiser: 'Heavy warship. Slower and pricey, but takes much more damage.',
+    transport: 'Has no guns. Settles an empty world, or lands 5 troops to take a defended one. Used up when it lands.',
+  };
+  const SHIP_SHORT = {
+    scout: 'explorer, weak',
+    frigate: 'light warship',
+    cruiser: 'heavy warship, slow',
+    transport: 'settles worlds, 5 troops',
   };
 
   const esc = x => String(x).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const meEmp = () => G.empire(ui.state, ui.me);
   const mem = () => ui.state.known[ui.me] || {};
 
+  function fillHelp() {
+    $('help-ships').innerHTML = '<table class="shiptable"><tr><th>Ship</th><th>Cost</th><th>Attack</th><th>Hull</th><th>Speed</th></tr>' +
+      G.SHIP_ORDER.map(t => { const x = G.SHIPS[t]; return '<tr><td><b>' + x.name + '</b></td><td>' + x.cost + '</td><td>' + x.atk + '</td><td>' + x.hp + '</td><td>' + x.speed + '</td></tr><tr><td colspan="5" class="dim">' + SHIP_ROLE[t] + '</td></tr>'; }).join('') + '</table>';
+  }
+  fillHelp();
+  function openHelp(id) {
+    const d = $('d-help');
+    if (id) { d.querySelectorAll('details').forEach(x => { x.open = x.id === id; }); }
+    d.showModal();
+    if (id) { const el = $(id); if (el) el.scrollIntoView({ block: 'start' }); }
+  }
+
   // ---------- save / load ----------
 
+  // Every game on this device (solo and with friends) lives in the library; see games.js.
+  const memoryStore = (() => { const m = new Map(); return { getItem: k => (m.has(k) ? m.get(k) : null), setItem: (k, v) => { m.set(k, String(v)); }, removeItem: k => { m.delete(k); } }; })();
+  const lib = new Games.Library((() => { try { localStorage.getItem('x'); return localStorage; } catch (e) { return memoryStore; } })()).load();
+  const sessions = new Map(); // game id -> its Session, for the games with friends this page has loaded
+
   function save() {
-    try {
-      if (ui.online) localStorage.setItem(ONLINE_KEY, JSON.stringify(ui.online));
-      else localStorage.setItem(SAVE_KEY, JSON.stringify(ui.state));
-    } catch (e) { /* storage blocked, fine */ }
+    if (lib.active) lib.write(lib.active, ui.online ? ui.online : ui.state);
   }
-  function loadOnline() {
-    try { return Online.Session.fromSaved(JSON.parse(localStorage.getItem(ONLINE_KEY))); } catch (e) { return null; }
+  const idOf = session => { for (const [id, s] of sessions) if (s === session) return id; return null; };
+  function persist(session) { const id = idOf(session); if (id) lib.write(id, session); }
+
+  // the Session for a game with friends, loaded from storage the first time it is needed
+  function sessionFor(id) {
+    if (sessions.has(id)) return sessions.get(id);
+    if (lib.kind(id) !== 'online') return null;
+    const s = Online.Session.fromSaved(lib.read(id));
+    if (s) { if (ui.name) s.setName(ui.name); sessions.set(id, s); }
+    return s;
   }
-  function clearOnline() { try { localStorage.removeItem(ONLINE_KEY); } catch (e) { /* ignore */ } }
-  function load() {
-    try {
-      const raw = localStorage.getItem(SAVE_KEY);
-      if (!raw) return null;
-      const s = JSON.parse(raw);
-      return s && s.version === 2 ? s : null;
-    } catch (e) { return null; }
-  }
-  function clearSave() {
-    try { localStorage.removeItem(SAVE_KEY); } catch (e) { /* ignore */ }
-  }
+
+  const NAME_KEY = 'sectordominion-name-v1', ASKED_KEY = 'sectordominion-name-asked';
+  function loadName() { try { return Online.cleanName(localStorage.getItem(NAME_KEY)); } catch (e) { return null; } }
+  ui.name = loadName();
+  const serverUrl = () => new URLSearchParams(location.search).get('server') || window.KV_URL || '';
 
   // ---------- state ----------
 
@@ -69,7 +97,7 @@
 
   function refresh() {
     ui.vis = G.visibleWorlds(ui.state, ui.me);
-    renderTop(); renderOnline(); renderWorld(); renderEmpire(); renderLog(); draw();
+    renderTop(); renderOnline(); renderDevice(); renderGamesBadge(); renderWorld(); renderEmpire(); renderLog(); draw();
     const s = ui.state, b = $('banner'), alive = meEmp().alive;
     if (s.over) {
       b.hidden = false;
@@ -78,6 +106,9 @@
           '<b class="bad">Defeat.</b><br>Your empire is gone.') +
         (ui.online ? '' : '<br><button class="primary" id="b-again">New game</button>');
       if (!ui.online) $('b-again').onclick = openNew;
+    } else if (ui.online && alive && ui.online.seatState(ui.me) !== 'human') {
+      b.hidden = false;
+      b.innerHTML = '<b class="bad">The AI runs your empire now.</b><br><span class="dim">The host handed it over. You are watching.</span>';
     } else if (!alive) {
       b.hidden = false;
       b.innerHTML = '<b class="bad">Your empire is gone.</b><br><span class="dim">Spectating until the game ends.</span>';
@@ -120,7 +151,7 @@
     end.disabled = !!s.over || !e.alive;
     if (ui.online) {
       end.textContent = ui.online.sent ? 'Orders sent' : 'Send orders';
-      end.disabled = end.disabled || ui.online.sent || ui.onlineBusy;
+      end.disabled = end.disabled || ui.online.sent || ui.onlineBusy || ui.online.seatState(ui.me) !== 'human';
     } else end.textContent = 'End turn';
   }
 
@@ -130,6 +161,23 @@
   }
 
   function ownerLabel(id) { return id ? esc(ui.state.empires[id - 1].name) + (id === ui.me ? ' (you)' : '') : 'Unclaimed'; }
+
+  // one short suggestion for what to do next, for the first few turns. It only reads the game, so it cannot change anything.
+  function tipHtml() {
+    const s = ui.state, e = meEmp();
+    if (s.over || !e.alive || s.turn > 12) return '';
+    const mine = s.worlds.filter(w => w.owner === ui.me);
+    const inGarrison = t => mine.reduce((n, w) => n + w.garrison[t], 0);
+    const queued = t => mine.reduce((n, w) => n + w.queue.filter(x => x === t).length, 0);
+    const flying = s.fleets.some(f => f.owner === ui.me);
+    let msg = '';
+    if (ui.targeting) msg = 'Now ' + (coarse ? 'tap' : 'click') + ' the world on the map you want to send them to.';
+    else if (!inGarrison('transport') && !queued('transport') && !flying && mine.length <= 1) msg = 'Build a Transport (and a Scout) on your world, then end your turn. A Transport can settle an empty world.';
+    else if (!inGarrison('transport') && queued('transport')) msg = 'Your ship is being built. End your turn and it will be ready.';
+    else if (inGarrison('transport') && !flying) msg = 'Select your world, pick the Transport under Dispatch fleet, press Choose destination, then pick an empty world (no red ring).';
+    else if (e.credits >= G.researchCost(s, ui.me) && e.tech < G.MAX_TECH && s.turn > 3) msg = 'You can afford Research. It makes your ships stronger and your income higher.';
+    return msg ? '<div class="tip"><b>Tip:</b> ' + esc(msg) + '</div>' : '';
+  }
 
   function renderWorld() {
     const el = $('p-world'), s = ui.state;
@@ -154,14 +202,14 @@
       const e = meEmp();
       h += '<p>Garrison: ' + shipLine(w.garrison) + '</p>';
       if (w.queue.length) h += '<p class="dim">Building: ' + shipLine(w.queue.reduce((o, t) => (o[t] = (o[t] || 0) + 1, o), {})) + '</p>';
-      h += '<h3>Build</h3><div class="btns">';
+      h += '<h3>Build <button class="linkish" data-do="help-ships">what do these do?</button></h3>';
       for (const t of G.SHIP_ORDER) {
         const sh = G.SHIPS[t];
-        h += '<button data-act="build" data-t="' + t + '" ' + (e.credits < sh.cost || frozen ? 'disabled' : '') +
-          ' title="atk ' + sh.atk + ' hp ' + sh.hp + ' speed ' + sh.speed + '">' + sh.name + ' ' + sh.cost + '</button>';
+        h += '<div class="ship-row"><button data-act="build" data-t="' + t + '" ' + (e.credits < sh.cost || frozen ? 'disabled' : '') +
+          ' title="' + esc(SHIP_ROLE[t]) + '">' + sh.name + ' ' + sh.cost + '</button><span class="why">' + SHIP_SHORT[t] + '<br>atk ' + sh.atk + ', hull ' + sh.hp + ', speed ' + sh.speed + '</span></div>';
       }
-      h += '</div><div class="btns"><button data-act="fortify" ' + (w.fort >= 5 || e.credits < G.fortifyCost(w) || frozen ? 'disabled' : '') + '>' +
-        (w.fort >= 5 ? 'Fully fortified' : 'Fortify ' + G.fortifyCost(w)) + '</button></div>';
+      h += '<div class="btns"><button data-act="fortify" ' + (w.fort >= 5 || e.credits < G.fortifyCost(w) || frozen ? 'disabled' : '') + '>' +
+        (w.fort >= 5 ? 'Fully fortified' : 'Fortify ' + G.fortifyCost(w)) + '</button><span class="why dim">permanent defense</span></div>';
 
       if (G.shipCount(w.garrison)) {
         h += '<h3>Dispatch fleet</h3>';
@@ -182,7 +230,7 @@
       const near = s.worlds.filter(x => x.owner === ui.me).sort((a, b) => G.dist(a, w) - G.dist(b, w))[0];
       if (near) h += '<p class="dim">' + Math.round(G.dist(near, w)) + ' units from ' + esc(near.name) + '.</p>';
     }
-    el.innerHTML = h;
+    el.innerHTML = tipHtml() + h;
   }
 
   function renderEmpire() {
@@ -196,7 +244,7 @@
       if (r.id === ui.me) continue;
       const tag = r.human ? 'player' : 'AI';
       const state = !r.alive ? 'eliminated' : (r.human && s.ready[r.id] ? 'ready' : 'active');
-      h += '<div style="color:' + COLORS[r.id] + '">' + esc(r.name.split(' ')[0]) + '</div><div>' + tag + ', ' + state +
+      h += '<div style="color:' + COLORS[r.id] + '">' + esc(ui.online ? nameOf(r.id) : r.name.split(' ')[0]) + '</div><div>' + tag + ', ' + state +
         '</div>';
     }
     h += '</div>';
@@ -407,6 +455,8 @@
   // ---------- sidebar actions ----------
 
   $('side').addEventListener('click', e => {
+    const hb = e.target.closest('button[data-do="help-ships"]');
+    if (hb) { openHelp('h-ships'); return; }
     const b = e.target.closest('button[data-act]');
     if (!b || ui.state.over) return;
     const s = ui.state, a = b.dataset.act, t = b.dataset.t, w = s.worlds[ui.selected];
@@ -437,20 +487,28 @@
   }
 
   function openNew() {
-    if (ui.online) { toast('You are in a game with friends. Use Leave game in the Game with friends panel first.'); return; }
+    if (lib.full) { toast('You are in ' + Games.MAX_GAMES + ' games. Delete one first.'); return; }
     $('d-new').showModal();
   }
 
+  // starts a solo game next to the ones already there
+  function newSolo(opts) {
+    if (ui.state) save();
+    lib.add('solo');
+    ui.online = null; ui.notes = []; document.title = baseTitle;
+    setState(G.newGame(opts || {}));
+    save();
+  }
+
   $('b-end').onclick = endTurn;
-  $('b-help').onclick = () => $('d-help').showModal();
-  $('b-new').onclick = openNew;
+  $('b-help').onclick = () => openHelp();
+  $('b-new').onclick = openGames;
   $('f-new').addEventListener('submit', e => {
     if (e.submitter && e.submitter.value !== 'ok') return;
     const fd = new FormData($('f-new'));
     const seedRaw = String(fd.get('seed') || '').trim();
     const seed = seedRaw && !isNaN(+seedRaw) ? +seedRaw : undefined;
-    const s = G.newGame({ difficulty: fd.get('difficulty'), worlds: +fd.get('worlds'), seed });
-    clearSave(); setState(s); save();
+    newSolo({ difficulty: fd.get('difficulty'), worlds: +fd.get('worlds'), seed });
   });
 
   window.addEventListener('keydown', e => {
@@ -464,7 +522,7 @@
 
   const baseTitle = document.title;
   const note = (text, kind) => { ui.notes.unshift({ turn: ui.state ? ui.state.turn : 0, text, kind: kind || 'info' }); if (ui.notes.length > 40) ui.notes.length = 40; };
-  const nameOf = seat => G.empire(ui.state, seat).name.split(' ')[0];
+  const nameOf = seat => (ui.online && ui.online.names[seat]) || G.empire(ui.state, seat).name.split(' ')[0];
 
   function adoptSession() {
     const turnChanged = ui.state && ui.online.working.turn !== ui.state.turn;
@@ -476,6 +534,9 @@
 
   function startOnline(session) {
     ui.online = session; ui.state = null; ui.selected = null; ui.notes = [];
+    // my name goes with my heartbeat. If I have none here but did on another device, take it from there.
+    if (ui.name) session.setName(ui.name);
+    else if (session.names[session.seat]) { ui.name = session.names[session.seat]; try { localStorage.setItem(NAME_KEY, ui.name); } catch (e) { /* ignore */ } }
     adoptSession();
     ui.targeting = false; canvas.classList.remove('targeting');
     fitView(); save(); refresh();
@@ -490,9 +551,10 @@
   async function syncOnline(quiet) {
     if (!ui.online || polling) return;
     polling = true;
-    const before = ui.online.base.turn;
+    const o = ui.online, before = o.base.turn;
     try {
-      const r = await ui.online.sync();
+      const r = await o.sync();
+      if (ui.online !== o) { persist(o); return; } // switched to another game while this was in flight
       adoptSession();
       if (r.advanced) {
         note('Everyone is in. Turn ' + before + ' was played. It is now turn ' + ui.online.base.turn + '.', 'good');
@@ -513,8 +575,9 @@
   async function sendOnline() {
     if (!ui.online || ui.online.sent) return;
     ui.onlineBusy = true; refresh();
-    const r = await ui.online.submit();
+    const o = ui.online, r = await o.submit();
     ui.onlineBusy = false;
+    if (ui.online !== o) { persist(o); return; }
     ui.onlineMsg = '';
     adoptSession();
     if (!r.ok) toast(r.msg);
@@ -538,8 +601,7 @@
     if (s.over) return '';
     const others = [];
     for (let seat = 1; seat <= o.game.humans; seat++) {
-      const e = G.empire(s, seat);
-      if (seat !== ui.me && e.human && e.alive) others.push(seat);
+      if (seat !== ui.me && o.seatState(seat) === 'human') others.push(seat);
     }
     if (!others.length) return 'Everyone else is the AI now, so a turn plays as soon as you send orders.';
     const away = others.filter(seat => !o.isOnline(seat));
@@ -561,22 +623,24 @@
     const o = ui.online, s = ui.state, g = o.game;
     let h = '<h3>Game with friends</h3>';
     if (o.desync) h += '<p class="bad">This copy of the game has drifted from someone else\'s. Try Rebuild. If it keeps happening, make sure everyone uses the same browser type.</p>';
+    if (o.seatState(ui.me) === 'ai' || o.seatState(ui.me) === 'ai-pending') h += '<p class="bad">The host handed your empire to the AI. You are watching.</p>';
     h += '<p class="dim">Seat ' + o.seat + ', turn ' + s.turn + '. ' + (o.sent ? 'Your orders are in.' : 'Give your orders, then Send orders.') + '</p>';
     const line = summary(o, s);
     if (line) h += '<p>' + line + '</p>';
     h += '<div class="kv">';
     for (let seat = 1; seat <= g.humans; seat++) {
-      const e = G.empire(s, seat), entry = o.entries && o.entries[seat];
+      const st = o.seatState(seat), entry = o.entries && o.entries[seat];
       let status;
-      if (!e.alive) status = 'eliminated';
-      else if (!e.human) status = 'AI';
+      if (st === 'out') status = 'eliminated';
+      else if (st === 'ai') status = 'AI';
+      else if (st === 'ai-pending') status = 'AI from next turn';
       else {
         const here = seat === ui.me ? '' : o.isOnline(seat) ? '<span class="good">● online</span>' : '<span class="dim">○ ' + (o.presence[seat] == null ? 'not joined yet' : 'last seen ' + ago(o.presence[seat])) + '</span>';
         const order = entry ? '<span class="good">' + (entry.skip ? 'skipped' : 'orders in') + '</span>' : 'waiting';
         status = (here ? here + ' · ' : '') + order;
       }
       h += '<div style="color:' + COLORS[seat] + '">' + (seat === ui.me ? 'You' : esc(nameOf(seat))) + '</div><div>' + status +
-        (o.isHost && seat !== ui.me && e.human && e.alive && !entry ? ' <button class="small" data-act="skip" data-e="' + seat + '" title="Play the turn without them">skip</button> <button class="small" data-act="skip-ai" data-e="' + seat + '" title="Give this empire to the AI for good">AI</button>' : '') + '</div>';
+        (o.isHost && seat !== ui.me && st === 'human' && !entry ? ' <button class="small" data-act="skip" data-e="' + seat + '" title="Play the turn without them">skip</button> <button class="small" data-act="skip-ai" data-e="' + seat + '" title="Give this empire to the AI for good">AI</button>' : '') + '</div>';
     }
     h += '</div><div class="btns"><button data-act="osync">Refresh</button><button data-act="orebuild" title="Replay the whole game from its log">Rebuild</button>';
     if (o.isHost) h += '<button data-act="oinvites">Invite links</button>';
@@ -598,12 +662,7 @@
       const r = await o.hostSkip(+b.dataset.e, ai);
       adoptSession(); ui.onlineMsg = r.ok ? '' : r.msg; save(); refresh();
     } else if (a === 'oleave') {
-      if (!confirm('Leave this game on this device? The game stays on the server. You can come back with your invite link.')) return;
-      clearOnline(); ui.online = null; ui.notes = [];
-      document.title = baseTitle;
-      const solo = load();
-      setState(solo || G.newGame({}));
-      if (!solo) save();
+      deleteGame(lib.active);
     }
   });
 
@@ -635,7 +694,7 @@
   $('b-friends').onclick = () => {
     const f = $('f-online');
     // the storage server is not shown: it comes from shared/config.js, or from ?server=... when testing against another one
-    f.server.value = new URLSearchParams(location.search).get('server') || window.KV_URL || '';
+    f.server.value = serverUrl();
     $('online-msg').textContent = '';
     $('d-online').showModal();
   };
@@ -646,9 +705,10 @@
     setTimeout(() => $('d-online').open || $('d-online').showModal(), 0);
     msg.textContent = 'Creating...';
     try {
+      if (lib.full) throw new Error('You are in ' + Games.MAX_GAMES + ' games. Delete one first.');
       const server = String(fd.get('server') || '').trim();
       const session = await Online.Session.create({ server, humans: +fd.get('humans'), difficulty: fd.get('difficulty'), worlds: +fd.get('worlds') });
-      startOnline(session);
+      addOnline(session);
       $('d-online').close();
       openInvites(); // straight to "how do I get my friends in"
     } catch (err) { msg.textContent = err.message; }
@@ -659,89 +719,298 @@
   // Short on purpose: the page's own address, /j/, then the room and seat. The part after # is never sent to any server.
   const inviteLink = seat => new URL('../j/', location.href).href + '#' + Online.inviteCode(ui.online.game.room, seat);
 
+  function addCopyShare(btns, copyBtn, input, url, text) {
+    btns.querySelectorAll('.share').forEach(x => x.remove());
+    if (navigator.share) {
+      const sh = document.createElement('button');
+      sh.type = 'button'; sh.textContent = 'Share'; sh.className = 'primary share';
+      sh.onclick = () => navigator.share({ title: 'Sector Dominion', text, url }).catch(() => { /* closed the share sheet */ });
+      btns.appendChild(sh);
+    }
+    copyBtn.onclick = async () => {
+      let ok = false;
+      try { await navigator.clipboard.writeText(url); ok = true; } catch (err) { input.select(); try { ok = document.execCommand('copy'); } catch (e2) { /* ignore */ } }
+      copyBtn.textContent = ok ? 'Copied' : 'Press and hold to copy';
+      setTimeout(() => { copyBtn.textContent = 'Copy link'; }, 2000);
+    };
+  }
+
   function openInvites() {
     if (!ui.online || !ui.online.isHost) return;
-    const g = ui.online.game, list = $('invite-list');
+    const list = $('invite-list');
     list.innerHTML = '';
-    for (let seat = 2; seat <= g.humans; seat++) {
+    // only seats a person can still take: never one the AI plays or is about to play
+    const seats = ui.online.invitable();
+    if (!seats.length) list.innerHTML = '<p class="dim">Nobody is left to invite. Everyone else is the AI or has been wiped out.</p>';
+    for (const seat of seats) {
       const url = inviteLink(seat), row = document.createElement('div');
       row.className = 'invite';
-      row.innerHTML = '<div class="who">Friend ' + (seat - 1) + ' <span class="dim">(' + esc(nameOf(seat)) + ')</span></div><input readonly aria-label="Invite link for friend ' + (seat - 1) + '"><div class="row"><button type="button" data-copy>Copy link</button></div>';
+      row.innerHTML = '<div class="who"><b>' + esc(nameOf(seat)) + '</b> <span class="dim">(seat ' + seat + ')</span></div><input readonly aria-label="Invite link for seat ' + seat + '"><div class="row"><button type="button" data-copy>Copy link</button></div>';
       const input = row.querySelector('input');
       input.value = url;
       input.addEventListener('focus', () => input.select());
-      const btns = row.querySelector('.row');
-      if (navigator.share) {
-        const sh = document.createElement('button');
-        sh.type = 'button'; sh.textContent = 'Share'; sh.className = 'primary';
-        sh.onclick = () => navigator.share({ title: 'Sector Dominion', text: 'Join my game of Sector Dominion:', url }).catch(() => { /* closed the share sheet */ });
-        btns.appendChild(sh);
-      }
-      row.querySelector('[data-copy]').onclick = async ev => {
-        const b = ev.currentTarget;
-        let ok = false;
-        try { await navigator.clipboard.writeText(url); ok = true; } catch (err) { input.select(); try { ok = document.execCommand('copy'); } catch (e2) { /* ignore */ } }
-        b.textContent = ok ? 'Copied' : 'Press and hold to copy';
-        setTimeout(() => { b.textContent = 'Copy link'; }, 2000);
-      };
+      addCopyShare(row.querySelector('.row'), row.querySelector('[data-copy]'), input, url, 'Join my game of Sector Dominion:');
       list.appendChild(row);
     }
     $('d-invite').showModal();
   }
 
-  // Joining. A link opens the game page with #join=<code>. If this device is not in a game, that joins straight away.
-  // If it is, ask first, because joining swaps the game on this device.
+  // A game with friends is added next to the others on this device. If this seat of this game is already here, that one opens.
+  function findOnline(room, seat) {
+    for (const g of lib.list) {
+      if (g.kind !== 'online') continue;
+      const s = sessionFor(g.id);
+      if (s && s.game.room === room && s.seat === seat) return g.id;
+    }
+    return null;
+  }
+  function addOnline(session) {
+    if (ui.state) save();
+    const id = lib.add('online');
+    sessions.set(id, session);
+    ui.notes = [];
+    startOnline(session);
+  }
+
+  // Joining. A link opens the game page with #join=<code>, and that joins straight away.
   async function joinGame(invite) {
     const msg = $('join-msg'), go = $('b-join-go'), close = $('b-join-close');
-    const server = new URLSearchParams(location.search).get('server') || window.KV_URL || '';
+    const server = serverUrl();
     msg.textContent = 'Joining...'; go.hidden = true; close.textContent = 'Cancel';
     if (!$('d-join').open) $('d-join').showModal();
     try {
+      if (lib.full) throw new Error('You are in ' + Games.MAX_GAMES + ' games. Delete one first.');
       const session = await Online.Session.join(invite, server);
-      startOnline(session);
+      const there = findOnline(session.game.room, session.seat);
+      if (there) openGame(there); else addOnline(session);
       $('d-join').close(); $('d-online').close();
     } catch (err) { msg.textContent = err.message; close.textContent = 'Close'; }
   }
 
   $('b-join-online').onclick = () => { $('d-online').close(); joinGame($('t-invite').value); };
 
+  // ----- name -----
+
+  function askName() {
+    return new Promise(resolve => {
+      const d = $('d-name');
+      $('f-name').elements.name.value = ui.name || '';
+      try { localStorage.setItem(ASKED_KEY, '1'); } catch (e) { /* ignore */ }
+      d.addEventListener('close', () => resolve(), { once: true });
+      d.showModal();
+    });
+  }
+  $('f-name').addEventListener('submit', e => {
+    if (!e.submitter || e.submitter.value !== 'save') return;
+    ui.name = Online.cleanName($('f-name').elements.name.value);
+    try { if (ui.name) localStorage.setItem(NAME_KEY, ui.name); else localStorage.removeItem(NAME_KEY); } catch (err) { /* ignore */ }
+    if (ui.online) { ui.online.setName(ui.name); heartbeat(); save(); }
+    refresh();
+  });
+  async function ensureName() {
+    let asked = false;
+    try { asked = !!localStorage.getItem(ASKED_KEY); } catch (e) { asked = true; }
+    if (!ui.name && !asked) await askName();
+  }
+
+  // ----- play on another device -----
+
+  function renderDevice() {
+    $('p-device').innerHTML = '<h3>You</h3><p class="who dim">Playing as <b>' + esc(ui.name || 'no name yet') + '</b></p>' +
+      '<div class="btns"><button data-do="name">' + (ui.name ? 'Change name' : 'Set name') + '</button><button data-do="device">Play on another device</button></div>';
+  }
+  $('p-device').addEventListener('click', e => {
+    const b = e.target.closest('button[data-do]');
+    if (!b) return;
+    if (b.dataset.do === 'name') askName(); else openDevice();
+  });
+
+  async function openDevice() {
+    const lead = $('device-lead'), note = $('device-note'), msg = $('device-msg'), link = $('device-link'), qr = $('device-qr');
+    msg.textContent = ''; qr.innerHTML = ''; link.value = ''; note.textContent = '';
+    $('device-btns').hidden = true;
+    $('d-device').showModal();
+    let code;
+    if (ui.online) {
+      code = Online.inviteCode(ui.online.game.room, ui.online.seat);
+      lead.textContent = 'Scan this with your phone camera, or send yourself the link. Opening it on another device puts you back in this game, in your seat.';
+      note.textContent = 'The link is for your seat only, so keep it private. Both devices can stay open: orders from either one count, and the first to send wins the turn.';
+    } else {
+      lead.textContent = 'Making a private link to a copy of this game...';
+      try { code = await Online.shareSolo(ui.state, serverUrl()); } catch (err) { lead.textContent = ''; msg.textContent = err.message; return; }
+      lead.textContent = 'Scan this with your phone camera, or send yourself the link. Opening it on another device carries this game over, as it is right now.';
+      note.textContent = 'This is a copy. From now on the game here and the one on the other device go on separately, so pick one to keep playing. The link works for 60 days, and anyone who has it can open your game, so keep it private.';
+    }
+    const url = new URL('../j/', location.href).href + '#' + code;
+    link.value = url;
+    link.onfocus = () => link.select();
+    try {
+      const q = qrcode(0, 'M'); q.addData(url); q.make();
+      qr.innerHTML = q.createSvgTag({ cellSize: 4, margin: 8, scalable: true });
+    } catch (err) { qr.innerHTML = ''; }
+    $('device-btns').hidden = false;
+    addCopyShare($('device-btns'), $('b-device-copy'), link, url, 'Pick up my Sector Dominion game here:');
+  }
+
+  // A link made by "Play on another device" for a solo game: fetch the copy and make it this device's game.
+  async function receiveSolo(invite) {
+    const msg = $('join-msg'), go = $('b-join-go'), close = $('b-join-close');
+    msg.textContent = 'Opening your game...'; go.hidden = true; close.textContent = 'Cancel';
+    if (!$('d-join').open) $('d-join').showModal();
+    let state;
+    try { state = await Online.fetchSolo(invite, serverUrl()); } catch (err) { msg.textContent = err.message; close.textContent = 'Close'; return; }
+    // a solo game on this device that has barely started is not worth keeping next to this one
+    if (!ui.online && ui.state.turn <= 1 && lib.kind(lib.active) === 'solo') lib.remove(lib.active);
+    else if (lib.full) { msg.textContent = 'You are in ' + Games.MAX_GAMES + ' games. Delete one first.'; close.textContent = 'Close'; return; }
+    else save();
+    lib.add('solo');
+    ui.online = null; ui.notes = []; document.title = baseTitle;
+    setState(state); save();
+    $('d-join').close();
+  }
+
   function handleHash() {
     const m = /^#join=(.+)$/.exec(location.hash);
     if (!m) return;
     history.replaceState(null, '', location.pathname + location.search); // the code is not needed in the address bar any more
+    if (Online.parseTransfer(m[1])) { receiveSolo(m[1]); return; }
     const inv = Online.parseInvite(m[1]);
-    if (ui.online && inv && inv.room === ui.online.game.room) return; // already in this game
-    if (ui.online && inv) {
-      $('join-msg').textContent = 'You are already in a game on this device. Joining this one replaces it here. The other game stays on the server, and its link still works.';
-      $('b-join-go').hidden = false; $('b-join-close').textContent = 'Not now';
-      $('b-join-go').onclick = () => joinGame(m[1]);
-      $('d-join').showModal();
-    } else joinGame(m[1]);
+    const there = inv && findOnline(inv.room, inv.seat);
+    if (there) { openGame(there); return; } // already in this game
+    joinGame(m[1]);
   }
   window.addEventListener('hashchange', handleHash);
+
+  // ---------- several games at once ----------
+
+  function dropBroken(id) { sessions.delete(id); lib.remove(id); }
+
+  // Opens a game on this device: the one on screen is saved first. Returns false (and forgets the game) if its data is unusable.
+  function openGame(id) {
+    if (!lib.has(id)) return false;
+    if (ui.state && lib.active && lib.active !== id) save();
+    lib.setActive(id);
+    ui.notes = []; ui.onlineMsg = ''; document.title = baseTitle;
+    if (lib.kind(id) === 'online') {
+      const s = sessionFor(id);
+      if (!s) { dropBroken(id); return false; }
+      startOnline(s);
+      setTimeout(() => syncOnline(true), 0);
+      return true;
+    }
+    const st = lib.read(id);
+    if (!st || st.version !== 2) { dropBroken(id); return false; }
+    ui.online = null;
+    setState(st);
+    return true;
+  }
+
+  function openFirst() {
+    while (lib.list.length) {
+      const id = lib.active && lib.has(lib.active) ? lib.active : lib.list[lib.list.length - 1].id;
+      if (openGame(id)) return true;
+    }
+    return false;
+  }
+
+  function deleteGame(id) {
+    const online = lib.kind(id) === 'online';
+    if (!confirm(online ? 'Remove this game from this device? It stays on the server, and you can come back with your invite link.' : 'Delete this game? This cannot be undone.')) return;
+    const wasOpen = id === lib.active;
+    sessions.delete(id);
+    lib.remove(id);
+    if (wasOpen) {
+      ui.state = null; ui.online = null; // the deleted game must not be saved under another id
+      if (!openFirst()) newSolo();
+    }
+    renderGames(); renderGamesBadge();
+  }
+
+  const needsMe = s => !s.base.over && s.seatState(s.seat) === 'human' && !s.sent;
+
+  function describe(id) {
+    const open = id === lib.active;
+    if (lib.kind(id) === 'online') {
+      const s = open ? ui.online : sessionFor(id);
+      if (!s) return { title: 'Game with friends', detail: 'Could not be read.', need: false };
+      const others = [];
+      for (let seat = 1; seat <= s.game.humans; seat++) if (seat !== s.seat && s.seatState(seat) === 'human') others.push(s.names[seat] || G.empire(s.base, seat).name.split(' ')[0]);
+      let detail = 'Seat ' + s.seat + ', turn ' + s.base.turn + '. ';
+      const role = s.seatState(s.seat);
+      if (s.base.over) detail += 'Finished.';
+      else if (role === 'ai' || role === 'ai-pending') detail += 'The host handed your empire to the AI.';
+      else if (role === 'out') detail += 'Your empire is gone.';
+      else if (s.sent) detail += 'Orders are in. Waiting for ' + (s.waiting.filter(x => x !== s.seat).map(x => s.names[x] || G.empire(s.base, x).name.split(' ')[0]).join(', ') || 'the turn to play') + '.';
+      else detail += 'Your move.';
+      return { title: 'With friends' + (others.length ? ': ' + others.join(', ') : ''), detail, need: needsMe(s) };
+    }
+    const st = open ? ui.state : lib.read(id);
+    if (!st || st.version !== 2) return { title: 'Solo game', detail: 'Could not be read.', need: false };
+    return { title: 'Solo game', detail: 'Turn ' + st.turn + ', ' + st.difficulty + ', ' + st.worlds.length + ' worlds.' + (st.over ? ' Finished.' : ''), need: false };
+  }
+
+  function renderGames() {
+    const el = $('games-list');
+    el.innerHTML = lib.list.slice().reverse().map(g => {
+      const d = describe(g.id), open = g.id === lib.active;
+      return '<div class="gamerow' + (open ? ' open' : '') + '"><div><b>' + esc(d.title) + '</b>' + (open ? ' <span class="dim">(open now)</span>' : '') +
+        (d.need && !open ? ' <span class="badge">your move</span>' : '') + '</div><div class="dim">' + esc(d.detail) + '</div>' +
+        '<div class="row">' + (open ? '' : '<button data-g="open" data-id="' + g.id + '" class="primary">Open</button>') + '<button data-g="del" data-id="' + g.id + '">' + (g.kind === 'online' ? 'Remove' : 'Delete') + '</button></div></div>';
+    }).join('') || '<p class="dim">No games yet.</p>';
+  }
+
+  function renderGamesBadge() {
+    let n = 0;
+    for (const [id, s] of sessions) if (id !== lib.active && lib.has(id) && needsMe(s)) n++;
+    $('b-new').innerHTML = 'Games' + (n ? ' <span class="badge">' + n + '</span>' : '');
+  }
+
+  function openGames() {
+    renderGames();
+    $('d-games').showModal();
+    // look at the other games with friends, so the list says whose move it is
+    Promise.all([...sessions].filter(([id, s]) => id !== lib.active && lib.has(id) && !s.base.over).map(([, s]) => s.sync().then(() => persist(s)))).then(() => {
+      if ($('d-games').open) renderGames();
+      renderGamesBadge();
+    });
+  }
+  $('games-list').addEventListener('click', e => {
+    const b = e.target.closest('button[data-g]');
+    if (!b) return;
+    if (b.dataset.g === 'open') { $('d-games').close(); openGame(b.dataset.id); } else deleteGame(b.dataset.id);
+  });
+  $('b-games-new').onclick = () => { $('d-games').close(); openNew(); };
+  $('b-games-friends').onclick = () => { $('d-games').close(); $('b-friends').click(); };
+
+  // The games that are not open get a look every 30 s while the page is visible, so the badge on Games stays true.
+  setInterval(async () => {
+    if (document.hidden) return;
+    for (const [id, s] of sessions) {
+      if (s === ui.online || !lib.has(id) || s.base.over) continue;
+      await s.sync(); persist(s);
+    }
+    renderGamesBadge();
+    if ($('d-games').open) renderGames();
+  }, 30000);
 
   // ---------- boot ----------
 
   resize();
-  const savedOnline = loadOnline();
-  if (savedOnline) {
-    ui.online = savedOnline; adoptSession(); fitView(); refresh();
-    heartbeat();
-    setTimeout(() => syncOnline(true), 0);
-  } else {
-    const saved = load();
-    setState(saved || G.newGame({}));
-    if (!saved) {
-      save(); // a refresh must bring this same game back, not roll a new one
+  let firstRun = false;
+  if (!lib.active || !openGame(lib.active)) {
+    if (!openFirst()) { newSolo(); firstRun = true; } // nothing usable on this device: a fresh game, saved at once so a refresh keeps it
+  }
+  setTimeout(() => { for (const g of lib.list) if (g.kind === 'online') sessionFor(g.id); renderGamesBadge(); }, 0);
+  // first visit: ask for a name once, then show the intro. A link is handled after that.
+  (async () => {
+    await ensureName();
+    if (firstRun && !/^#join=/.test(location.hash)) {
       try {
-        if (!localStorage.getItem('sectordominion-help-seen') && !/^#join=/.test(location.hash)) {
-          $('d-help').showModal();
-          localStorage.setItem('sectordominion-help-seen', '1');
-        }
+        if (!localStorage.getItem('sectordominion-help-seen')) { localStorage.setItem('sectordominion-help-seen', '1'); $('d-help').showModal(); }
       } catch (e) { /* storage blocked: skip the intro */ }
     }
-  }
-  handleHash();
+    handleHash();
+  })();
   // phones can drop a page without warning, so write the game down whenever the page is hidden or closed
   window.addEventListener('pagehide', save);
   document.addEventListener('visibilitychange', () => { if (document.hidden) save(); });

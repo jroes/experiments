@@ -46,4 +46,4 @@ jobs:
           export PORT=8135 WORLD_FILE=/tmp/world.json KV_DIR=/tmp/kv KV_IP_REQ_PER_MIN=1000000 KV_IP_WRITE_PER_MIN=1000000 KV_NS_REQ_PER_MIN=1000000 KV_NS_WRITE_PER_MIN=1000000 KV_IP_NEW_NS_PER_HOUR=1000000 KV_NEW_NS_PER_DAY=1000000 KV_NS_COUNT=100000 KV_TOTAL_BYTES=2000000000 KV_NS_BYTES=500000000
           target/release/elf-punch &
           sleep 2
-          KV_URL=http://127.0.0.1:8135 node --test ../tests/lockstep.test.mjs
+          KV_URL=http://127.0.0.1:8135 node --test ../tests/lockstep.test.mjs ../tests/roster.test.mjs

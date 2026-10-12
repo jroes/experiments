@@ -20,6 +20,7 @@
   const unb64 = s => decodeURIComponent(escape(atob(s.replace(/-/g, '+').replace(/_/g, '/'))));
   // A player counts as online if their page checked in within this many seconds. Pages check in every 15 s while visible.
   const ONLINE_SECS = 45;
+  const NAME_MAX = 16;
   const ROOM_RE = /^[a-z0-9]{16,32}$/;
   const HASH_RE = /^[0-9a-f]{16}$/;
 
@@ -39,6 +40,43 @@
     return m ? { room: m[1], seat: +m[2] } : null;
   }
 
+  // Moving a solo game to another device: a copy of the game goes into the store under a fresh random name, and the code for it is
+  // 't-' plus that name. There is no seat: the game is yours alone, so whoever has the link has your game.
+  function parseTransfer(text) {
+    const t = String(text || '').trim().toLowerCase().replace(/\s+/g, '');
+    const m = /^t-([a-z0-9]{16})$/.exec(t.slice(t.lastIndexOf('#') + 1).replace(/^join=/, ''));
+    return m ? m[1] : null;
+  }
+  const MAX_SNAPSHOT = 60000; // the store takes 64 KB per value
+
+  async function shareSolo(state, server) {
+    const base = S.cleanBase(server);
+    if (!base) throw new Error('The server address must start with https:// (or http://localhost).');
+    if (!G.validState(state)) throw new Error('This game cannot be moved.');
+    // Stored as text, not as JSON numbers: the server may round-trip a decimal number differently (the last digit of a float),
+    // and one changed digit in the random-number state would make the copy play differently.
+    const text = JSON.stringify({ ...state, log: state.log.slice(0, 60) });
+    if (text.length > MAX_SNAPSHOT) throw new Error('This game is too big to move.');
+    const room = S.randomId(ROOM_LEN);
+    const r = await S.call(base, 'PUT', '/kv/' + S.nsName(room) + '/snap', { body: { v: 1, game: text }, ifNoneMatch: true });
+    if (r.status !== 201) throw new Error(friendly(r));
+    return 't-' + room;
+  }
+
+  async function fetchSolo(text, server) {
+    const room = parseTransfer(text);
+    if (!room) throw new Error('That does not look like a link to a game.');
+    const base = S.cleanBase(server);
+    if (!base) throw new Error('The server address must start with https:// (or http://localhost).');
+    const r = await S.call(base, 'GET', '/kv/' + S.nsName(room) + '/snap');
+    if (r.status !== 200) throw new Error(friendly(r));
+    const v = r.data && r.data.value;
+    let game = null;
+    try { game = v && v.v === 1 && typeof v.game === 'string' && v.game.length <= MAX_SNAPSHOT ? JSON.parse(v.game) : null; } catch (e) { /* not JSON */ }
+    if (!G.validState(game)) throw new Error('That link does not hold a game this page can play.');
+    return game;
+  }
+
   // Everything about a game that must be valid before we play it. Used for saved games and for meta read from the store.
   function cleanGame(o) {
     try {
@@ -50,6 +88,13 @@
       if (!Number.isInteger(o.seed) || Math.abs(o.seed) > 2147483647 || !Number.isInteger(o.rules)) return null;
       return { server, room: o.room, seat: o.seat, humans: o.humans, difficulty: o.difficulty, worlds: o.worlds, seed: o.seed, rules: o.rules };
     } catch (e) { return null; }
+  }
+
+  // A player's display name. It comes from other people's browsers, so keep it short, plain text with no markup characters.
+  function cleanName(x) {
+    if (typeof x !== 'string') return null;
+    const t = Array.from(x.replace(/[\u0000-\u001f\u007f<>&"'`]/g, '').replace(/\s+/g, ' ').trim()).slice(0, NAME_MAX).join('').trim();
+    return t || null;
   }
 
   // Anything read back from the store is untrusted. Keep only what has exactly the shape we write.
@@ -88,6 +133,9 @@
       this.desync = saved ? !!saved.desync : false;
       this.waiting = [];                                 // seats we still wait for
       this.presence = {};                                // seat -> seconds since that player's page last checked in
+      this.names = {};                                   // seat -> what that player likes to be called
+      this.myName = null;
+      if (saved && saved.names && typeof saved.names === 'object') for (const [k, v] of Object.entries(saved.names)) { const n = cleanName(v); if (n && /^[1-4]$/.test(k)) this.names[+k] = n; }
       this.events = [];                                  // who came online or went offline since the page last looked
       this._was = null;                                  // seat -> was online at the last look (null until the first look)
       this.entries = {};                                 // orders in the store for this turn
@@ -99,7 +147,7 @@
     get seat() { return this.game.seat; }
     get isHost() { return this.game.seat === 1; }
 
-    toJSON() { return { v: 2, game: this.game, base: this.base, cmds: this.cmds, sent: this.sent, desync: this.desync }; }
+    toJSON() { return { v: 2, game: this.game, base: this.base, cmds: this.cmds, sent: this.sent, desync: this.desync, names: this.names }; }
     static fromSaved(o) {
       if (!o || o.v !== 2 || !o.game || !o.base || !Array.isArray(o.cmds)) return null;
       const game = cleanGame(o.game); // re-validate everything that came out of localStorage
@@ -129,6 +177,8 @@
     // ----- talking to the store -----
 
     async submit() {
+      const role = this.seatState(this.seat);
+      if (role === 'ai' || role === 'ai-pending') return { ok: false, msg: 'The host handed your empire to the AI, so there is nothing to send.' };
       if (this.sent) return { ok: true };
       const e = G.empire(this.base, this.seat);
       if (!e.human || !e.alive) return { ok: false, msg: 'You are not an active player.' };
@@ -148,6 +198,7 @@
     // Host only (by convention: the store has no accounts): play the turn without a player who has not answered.
     async hostSkip(seat, ai) {
       if (!this.isHost) return { ok: false, msg: 'Only the host can skip a player.' };
+      if (!Number.isInteger(seat) || seat === this.seat || this.seatState(seat) !== 'human') return { ok: false, msg: 'That seat is not an active player.' };
       const g = this.game;
       let r;
       try { r = await S.putOnce(g.server, g.room, S.orderKey(this.base.turn, seat), ai ? { skip: true, ai: true } : { skip: true }, isEntry); }
@@ -157,14 +208,41 @@
       return { ok: false, msg: r.status === 409 ? 'They already sent orders.' : friendly(r) };
     }
 
+    // ----- who plays which seat -----
+
+    setName(name) { this.myName = cleanName(name); if (this.myName) this.names[this.seat] = this.myName; }
+
+    // What a seat is right now. The answer comes from the game plus the board, never from how the game started:
+    //   human      someone plays it
+    //   ai-pending the host has handed it to the AI, and the turn that makes it final has not been played yet
+    //   ai         the AI plays it
+    //   out        a person's empire that has been wiped out
+    seatState(seat) {
+      const e = G.empire(this.base, seat);
+      if (!e) return null;
+      if (!e.human) return 'ai';
+      if (!e.alive) return 'out';
+      const entry = this.entries && this.entries[seat];
+      return entry && entry.skip && entry.ai ? 'ai-pending' : 'human';
+    }
+
+    // Seats a friend can still be invited to: other people who are in the game right now.
+    invitable() {
+      const out = [];
+      for (let seat = 1; seat <= this.game.humans; seat++) if (seat !== this.seat && this.seatState(seat) === 'human') out.push(seat);
+      return out;
+    }
+
     // ----- who is around -----
 
     // Works out how long ago each other player checked in, and remembers who just came online or went offline.
     noticePresence(r) {
       const g = this.game, seen = {};
       for (let seat = 1; seat <= g.humans; seat++) {
-        if (seat === this.seat) continue;
         const raw = r.values[S.presenceKey(seat)];
+        const nm = raw && raw.value && typeof raw.value === 'object' ? cleanName(raw.value.name) : null;
+        if (nm && (seat !== this.seat || !this.myName)) this.names[seat] = nm; // my own name from another device, until I set one here
+        if (seat === this.seat) continue;
         if (!raw || raw.t === null || r.now === null) { this.presence[seat] = null; seen[seat] = false; continue; }
         const age = Math.max(0, r.now - raw.t);
         this.presence[seat] = age;
@@ -188,7 +266,7 @@
     async beat() {
       const e = G.empire(this.base, this.seat);
       if (this.base.over || !e.human) return;
-      try { await S.beat(this.game.server, this.game.room, this.seat); } catch (err) { /* offline: nothing to do */ }
+      try { await S.beat(this.game.server, this.game.room, this.seat, this.myName); } catch (err) { /* offline: nothing to do */ }
     }
 
     // Reads the store and plays every turn that is complete. Safe to call as often as you like.
@@ -312,11 +390,13 @@
       if (game.rules !== G.RULES) throw new Error('That game was made with a different version of the rules.');
       const session = new Session(game);
       await session.rebuild();
+      const role = session.seatState(game.seat);
+      if (role === 'ai' || role === 'ai-pending') throw new Error('The host gave that seat to the AI, so there is nothing to join. Ask them for a new game.');
       return session;
     }
   }
 
-  const api = { Session, inviteCode, parseInvite, cleanGame, cleanEntry, ONLINE_SECS, ROOM_LEN };
+  const api = { Session, shareSolo, fetchSolo, parseTransfer, inviteCode, parseInvite, cleanGame, cleanEntry, cleanName, NAME_MAX, ONLINE_SECS, ROOM_LEN };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Online = api;
 })(typeof window !== 'undefined' ? window : globalThis);

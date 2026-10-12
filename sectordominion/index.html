@@ -27,7 +27,7 @@
   <div class="spacer"></div>
   <button id="b-help">Help</button>
   <button id="b-friends">Play with friends</button>
-  <button id="b-new">New game</button>
+  <button id="b-new">Games</button>
   <button id="b-end" class="primary">End turn</button>
 </header>
 
@@ -42,26 +42,82 @@
     <section id="p-online" hidden></section>
     <section id="p-world"></section>
     <section id="p-empire"></section>
+    <section id="p-device"></section>
     <section id="p-log"><h3>Log</h3><ul id="log"></ul></section>
   </aside>
 </main>
 
 <dialog id="d-help">
   <h2>How to play</h2>
-  <p>You run a small star empire. Grow it, then take over the sector. Win by wiping out all three rival empires or by holding 70% of all worlds.</p>
-  <ul>
-    <li><b>Tap or click a world</b> to select it. Drag the map to pan. Pinch or scroll to zoom, and <i>Fit</i> brings the whole map back.</li>
-    <li>You only see worlds near your worlds and fleets. Send scouts to look around.</li>
-    <li><b>Build</b> ships at your worlds. They show up next turn. Ships cost credits.</li>
-    <li><b>Dispatch</b>: pick ship counts in the world panel, hit <i>Choose destination</i>, then pick a world on the map.</li>
-    <li>A <b>Transport</b> sent to an empty world colonizes it. Natives have defenses and need an invasion.</li>
-    <li>To take a defended world, kill its garrison and defenses, then land more troops than it has. Each Transport carries 5 troops.</li>
-    <li><b>Fortify</b> adds permanent defense to a world. <b>Research</b> makes ships stronger and income higher.</li>
-    <li><b>Play with friends</b> gives you one link per friend. They open it and they are in. Turns play when everyone has sent orders, so nobody has to be online at the same time.</li>
-    <li>On a computer: <kbd>E</kbd> ends the turn, <kbd>Esc</kbd> cancels targeting.</li>
-  </ul>
+  <p>You run a small star empire. Grow it, then take over the sector. You win by wiping out all three rival empires, or by holding 70% of all worlds. You lose if your empire is wiped out.</p>
+
+  <details open id="h-first">
+    <summary>Your first turns</summary>
+    <ol>
+      <li>You start with one world (your capital, the green dot) and some credits. Credits come in every turn from your worlds.</li>
+      <li>Tap your world, then in <b>Build</b> buy a <b>Transport</b> and a <b>Scout</b>. Ships show up in the garrison next turn.</li>
+      <li>Press <b>End turn</b> (<b>Send orders</b> in a game with friends).</li>
+      <li>Under <b>Dispatch fleet</b>, pick the Transport (and Scout), press <b>Choose destination</b> and tap an <b>empty world</b> (one with no red ring). When the Transport arrives, it settles the world and becomes yours.</li>
+      <li>Spend credits on <b>Research</b> and more ships, and keep expanding. Rival empires do the same, so build warships before you meet them.</li>
+    </ol>
+  </details>
+
+  <details id="h-ships">
+    <summary>Ships: what each one is for</summary>
+    <div id="help-ships"></div>
+    <p class="fine">Speed is how many map units a ship covers each turn. The map is 120 by 80 units, and a fleet moves at the speed of its slowest ship. Research makes every ship you own hit harder and last longer.</p>
+  </details>
+
+  <details id="h-conquer">
+    <summary>Taking worlds</summary>
+    <ul>
+      <li><b>Empty world</b> (no red ring): send a Transport. It colonizes it. A fleet with no Transport just looks around and goes home.</li>
+      <li><b>Natives</b> (red ring) and <b>enemy worlds</b> have defenses and troops. Send warships first: they fight the garrison and the world's defense. If the defenders are all dead, your Transports land.</li>
+      <li>Each Transport lands <b>5 troops</b> and is used up. You take the world if you land <b>more troops than it has</b> (see Troops in the world panel). Bring a few extra.</li>
+      <li>If you do not kill all defenders, the fight is a stalemate and your fleet retreats. Check <b>Defense</b> and the garrison before you attack, and send more than you think you need.</li>
+      <li><b>Fortify</b> adds permanent defense to a world of yours. Use it on border worlds.</li>
+    </ul>
+  </details>
+
+  <details id="h-worlds">
+    <summary>Worlds, income and tech</summary>
+    <ul>
+      <li>A world earns credits from its population, times its type: <b>Capital</b> x1.5, <b>Industrial</b> x1.3, <b>Mining</b> x1.2, <b>Agricultural</b> x1.0 (and grows fastest), <b>Research</b> x0.9 (and makes Research cheaper for you), <b>Barren</b> x0.6.</li>
+      <li><b>Research</b> raises your tech level (up to 6). Each level adds income and makes your ships stronger. It gets more expensive each time.</li>
+      <li>You only see worlds near your own worlds and fleets. Grey and dim means <i>last seen</i>, so it may have changed. Scouts see far and are cheap, so send a few.</li>
+    </ul>
+  </details>
+
+  <details id="h-map">
+    <summary>Reading the map</summary>
+    <ul>
+      <li>Colour is the owner: green is you, grey is nobody. A <b>red ring</b> means natives, who fight back.</li>
+      <li>The faint circle around your worlds is how far you can see. Triangles are fleets, with a dashed line to where they are headed.</li>
+      <li>A white tick above a world means ships are stationed there.</li>
+      <li><b>Tap or click a world</b> to select it. Drag the map to pan. Pinch or scroll to zoom, and <i>Fit</i> brings the whole map back.</li>
+    </ul>
+  </details>
+
+  <details id="h-friends">
+    <summary>Friends, and other devices</summary>
+    <ul>
+      <li><b>Games</b> lists every game on this device. Start as many as you want, solo or with friends, and switch between them. It says which ones are waiting on you.</li>
+      <li><b>Play with friends</b> gives you one link per friend. They open it and they are in. Turns play when everyone has sent orders, so nobody has to be online at the same time.</li>
+      <li><b>Play on another device</b> (bottom of the side panel) gives you a QR code and a private link to carry your game to a phone or another computer.</li>
+      <li>On a computer: <kbd>E</kbd> ends the turn, <kbd>Esc</kbd> cancels targeting.</li>
+    </ul>
+  </details>
+
   <p class="fine">Inspired by classic 4X space strategy games. Original code and art.</p>
   <form method="dialog"><button class="primary">Got it</button></form>
+</dialog>
+
+<dialog id="d-games">
+  <h2>Your games</h2>
+  <p class="fine">You can be in as many games as you like, solo and with friends. Each one is saved on this device on its own.</p>
+  <div id="games-list"></div>
+  <div class="row"><button type="button" id="b-games-new">New solo game</button><button type="button" id="b-games-friends">Play with friends</button></div>
+  <form method="dialog"><button class="primary">Close</button></form>
 </dialog>
 
 <dialog id="d-new">
@@ -115,6 +171,28 @@
   <p class="hint" id="online-msg"></p>
 </dialog>
 
+<dialog id="d-name">
+  <h2>What should we call you?</h2>
+  <form method="dialog" id="f-name">
+    <p class="fine">Friends see this next to your empire when you play together. It is saved on this device, and you can change it any time.</p>
+    <label>Your name
+      <input name="name" type="text" maxlength="16" autocomplete="nickname" autocapitalize="words" spellcheck="false" placeholder="Name">
+    </label>
+    <div class="row"><button value="skip" formnovalidate>Skip</button><button value="save" class="primary">Save</button></div>
+  </form>
+</dialog>
+
+<dialog id="d-device">
+  <h2>Play on another device</h2>
+  <p id="device-lead"></p>
+  <div id="device-qr" aria-label="QR code for the link"></div>
+  <input id="device-link" readonly aria-label="Link for your other device">
+  <div class="row" id="device-btns"><button type="button" id="b-device-copy">Copy link</button></div>
+  <p class="fine" id="device-note"></p>
+  <p class="hint" id="device-msg"></p>
+  <form method="dialog"><button class="primary" autofocus>Done</button></form>
+</dialog>
+
 <dialog id="d-invite">
   <h2>Your game is ready</h2>
   <p>Send each friend their own link. When they open it, they are in. There is nothing for them to type.</p>
@@ -130,8 +208,10 @@
 </dialog>
 
 <script src="../shared/config.js"></script>
+<script src="../shared/qrcode.js"></script>
 <script src="../shared/store.js"></script>
 <script src="game.js"></script>
+<script src="games.js"></script>
 <script src="online.js"></script>
 <script src="ui.js"></script>
 </body>

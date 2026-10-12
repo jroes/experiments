@@ -30,4 +30,10 @@ must_fail() { # spec cfg expected-text
 # Sector Dominion online play through the shared store: all browsers play each turn from the same orders
 must_pass LockstepBoard.tla LockstepBoard.cfg
 must_fail LockstepBoard.tla LockstepBoardNonAtomic.cfg "Invariant Agreement is violated"
+
+# Who plays which seat, and which links the host is offered
+must_pass SeatRoster.tla SeatRoster.cfg
+must_fail SeatRoster.tla SeatRoster_all.cfg "Invariant NoLinkToAI is violated"
+must_fail SeatRoster.tla SeatRoster_base.cfg "Invariant NoLinkToAI is violated"
+must_fail SeatRoster.tla SeatRosterNoGuard.cfg "Action property NoJoinOfAI is violated"
 echo OK
