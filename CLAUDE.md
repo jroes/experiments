@@ -20,7 +20,8 @@ key/value store. Live at https://jroes.github.io/experiments/. Written for whoev
 | `warptraders/` | Space trading game. Challenge seeds, plus a live race over WebRTC (`shared/p2p.js`, `lobby.js`) |
 | `shared/` | `store.js` (KV client), `config.js` (`KV_URL`), `qrcode.js` (vendored, MIT), p2p and lobby code |
 | `j/` | Invite landing page: OpenGraph tags for link previews, then hands `#<code>` to the game |
-| `elf-punch/` | Rust server. The `/kv` store lives in `src/store.rs`. See its README for limits |
+| `elf-punch/` | Rust server: `/kv` store (`src/store.rs`), the lab for server-authoritative games (`src/lab/`), the original elf toy (`src/elf.rs`). See its README |
+| `warptraders/universe/` | Client for the shared-universe Warp Traders (talks to `/lab/warptraders`) |
 | `tests/` | `node --test` suites. `fake-kv.js` is an in-memory stand-in for the server |
 | `verification/` | TLA+ models checked with TLC (`run-tlc.sh`) |
 | `tools/` | `make-og.js` renders the link-preview images. `video/` makes each game's intro video (below) |
@@ -70,12 +71,19 @@ The preview cannot be tested from here: check it by sending a fresh link to your
 **Friends-only trust.** No accounts, so anyone who has a game's name can read and write it. Say so in the UI and docs. "Only the host can skip"
 is a convention, not a server rule. Per-game write keys would be the next step if that stops being acceptable.
 
+**Two ways to host a game.** Browsers hold the rules (lockstep, `/kv`, Sector Dominion) when friends are playing and cheating does not matter. The server holds
+them (`/lab`, `elf-punch/src/lab/`) when players share one world or the score has to be real. A lab game is one `Game` impl (copy `clicker.rs`); the lab handles players, tokens, saving
+and limits. The client is only a screen: never decide anything in it. Lab games keep time-based state lazy (timestamps, brought up to date on access) so the machine can sleep.
+Players are a name plus a secret token (stored hashed, kept in localStorage); losing it loses the player. Everything in a request is untrusted, and refused actions must change nothing.
+Deploying `elf-punch/**` to main restarts the server, which reloads the lab from `/data/lab`.
+
 ## Testing
 
 ```
 npm test                                   # unit, property, fuzz, lockstep (fake store)
 verification/run-tlc.sh                    # TLA+ models (needs Java)
-cd elf-punch && cargo test --release       # server
+cd elf-punch && cargo test --release       # server (store and lab rules)
+cd elf-punch && npm test                   # server over HTTP: world, /kv, /lab (needs the release build)
 ```
 
 Run the store-backed suites against the real binary too. Raise the limits or the suite trips the per-address ones (CI does the same):

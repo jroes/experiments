@@ -4,10 +4,11 @@
 //! Every cap has a default and an environment variable (see `Limits`). Each namespace is one file in `KV_DIR`
 //! (default `/data/kv`, the Fly volume), rewritten with tmp + rename on every write, so a crash never leaves half a file.
 use std::collections::{BTreeMap, HashMap};
-use std::io::{Read, Write};
+
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
+use crate::http::{err, json_str, limited, read_request, respond, Reply};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct Limits {
@@ -105,29 +106,8 @@ pub struct Req<'a> {
     pub ip: &'a str,
 }
 
-pub struct Reply {
-    pub status: u16,
-    pub body: String,
-    pub retry_after: Option<u64>,
-}
-
-fn json_str(s: &str) -> String {
-    serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
-}
-
 fn ok(body: String) -> Reply {
     Reply { status: 200, body, retry_after: None }
-}
-
-fn err(status: u16, code: &str, msg: &str) -> Reply {
-    Reply { status, body: format!(r#"{{"error":{},"code":{}}}"#, json_str(msg), json_str(code)), retry_after: None }
-}
-
-fn limited(wait: u64, what: &str) -> Reply {
-    let wait = wait.max(1);
-    let mut r = err(429, "rate_limited", &format!("{what}; try again in {wait} seconds"));
-    r.retry_after = Some(wait);
-    r
 }
 
 fn valid_ns(s: &str) -> bool {
@@ -395,82 +375,20 @@ pub fn init() {
     let _ = STORE.set(Mutex::new(Store::open(dir, Limits::from_env())));
 }
 
-fn reason(status: u16) -> &'static str {
-    match status {
-        200 => "OK", 201 => "Created", 204 => "No Content", 400 => "Bad Request", 404 => "Not Found", 405 => "Method Not Allowed",
-        411 => "Length Required", 412 => "Precondition Failed", 413 => "Payload Too Large", 429 => "Too Many Requests",
-        431 => "Request Header Fields Too Large", 500 => "Internal Server Error", 501 => "Not Implemented", 507 => "Insufficient Storage",
-        _ => "OK",
-    }
-}
-
-fn respond(s: &mut TcpStream, rep: &Reply) {
-    let retry = rep.retry_after.map(|n| format!("Retry-After: {n}\r\n")).unwrap_or_default();
-    let ctype = if rep.status == 204 { "" } else { "Content-Type: application/json\r\n" };
-    let head = format!(
-        "HTTP/1.1 {} {}\r\n{ctype}Content-Length: {}\r\n{retry}Cache-Control: no-store\r\n\
-         Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, PUT, DELETE, OPTIONS\r\n\
-         Access-Control-Allow-Headers: Content-Type, If-Match, If-None-Match\r\nAccess-Control-Expose-Headers: Retry-After\r\n\
-         Access-Control-Max-Age: 86400\r\nConnection: close\r\n\r\n",
-        rep.status, reason(rep.status), rep.body.len()
-    );
-    let _ = s.write_all(head.as_bytes());
-    let _ = s.write_all(rep.body.as_bytes());
-}
-
-fn quick(status: u16, code: &str, msg: &str) -> Reply {
-    err(status, code, msg)
-}
-
 /// Serve one `/kv/...` HTTP request on `s` (the connection thread already peeked at the request line).
 pub fn serve(mut s: TcpStream) {
     let Some(store) = STORE.get() else { return };
     let value_max = store.lock().unwrap().lim.value_max;
-    let peer = s.peer_addr().map(|a| a.ip().to_string()).unwrap_or_default();
-    let mut buf: Vec<u8> = Vec::with_capacity(2048);
-    let mut chunk = [0u8; 4096];
-    let head_end = loop {
-        if let Some(p) = buf.windows(4).position(|w| w == b"\r\n\r\n") { break p + 4; }
-        if buf.len() > 8192 { return respond(&mut s, &quick(431, "headers_too_large", "headers too large")); }
-        match s.read(&mut chunk) {
-            Ok(0) | Err(_) => return,
-            Ok(n) => buf.extend_from_slice(&chunk[..n]),
-        }
+    let r = match read_request(&mut s, value_max) {
+        Ok(r) => r,
+        Err(Some(rep)) => return respond(&mut s, &rep),
+        Err(None) => return,
     };
-    let head = String::from_utf8_lossy(&buf[..head_end]).into_owned();
-    let mut lines = head.split("\r\n");
-    let mut first = lines.next().unwrap_or("").split_whitespace();
-    let (method, target) = (first.next().unwrap_or(""), first.next().unwrap_or(""));
-    let (path, query) = target.split_once('?').unwrap_or((target, ""));
-    let (mut clen, mut if_match, mut if_none_match, mut fly_ip, mut chunked) = (0usize, None, None, None, false);
-    for l in lines {
-        let Some((n, v)) = l.split_once(':') else { continue };
-        let v = v.trim();
-        match n.trim().to_ascii_lowercase().as_str() {
-            "content-length" => clen = v.parse().unwrap_or(usize::MAX),
-            "if-match" => if_match = Some(v.to_string()),
-            "if-none-match" => if_none_match = Some(v.to_string()),
-            "fly-client-ip" => fly_ip = Some(v.to_string()),
-            "transfer-encoding" => chunked = true,
-            _ => {}
-        }
-    }
-    if method == "OPTIONS" {
+    if r.method == "OPTIONS" {
         return respond(&mut s, &Reply { status: 204, body: String::new(), retry_after: None });
     }
-    if chunked { return respond(&mut s, &quick(411, "length_required", "send Content-Length, not chunked encoding")); }
-    if clen > value_max { return respond(&mut s, &quick(413, "too_large", &format!("value is over {value_max} bytes"))); }
-    let mut body = buf[head_end..].to_vec();
-    while body.len() < clen {
-        match s.read(&mut chunk) {
-            Ok(0) | Err(_) => return,
-            Ok(n) => body.extend_from_slice(&chunk[..n]),
-        }
-    }
-    body.truncate(clen);
-    let ip = fly_ip.unwrap_or(peer);
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    let req = Req { method, path, query, body: &body, if_match: if_match.as_deref(), if_none_match: if_none_match.as_deref(), ip: &ip };
+    let now = crate::http::now_secs();
+    let req = Req { method: &r.method, path: &r.path, query: &r.query, body: &r.body, if_match: r.header("if-match"), if_none_match: r.header("if-none-match"), ip: &r.ip };
     let rep = store.lock().unwrap().handle(&req, now);
     respond(&mut s, &rep);
 }

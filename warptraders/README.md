@@ -19,3 +19,7 @@ Starting a new game asks for a seed. Everyone who uses the same seed gets the sa
 The Sound button turns effects (warps, trades, pirates) and a very quiet space ambience on or off. The ambience is off until you turn it on.
 
 When a new version is deployed, a bar at the top says so. Refresh saves your run first.
+
+## The universe
+
+`universe/` is the shared version: one galaxy on the server, the same ports for everyone, other traders in your sector you can message or attack. The server runs the rules (`elf-punch/src/lab/tradewars.rs`), so scores can't be edited. The page is only a screen. You join with a name and the browser keeps a secret key; clear site data and that trader is gone. See `elf-punch/README.md` for the rules and settings.
