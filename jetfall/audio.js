@@ -7,6 +7,7 @@
 (function (root) {
   'use strict';
   const KEY = 'experiments-sound-v1';
+  const GAIN = 1.6; // measured: a near explosion peaks around 0.5 at the default volume
 
   function load() {
     try { const o = JSON.parse(localStorage.getItem(KEY) || '{}'); return { sfx: o.sfx !== false, volume: typeof o.volume === 'number' ? Math.min(1, Math.max(0, o.volume)) : 0.6 }; } catch (e) { return { sfx: true, volume: 0.6 }; }
@@ -20,10 +21,12 @@
       const C = root.AudioContext || root.webkitAudioContext;
       if (!C) return;
       const ctx = this.ctx = new C();
-      const comp = ctx.createDynamicsCompressor();
-      comp.threshold.value = -14; comp.ratio.value = 4; comp.attack.value = 0.003; comp.release.value = 0.2;
-      this.out = ctx.createGain(); this.out.gain.value = this.settings.sfx ? this.settings.volume : 0;
-      this.out.connect(comp); comp.connect(ctx.destination);
+      // a soft clipper instead of a compressor: quiet sounds pass untouched, a pile of explosions rounds off instead of clipping
+      const clip = ctx.createWaveShaper(), curve = new Float32Array(1024);
+      for (let i = 0; i < 1024; i++) { const x = (i / 1023) * 2 - 1; curve[i] = Math.tanh(x * 1.5) / Math.tanh(1.5); }
+      clip.curve = curve;
+      this.out = ctx.createGain(); this.out.gain.value = this.settings.sfx ? this.settings.volume * GAIN : 0;
+      this.out.connect(clip); clip.connect(ctx.destination);
       const len = ctx.sampleRate * 2, buf = ctx.createBuffer(1, len, ctx.sampleRate), d = buf.getChannelData(0);
       for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
       this.noise = buf;
@@ -31,7 +34,7 @@
       this.jet = this.loop(700, 0.9, 'bandpass');
       this.wind = this.loop(500, 0.5, 'lowpass');
     },
-    set(s) { Object.assign(this.settings, s); save(this.settings); if (this.out) this.out.gain.value = this.settings.sfx ? this.settings.volume : 0; },
+    set(s) { Object.assign(this.settings, s); save(this.settings); if (this.out) this.out.gain.value = this.settings.sfx ? this.settings.volume * GAIN : 0; },
     loop(freq, q, type) {
       const ctx = this.ctx, src = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
       src.buffer = this.noise; src.loop = true; f.type = type; f.frequency.value = freq; f.Q.value = q; g.gain.value = 0;
@@ -99,8 +102,8 @@
   const SOUNDS = {
     disc: (a, d) => { a.hiss(d, { from: 2400, to: 500, dur: 0.35, q: 2, gain: 0.22 }); a.tone(d, { f: 180, to: 90, dur: 0.25, gain: 0.3, type: 'triangle' }); },
     chain: (a, d) => { a.hiss(d, { from: 3000, to: 1200, dur: 0.05, q: 0.8, gain: 0.18, type: 'highpass' }); a.tone(d, { f: 140, to: 80, dur: 0.05, gain: 0.12, type: 'square' }); },
-    blaster: (a, d) => a.tone(d, { f: 1400, to: 300, dur: 0.18, gain: 0.14, type: 'sawtooth' }),
-    plasma: (a, d) => { a.hiss(d, { from: 600, to: 2400, dur: 0.3, q: 1.5, gain: 0.25 }); a.tone(d, { f: 220, to: 440, dur: 0.25, gain: 0.1, type: 'sawtooth' }); },
+    blaster: (a, d) => a.tone(d, { f: 1400, to: 300, dur: 0.18, gain: 0.24, type: 'sawtooth' }),
+    plasma: (a, d) => { a.hiss(d, { from: 600, to: 2400, dur: 0.3, q: 1.5, gain: 0.5 }); a.tone(d, { f: 220, to: 440, dur: 0.25, gain: 0.2, type: 'sawtooth' }); },
     gl: (a, d) => { a.tone(d, { f: 160, to: 70, dur: 0.18, gain: 0.35 }); a.hiss(d, { from: 900, to: 300, dur: 0.15, type: 'lowpass', gain: 0.2 }); },
     mortar: (a, d) => { a.tone(d, { f: 90, to: 40, dur: 0.45, gain: 0.45 }); a.hiss(d, { from: 600, to: 100, dur: 0.4, type: 'lowpass', gain: 0.3 }); },
     hgren: (a, d) => a.hiss(d, { from: 800, to: 300, dur: 0.15, type: 'lowpass', gain: 0.15 }),
