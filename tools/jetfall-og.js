@@ -17,6 +17,7 @@ const { chromium } = require('playwright');
     const dx = o.x - pos[0], dz = o.z - pos[2];
     JFGame.cam = { pos, yaw: Math.atan2(-dx, -dz) - 0.25, pitch: -0.2 };
     document.getElementById('hud').style.visibility = 'hidden';
+    JFGame.renderer.q = Object.assign({}, JFGame.renderer.q, { grain: 0 }); // grain does not compress
     const t = document.createElement('div');
     t.innerHTML = '<div style="font:bold 96px ui-monospace,Menlo,monospace;letter-spacing:18px;color:#fff;text-shadow:0 0 24px rgba(94,224,176,.6),5px 5px 0 #ff7a3d,-5px -5px 0 #4fb3ff">JETFALL</div><div style="font:28px ui-monospace,Menlo,monospace;color:#fff;text-shadow:0 2px 6px #000">jetpacks · skiing · capture the flag</div>';
     t.style.cssText = 'position:fixed;left:56px;bottom:48px;z-index:9';
