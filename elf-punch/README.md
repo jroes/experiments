@@ -160,17 +160,41 @@ Connect to `wss://<server>/jetfall`. Text frames are JSON:
 | Client sends | What happens |
 | --- | --- |
 | `{"t":"host","name":"Dock fight","info":{...}}` | `{"t":"hosted","room":"K7Q2MX","id":0}`. Codes are 6 characters from `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`. |
+| `{"t":"host","info":{...},"room":"DSTBWL"}` | claims a fixed server (below): `hosted` with that code, `taken` if someone hosts it, `no-room` if it isn't a fixed code |
 | `{"t":"info","info":{...}}` | host only: replaces the listing info (a JSON object, at most 600 bytes, else `{"t":"error","why":"bad-info"}`) |
 | `{"t":"join","room":"k7q2mx","name":"ann"}` | joiner gets `{"t":"joined","room":"K7Q2MX","id":3}`, host gets `{"t":"peer","id":3,"name":"ann"}` |
-| `{"t":"list"}` | `{"t":"rooms","rooms":[{"room","name","info","n"}]}`: rooms whose info has `"public":true`, at most 50, `n` = guests |
+| `{"t":"list"}` | `{"t":"rooms","rooms":[{"room","name","info","n"}]}`: every fixed server first, then rooms whose info has `"public":true` (at most 50), `n` = guests |
 | `{"t":"sig","to":0,"d":{...}}` | the target gets `{"t":"sig","from":3,"d":{...}}`. Guests can only send to the host (0). |
 | `{"t":"kick","id":3}` | host only: the guest gets `{"t":"error","why":"kicked"}` and is closed; the host gets `{"t":"left","id":3}` |
 | `{"t":"ping"}` | `{"t":"pong"}` |
 
 The server also sends `{"t":"left","id":N}` to the host when a guest goes, and `{"t":"closed"}` to every guest when the host goes (then
 closes them; the room is gone). Errors: `no-room`, `full`, `busy` (too many rooms), `already` (a connection hosts or joins once),
-`bad-info`, `kicked`. Junk and unknown messages are ignored. Guest ids run from 1 and are never reused in a room. Names are trimmed,
+`bad-info`, `kicked`, `taken` and `idle` (fixed servers). Junk and unknown messages are ignored. Guest ids run from 1 and are never reused in a room. Names are trimmed,
 lose control characters and keep at most 24 characters (empty becomes `player` or `room`).
+
+**Fixed servers.** A short list of named rooms that always show in the list, so there is always something to pick. A browser still
+hosts the game; the relay only keeps the name and code free. Idle, one is listed as
+`{"room":"DSTBWL","name":"Dust Bowl","info":{"map":"dunes","bots":3,"public":true,"idle":true},"n":0,"fixed":true}`. Once someone
+claims it, it's listed like any room (with the info the host sent) plus `"fixed":true`. Claiming is `host` with `"room"` (any case).
+The name is always the slot's. Two claims at once: one gets `hosted`, the other `taken`, and should then `join`. A `join` to an idle
+slot gets `idle`, which means claim it. When the host leaves, the room closes as usual and the slot is idle again. Fixed rooms don't
+count against `JF_ROOMS` or the 50 in the list, and a normal room never gets a fixed code.
+
+| Code | Name | Defaults |
+| --- | --- | --- |
+| `HGHLND` | Highland Brawl | `{"map":"highland","bots":3}` |
+| `DSTBWL` | Dust Bowl | `{"map":"dunes","bots":3}` |
+| `FRSTBT` | Frostbite | `{"map":"frost","bots":3}` |
+| `ASHPT2` | Ash Pit | `{"map":"ashfall","bots":3}` |
+| `TWNLKS` | Twin Lakes | `{"map":"lakes","bots":3}` |
+| `CNYNRN` | Canyon Run | `{"map":"canyon","bots":3}` |
+| `RTATN2` | Map Rotation | `{"map":"highland","bots":4,"rotate":true}` |
+| `NEWBYS` | Easy Hill | `{"map":"highland","bots":2,"skill":0.2}` |
+
+`JF_FIXED` replaces the list: `CODE|Name|map|bots`, then any `key=value` extras (JSON if it parses, else text), `;` between entries.
+For example `HGHLND|Highland Brawl|highland|3;RTATN2|Map Rotation|highland|4|rotate=true`. Bad entries (wrong code, repeated code,
+no map, bots not a number) are skipped. Set it empty for no fixed servers.
 
 Binary frames are game packets: the first 2 bytes (big-endian) are who it's for, the rest is passed on untouched. The receiver gets the
 same payload with the first 2 bytes changed to who it's from. Guests can only send to 0 (the host); the host sends to a guest id or
@@ -181,7 +205,7 @@ Limits (env, default):
 | What | Default | Variable |
 | --- | --- | --- |
 | Guests per room | 15 | `JF_ROOM_MAX` |
-| Rooms | 40 | `JF_ROOMS` |
+| Rooms (not counting fixed servers) | 40 | `JF_ROOMS` |
 | Relay connections | 150 | `JF_CONNS` (more get a `503` before the upgrade) |
 | Binary message | 65,536 bytes | `JF_BIN_MAX` (bigger closes with 1009) |
 | Text message | 16,384 bytes | `JF_TEXT_MAX` (bigger closes with 1009) |

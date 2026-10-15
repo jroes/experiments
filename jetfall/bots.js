@@ -194,6 +194,7 @@
       const sx = -mdz * bot.strafe, sz = mdx * bot.strafe;
       mdx = mdx * 0.3 + sx; mdz = mdz * 0.3 + sz;
       if (p.energy > 10) inp.b |= B.JET;
+      else if (p.ground && (w.tick & 8)) inp.b |= B.JUMP; // out of energy: hop over whatever is in the way
     }
 
     // jets: climb toward high goals, over hills, and to break a hard fall
@@ -218,6 +219,9 @@
       if (Math.sqrt(ex * ex + ez * ez) > 10 && bot.jet) jet = true;
     }
     if (!p.ground && p.vel[1] < -22 && alt < 60 && p.energy > 3) jet = true; // land softly
+    // get out of lava and water
+    const lh = w.terrain.lavaH, wh = w.terrain.waterH;
+    if ((lh != null && ground < lh + 1 && alt < 6) || (wh != null && p.pos[1] < wh + 0.5)) { if (p.energy > 2) jet = true; }
     // about to fly into a hillside: pull up
     if (!p.ground && sp > 25 && p.energy > 2) {
       const ax = p.pos[0] + p.vel[0] * 0.6, az = p.pos[2] + p.vel[2] * 0.6, ay = p.pos[1] + p.vel[1] * 0.6;

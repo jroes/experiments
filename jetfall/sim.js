@@ -127,6 +127,7 @@
     highland: {
       name: 'Highland', blurb: 'Green rolling hills. Long ski runs between the bases.',
       seed: 7, amp: 150, freq: 1 / 520, ridge: 0.35, rough: 0.48, dist: 620, off: 160, baseH: null,
+      props: ['tower', 'arch', 'ruin', 'ruin', 'arch'], center: 'tower',
       look: {
         skyTop: [0.22, 0.42, 0.75], skyHorizon: [0.72, 0.82, 0.92], sun: [0.55, 0.45, 0.35], sunColor: [1.1, 1.0, 0.86], ambient: [0.36, 0.43, 0.55],
         fog: [0.66, 0.75, 0.86], fogDist: 1700, clouds: 0.55,
@@ -136,6 +137,7 @@
     dunes: {
       name: 'Dust Basin', blurb: 'Big dunes under an orange sky. Fast going downhill.',
       seed: 21, amp: 120, freq: 1 / 430, ridge: 0.15, rough: 0.4, dist: 650, off: -120, baseH: null,
+      props: ['arch', 'arch', 'ruin', 'ruin', 'spire'], center: 'arch', weather: 'dust',
       look: {
         skyTop: [0.38, 0.45, 0.62], skyHorizon: [0.98, 0.72, 0.45], sun: [-0.4, 0.38, 0.55], sunColor: [1.0, 0.82, 0.6], ambient: [0.55, 0.45, 0.4],
         fog: [0.92, 0.7, 0.5], fogDist: 1400, clouds: 0.2, rocks: 250,
@@ -145,6 +147,7 @@
     frost: {
       name: 'Frostline', blurb: 'Snow and steep ridges. Low cloud, hard to see far.',
       seed: 33, amp: 190, freq: 1 / 480, ridge: 0.6, rough: 0.5, dist: 600, off: 200, baseH: null,
+      props: ['spire', 'spire', 'tower', 'ruin'], center: 'tower', weather: 'snow',
       look: {
         skyTop: [0.5, 0.58, 0.68], skyHorizon: [0.8, 0.84, 0.88], sun: [0.2, 0.42, -0.6], sunColor: [0.95, 0.96, 1.0], ambient: [0.55, 0.6, 0.7],
         fog: [0.78, 0.82, 0.87], fogDist: 950, clouds: 0.8, rocks: 700, rockCol: [0.5, 0.52, 0.56],
@@ -152,13 +155,35 @@
       },
     },
     ashfall: {
-      name: 'Ashfall', blurb: 'Dark volcanic rock and a red sky. Sharp peaks, good cover.',
+      name: 'Ashfall', blurb: 'Dark volcanic rock, a red sky and lava in the low ground. The lava burns: jet over it.',
       seed: 47, amp: 170, freq: 1 / 400, ridge: 0.7, rough: 0.55, dist: 610, off: -180, baseH: null,
+      props: ['spire', 'spire', 'ruin', 'tower'], center: 'spire', weather: 'ash', lava: 0.18,
       look: {
         skyTop: [0.12, 0.08, 0.12], skyHorizon: [0.62, 0.25, 0.14], sun: [0.55, 0.3, 0.3], sunColor: [1.0, 0.6, 0.4], ambient: [0.38, 0.28, 0.3],
         fog: [0.35, 0.16, 0.12], fogDist: 1250, clouds: 0.4, rocks: 1300,
         low: [0.16, 0.14, 0.14], mid: [0.22, 0.19, 0.18], high: [0.3, 0.27, 0.25], rock: [0.12, 0.11, 0.11], snow: [0.5, 0.45, 0.42], snowLine: 0.9,
         lava: true,
+      },
+    },
+    lakes: {
+      name: 'Twin Lakes', blurb: 'Two lakes in the middle and rain. Water slows you down, so ski around it or jet over.',
+      seed: 61, amp: 130, freq: 1 / 470, ridge: 0.3, rough: 0.46, dist: 640, off: 60, baseH: null,
+      shape: 'lakes', props: ['ruin', 'arch', 'tower', 'ruin'], center: 'tower', weather: 'rain',
+      look: {
+        skyTop: [0.3, 0.38, 0.5], skyHorizon: [0.62, 0.68, 0.74], sun: [0.35, 0.5, -0.5], sunColor: [0.95, 0.95, 0.92], ambient: [0.45, 0.5, 0.58],
+        fog: [0.58, 0.64, 0.7], fogDist: 1100, clouds: 0.9,
+        low: [0.24, 0.36, 0.2], mid: [0.3, 0.42, 0.22], high: [0.42, 0.44, 0.4], rock: [0.36, 0.37, 0.38], snow: [0.9, 0.92, 0.95], snowLine: 0.85,
+        water: [0.12, 0.24, 0.3],
+      },
+    },
+    canyon: {
+      name: 'Canyon Run', blurb: 'A deep canyon between the bases with three bridges. Dive in and ski the floor, or take a bridge.',
+      seed: 73, amp: 110, freq: 1 / 500, ridge: 0.25, rough: 0.45, dist: 640, off: -90, baseH: null,
+      shape: 'canyon', props: ['ruin', 'tower', 'arch'], weather: 'dust',
+      look: {
+        skyTop: [0.28, 0.45, 0.72], skyHorizon: [0.86, 0.8, 0.7], sun: [0.3, 0.55, 0.45], sunColor: [1.1, 0.95, 0.8], ambient: [0.45, 0.42, 0.42],
+        fog: [0.82, 0.76, 0.66], fogDist: 1500, clouds: 0.3, rocks: 1100,
+        low: [0.62, 0.38, 0.24], mid: [0.7, 0.48, 0.3], high: [0.78, 0.6, 0.42], rock: [0.58, 0.32, 0.2], snow: [0.85, 0.7, 0.55], snowLine: 2,
       },
     },
   };
@@ -194,6 +219,7 @@
       for (let ix = 0; ix <= N; ix++) {
         const x = ix * CELL, z = iz * CELL;
         let h = (raw(x, z) + raw(SIZE - x, SIZE - z)) * 0.5 * 1.35; // symmetric land
+        h -= carve(def, x, z);
         for (const b of bases) {
           const d = Math.sqrt((x - b.x) * (x - b.x) + (z - b.z) * (z - b.z));
           const t = clamp((d - 45) / 110, 0, 1), s = t * t * (3 - 2 * t);
@@ -210,11 +236,45 @@
     let lo = Infinity;
     for (let i = 0; i < H.length; i++) if (H[i] < lo) lo = H[i];
     for (let i = 0; i < H.length; i++) H[i] = H[i] - lo + 20;
-    return new Terrain(H, padH - lo + 20);
+    const t = new Terrain(H, padH - lo + 20);
+    // water fills the lake basins up to a level; lava fills the lowest ground
+    if (def.shape === 'lakes') t.waterH = t.height(SIZE / 2, SIZE / 2 - LAKE_OFF) + LAKE_DEPTH * 0.62;
+    if (def.lava) {
+      const hs = [];
+      for (let iz = 0; iz <= N; iz += 2) for (let ix = 0; ix <= N; ix += 2) { const x = ix * CELL, z = iz * CELL; if (x > AREA_MIN && x < AREA_MAX && z > AREA_MIN && z < AREA_MAX) hs.push(H[iz * (N + 1) + ix]); }
+      hs.sort((a, b) => a - b);
+      t.lavaH = hs[Math.floor(hs.length * def.lava)];
+    }
+    return t;
+  }
+
+  // Shapes cut into the noise for some maps. Each is point symmetric about the centre, like the land.
+  const LAKE_OFF = 330, LAKE_R = 190, LAKE_DEPTH = 46;
+  const CANYON_A = 120, CANYON_K = Math.PI * 2 / 900, CANYON_W = 75, CANYON_D = 85;
+  const canyonX = z => SIZE / 2 + CANYON_A * Math.sin((z - SIZE / 2) * CANYON_K);
+  function carve(def, x, z) {
+    const c = SIZE / 2;
+    if (def.shape === 'lakes') {
+      let d = 0;
+      for (const s of [-1, 1]) {
+        const dx = x - c, dz = z - (c + s * LAKE_OFF);
+        const r = Math.sqrt(dx * dx + dz * dz) / LAKE_R;
+        if (r < 1) { const k = 1 - r * r; d = Math.max(d, LAKE_DEPTH * k * k * (3 - 2 * k)); }
+      }
+      return d;
+    }
+    if (def.shape === 'canyon') {
+      const d = Math.abs(x - canyonX(z));
+      if (d >= CANYON_W) return 0;
+      const t = d / CANYON_W, k = 1 - t;
+      // steep walls, a flat floor
+      return CANYON_D * Math.min(1, k * k * (3 - 2 * k) * 1.6);
+    }
+    return 0;
   }
 
   class Terrain {
-    constructor(heights, padH) { this.h = heights; this.padH = padH; }
+    constructor(heights, padH) { this.h = heights; this.padH = padH; this.waterH = null; this.lavaH = null; }
     at(ix, iz) {
       ix = ix < 0 ? 0 : ix > N ? N : ix; iz = iz < 0 ? 0 : iz > N ? N : iz;
       return this.h[iz * (N + 1) + ix];
@@ -369,7 +429,7 @@
         let bb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
         for (const w of L.walls) {
           const b = placeBox(w.b, o);
-          this.solids.push({ b, mat: w.mat, team });
+          this.solids.push({ b, mat: w.mat, team, grp: team });
           for (let i = 0; i < 3; i++) { bb[i] = Math.min(bb[i], b[i]); bb[i + 3] = Math.max(bb[i + 3], b[i + 3]); }
         }
         for (const t of L.things) {
@@ -379,7 +439,7 @@
           // which way (world z) the wall behind a station is, for drawing its frame
           if (t.kind === 'station') obj.wall = Math.sign((t.b[2] + t.b[5]) / 2) * o.face;
           this.objects.push(obj);
-          this.solids.push({ b, mat: t.kind, team, obj });
+          this.solids.push({ b, mat: t.kind, team, obj, grp: team });
           for (let i = 0; i < 3; i++) { bb[i] = Math.min(bb[i], b[i]); bb[i + 3] = Math.max(bb[i + 3], b[i + 3]); }
         }
         base.bounds = bb;
@@ -388,6 +448,94 @@
         this.flags.push({ team, home, pos: home.slice(), vel: [0, 0, 0], state: 'home', carrier: -1, returnAt: 0 });
       });
       this.baseBounds = this.bases.map(b => b.bounds);
+      this.buildProps();
+    }
+
+    // Neutral things out in the field: towers, arches, ruins, spires, bridges. Placed in point-symmetric pairs.
+    // Each is its own group of boxes with its own bounds (this.baseBounds[grp]), so collision only looks at what is near.
+    buildProps() {
+      const def = this.def, t = this.terrain, c = SIZE / 2;
+      const rng = mulberry(def.seed * 31 + 5);
+      const placed = [];
+      const add = (boxes, x, z, mat) => {
+        for (const mirror of (x === c && z === c ? [false] : [false, true])) {
+          const grp = this.baseBounds.length;
+          const bb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+          for (const lb of boxes) {
+            let b = mirror ? [2 * c - lb[3], lb[1], 2 * c - lb[5], 2 * c - lb[0], lb[4], 2 * c - lb[2]] : lb.slice(0, 6);
+            this.solids.push({ b, mat: lb[6] || mat, team: -1, grp });
+            for (let i = 0; i < 3; i++) { bb[i] = Math.min(bb[i], b[i]); bb[i + 3] = Math.max(bb[i + 3], b[i + 3]); }
+          }
+          this.baseBounds.push(bb);
+        }
+        placed.push([x, z], [2 * c - x, 2 * c - z]);
+      };
+      // boxes for one thing at (x, z), standing on the ground; y in local metres
+      const make = (kind, x, z) => {
+        const g = Math.min(t.height(x - 6, z - 6), t.height(x + 6, z - 6), t.height(x - 6, z + 6), t.height(x + 6, z + 6), t.height(x, z));
+        const B = (x0, y0, z0, x1, y1, z1, mat) => [x + x0, g + y0, z + z0, x + x1, g + y1, z + z1, mat];
+        const rot = rng() < 0.5; // arches and walls run along x or along z
+        const R = (x0, y0, z0, x1, y1, z1, mat) => (rot ? B(z0, y0, x0, z1, y1, x1, mat) : B(x0, y0, z0, x1, y1, z1, mat));
+        if (kind === 'tower') {
+          const H = 22 + Math.floor(rng() * 12);
+          return [B(-2, -3, -2, 2, H, 2), B(-6.5, H, -6.5, 6.5, H + 1, 6.5, 'deck'),
+            B(-6.5, H + 1, -6.5, -5.8, H + 2.2, -1.5), B(-6.5, H + 1, 1.5, -5.8, H + 2.2, 6.5), B(5.8, H + 1, -6.5, 6.5, H + 2.2, -1.5), B(5.8, H + 1, 1.5, 6.5, H + 2.2, 6.5),
+            B(-3.5, -3, -3.5, 3.5, 2, 3.5)];
+        }
+        if (kind === 'arch') {
+          const W = 9 + Math.floor(rng() * 5), H = 12 + Math.floor(rng() * 6);
+          return [R(-W - 3, -3, -1.6, -W, H, 1.6), R(W, -3, -1.6, W + 3, H, 1.6), R(-W - 3, H, -1.6, W + 3, H + 3, 1.6)];
+        }
+        if (kind === 'spire') {
+          const H = 14 + Math.floor(rng() * 10);
+          return [B(-4, -3, -4, 4, H * 0.45, 4), B(-2.6, H * 0.45, -2.6, 2.6, H * 0.8, 2.6), B(-1.4, H * 0.8, -1.4, 1.4, H, 1.4)];
+        }
+        // ruin: broken walls around a square
+        const out = [];
+        const n = 4 + Math.floor(rng() * 3);
+        for (let i = 0; i < n; i++) {
+          const side = i % 4, len = 4 + rng() * 7, h = 1.5 + rng() * 5, along = (rng() - 0.5) * 12;
+          if (side === 0) out.push(B(along - len / 2, -2, -10, along + len / 2, h, -9));
+          if (side === 1) out.push(B(along - len / 2, -2, 9, along + len / 2, h, 10));
+          if (side === 2) out.push(B(-10, -2, along - len / 2, -9, h, along + len / 2));
+          if (side === 3) out.push(B(9, -2, along - len / 2, 10, h, along + len / 2));
+        }
+        return out;
+      };
+      const free = (x, z, gap) => {
+        if (x < AREA_MIN + 60 || x > AREA_MAX - 60 || z < AREA_MIN + 60 || z > AREA_MAX - 60) return false;
+        for (const b of this.bases) if (Math.hypot(b.o.x - x, b.o.z - z) < 190) return false;
+        for (const p of placed) if (Math.hypot(p[0] - x, p[1] - z) < gap) return false;
+        if (t.waterH != null && t.height(x, z) < t.waterH + 3) return false;
+        if (t.lavaH != null && t.height(x, z) < t.lavaH + 2) return false;
+        if (def.shape === 'canyon' && Math.abs(x - canyonX(z)) < CANYON_W + 20) return false;
+        if (t.normal(x, z)[1] < 0.8) return false;
+        return true;
+      };
+      if (def.shape === 'canyon') {
+        // three bridges across the canyon, at the rim height
+        for (const dz of [0, -280]) {
+          const zb = c + dz, xc = canyonX(zb);
+          const rim = Math.max(t.height(xc - CANYON_W - 8, zb), t.height(xc + CANYON_W + 8, zb));
+          const L = CANYON_W + 14, y = rim + 0.6;
+          const floor = t.height(xc, zb);
+          const boxes = [[xc - L, y - 1, zb - 4, xc + L, y, zb + 4, 'deck'],
+            [xc - L, y, zb - 4, xc + L, y + 1.1, zb - 3.4], [xc - L, y, zb + 3.4, xc + L, y + 1.1, zb + 4],
+            [xc - 22, floor - 2, zb - 1.5, xc - 19, y - 1, zb + 1.5], [xc + 19, floor - 2, zb - 1.5, xc + 22, y - 1, zb + 1.5]];
+          if (dz === 0) { const grp = this.baseBounds.length; const bb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+            for (const lb of boxes) { this.solids.push({ b: lb.slice(0, 6), mat: lb[6] || 'stone', team: -1, grp }); for (let i = 0; i < 3; i++) { bb[i] = Math.min(bb[i], lb[i]); bb[i + 3] = Math.max(bb[i + 3], lb[i + 3]); } }
+            this.baseBounds.push(bb); placed.push([xc, zb]);
+          } else add(boxes, xc, zb, 'stone');
+        }
+      } else if (def.center) add(make(def.center, c, c), c, c, 'stone');
+      for (const kind of def.props || []) {
+        for (let tries = 0; tries < 60; tries++) {
+          const x = AREA_MIN + rng() * (AREA_MAX - AREA_MIN), z = AREA_MIN + rng() * (AREA_MAX - AREA_MIN);
+          if (!free(x, z, 150) || !free(2 * c - x, 2 * c - z, 150)) continue;
+          add(make(kind, x, z), x, z, 'stone');
+          break;
+        }
+      }
     }
 
     // ----- players -----
@@ -564,10 +712,13 @@
       let best = null;
       const tg = this.terrain.raycast(a[0], a[1], a[2], to[0], to[1], to[2]);
       if (tg >= 0) best = { t: tg, what: 'ground' };
-      for (let i = 0; i < this.bases.length; i++) {
+      // shots stop at the water's surface
+      const wh = this.terrain.waterH;
+      if (wh != null && a[1] >= wh && to[1] < wh) { const tw = (a[1] - wh) / (a[1] - to[1]); if (!best || tw < best.t) best = { t: tw, what: 'water' }; }
+      for (let i = 0; i < this.baseBounds.length; i++) {
         if (segBox(a[0], a[1], a[2], dx, dy, dz, this.baseBounds[i], 1) < 0) continue;
         for (const s of this.solids) {
-          if (s.team !== i) continue;
+          if (s.grp !== i) continue;
           const t = segBox(a[0], a[1], a[2], dx, dy, dz, s.b, 0);
           if (t >= 0 && (!best || t < best.t)) best = { t, what: 'solid', solid: s };
         }
@@ -594,7 +745,7 @@
         const to = [pr.pos[0] + pr.vel[0] * dt, pr.pos[1] + pr.vel[1] * dt, pr.pos[2] + pr.vel[2] * dt];
         const hit = this.traceProj(pr, to, -1);
         if (hit) {
-          if (W.bounce && hit.what !== 'player') {
+          if (W.bounce && hit.what !== 'player' && hit.what !== 'water') {
             // grenades bounce off land and walls, then go off when the fuse runs out
             const n = this.surfaceNormal(hit);
             const vn = pr.vel[0] * n[0] + pr.vel[1] * n[1] + pr.vel[2] * n[2];
@@ -615,6 +766,7 @@
     }
 
     surfaceNormal(hit) {
+      if (hit.what === 'water') return [0, 1, 0];
       if (hit.what === 'solid') {
         const b = hit.solid.b, p = hit.pos;
         const d = [p[0] - b[0], b[3] - p[0], p[1] - b[1], b[4] - p[1], p[2] - b[2], b[5] - p[2]];
@@ -669,9 +821,9 @@
     blocked(a, b) {
       if (this.terrain.raycast(a[0], a[1], a[2], b[0], b[1], b[2]) >= 0) return true;
       const dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2];
-      for (let i = 0; i < this.bases.length; i++) {
+      for (let i = 0; i < this.baseBounds.length; i++) {
         if (segBox(a[0], a[1], a[2], dx, dy, dz, this.baseBounds[i], 0) < 0) continue;
-        for (const s of this.solids) if (s.team === i && !s.obj && segBox(a[0], a[1], a[2], dx, dy, dz, s.b, -0.05) >= 0) return true;
+        for (const s of this.solids) if (s.grp === i && !s.obj && segBox(a[0], a[1], a[2], dx, dy, dz, s.b, -0.05) >= 0) return true;
       }
       return false;
     }
@@ -1061,6 +1213,15 @@
     if (sp > 1) { const k = Math.max(0, 1 - 0.00038 * sp * dt); v[0] *= k; v[1] *= k; v[2] *= k; }
     if (p.pos[1] > CEILING && v[1] > 0) v[1] *= 0.9;
 
+    // water: slows you down and holds you up; you can jet out
+    const wh = world.terrain.waterH;
+    if (wh != null && p.pos[1] < wh) {
+      const depth = wh - p.pos[1];
+      const k = Math.max(0, 1 - 2.2 * dt);
+      v[0] *= k; v[2] *= k; v[1] *= Math.max(0, 1 - 3 * dt);
+      v[1] += Math.min(depth, A.h) * 16 * dt;
+    }
+
     // mission area: a push back towards the middle
     const x = p.pos[0], z = p.pos[2];
     if (x < AREA_MIN) v[0] += (AREA_MIN - x) * 1.5 * dt + 20 * dt;
@@ -1088,7 +1249,11 @@
     if (landed) p.gn = landed.n;
     p.fallDmg = 0;
     if (landed && landed.impact < -A.impact) p.fallDmg = (-landed.impact - A.impact) * 2.2;
+    if (wh != null && p.pos[1] < wh + 0.5) p.fallDmg = 0; // a splash, not a crash
     if (p.fallDmg > 0 && world.damage) world.damage(p, p.fallDmg, null, 'fall', null, 0, -1);
+    // lava burns while you stand in it
+    const lh = world.terrain.lavaH;
+    if (lh != null && touched && world.damage && world.terrain.height(p.pos[0], p.pos[2]) < lh && p.pos[1] < lh + 0.4) world.damage(p, 34 * dt, null, 'lava', null, 0, -1);
   }
 
   // push the player out of the land and the buildings; returns the contact (normal and how hard you hit) or null
@@ -1110,7 +1275,7 @@
       const bb = bbs[i];
       if (px1 < bb[0] || px0 > bb[3] || py1 < bb[1] || py0 > bb[4] || pz1 < bb[2] || pz0 > bb[5]) continue;
       for (const s of world.solids) {
-        if (s.team !== i) continue;
+        if (s.grp !== i) continue;
         const b = s.b;
         const qx0 = p.pos[0] - r, qx1 = p.pos[0] + r, qy0 = p.pos[1], qy1 = p.pos[1] + A.h, qz0 = p.pos[2] - r, qz1 = p.pos[2] + r;
         if (qx1 <= b[0] || qx0 >= b[3] || qz1 <= b[2] || qz0 >= b[5]) continue;

@@ -9,7 +9,7 @@
 //! Lock order: the hub, then a room. Nothing takes the hub while holding a room.
 
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{self, ErrorKind, Read, Write};
 use std::net::{Shutdown, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -21,6 +21,10 @@ const INFO_MAX: usize = 600;
 const SIG_MAX: usize = 16 * 1024;
 const LIST_MAX: usize = 50;
 const BROADCAST: u16 = 0xFFFF;
+/// Fixed servers: `CODE|Name|map|bots`, then any `key=value` extras, `;` between entries. `JF_FIXED` replaces it (empty for none).
+const DEFAULT_FIXED: &str = "HGHLND|Highland Brawl|highland|3;DSTBWL|Dust Bowl|dunes|3;FRSTBT|Frostbite|frost|3;\
+    ASHPT2|Ash Pit|ashfall|3;TWNLKS|Twin Lakes|lakes|3;CNYNRN|Canyon Run|canyon|3;\
+    RTATN2|Map Rotation|highland|4|rotate=true;NEWBYS|Easy Hill|highland|2|skill=0.2";
 
 struct Cfg {
     room_max: usize,
@@ -57,6 +61,16 @@ fn cfg() -> &'static Cfg {
     })
 }
 
+/// The fixed slots, from `JF_FIXED` or the built-in list, checked once.
+fn fixed_list() -> &'static [Fixed] {
+    static F: OnceLock<Vec<Fixed>> = OnceLock::new();
+    F.get_or_init(|| parse_fixed(&std::env::var("JF_FIXED").unwrap_or_else(|_| DEFAULT_FIXED.to_string())))
+}
+
+fn fixed_slot(code: &str) -> Option<&'static Fixed> {
+    fixed_list().iter().find(|f| f.code == code)
+}
+
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -85,6 +99,55 @@ fn clean_info(v: Option<&Value>) -> Option<Value> {
     let v = v?;
     if !v.is_object() || serde_json::to_string(v).map_or(true, |s| s.len() > INFO_MAX) { return None; }
     Some(v.clone())
+}
+
+/// A fixed server: a room code and name that always show in the list. Browsers still host it; the relay only reserves the code.
+#[derive(Debug)]
+pub(crate) struct Fixed {
+    pub code: String,
+    pub name: String,
+    pub defaults: Value,
+}
+
+impl Fixed {
+    /// The defaults with `extra` laid over them.
+    fn info(&self, extra: Value) -> Value {
+        let mut v = self.defaults.clone();
+        if let (Some(o), Value::Object(e)) = (v.as_object_mut(), extra) { o.extend(e); }
+        v
+    }
+}
+
+/// `CODE|Name|map|bots[|key=value...]` entries split by `;`. Extras are JSON if they parse, else text. Malformed entries,
+/// codes not 6 characters of `ALPHABET`, and repeated codes are skipped. Codes are upper-cased.
+pub(crate) fn parse_fixed(spec: &str) -> Vec<Fixed> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for entry in spec.split(';') {
+        let f: Vec<&str> = entry.split('|').map(str::trim).collect();
+        let [code, name, map, bots, extra @ ..] = f.as_slice() else { continue };
+        let code = code.to_ascii_uppercase();
+        if code.len() != 6 || !code.bytes().all(|b| ALPHABET.contains(&b)) || map.is_empty() { continue; }
+        let Ok(bots) = bots.parse::<u32>() else { continue };
+        let mut d = serde_json::Map::new();
+        d.insert("map".into(), json!(map));
+        d.insert("bots".into(), json!(bots));
+        let extras: Option<Vec<(&str, &str)>> = extra.iter().map(|kv| kv.split_once('=').filter(|(k, _)| !k.trim().is_empty())).collect();
+        let Some(extras) = extras else { continue };
+        for (k, v) in extras {
+            let v = v.trim();
+            d.insert(k.trim().into(), serde_json::from_str(v).unwrap_or_else(|_| json!(v)));
+        }
+        let defaults = Value::Object(d);
+        if clean_info(Some(&defaults)).is_none() || !seen.insert(code.clone()) { continue; }
+        out.push(Fixed { name: clean_name(name, "room"), code, defaults });
+    }
+    out
+}
+
+/// A fresh random code that `used` says is free; `None` after 100 tries.
+pub(crate) fn pick_code(mut gen: impl FnMut() -> u64, used: impl Fn(&str) -> bool) -> Option<String> {
+    (0..100).map(|_| room_code(gen())).find(|k| !used(k))
 }
 
 fn rand64() -> u64 {
@@ -230,6 +293,7 @@ struct Guest {
 
 struct Room {
     code: String,
+    fixed: bool,
     st: Mutex<RoomSt>,
 }
 
@@ -442,7 +506,7 @@ fn on_text(conn: &mut Conn, s: &str) {
     match str_of("t") {
         "ping" => { conn.me.text(r#"{"t":"pong"}"#); }
         "list" => { conn.me.text(&list()); }
-        "host" => host(conn, str_of("name"), m.get("info")),
+        "host" => host(conn, str_of("name"), m.get("info"), m.get("room")),
         "join" => join(conn, str_of("room"), str_of("name")),
         "info" => {
             if let Role::Host(room) = &conn.role {
@@ -480,37 +544,71 @@ fn on_text(conn: &mut Conn, s: &str) {
     }
 }
 
+/// Fixed slots first (live or idle, in their order), then up to `LIST_MAX` other public rooms by code.
 fn list() -> String {
     let h = hub();
+    let mut out: Vec<Value> = Vec::new();
+    for f in fixed_list() {
+        let live = h.get(&f.code).and_then(|room| {
+            let st = lock(&room.st);
+            (!st.closed).then(|| json!({ "room": f.code, "name": st.name, "info": st.info, "n": st.guests.len(), "fixed": true }))
+        });
+        out.push(live.unwrap_or_else(|| {
+            json!({ "room": f.code, "name": f.name, "info": f.info(json!({ "public": true, "idle": true })), "n": 0, "fixed": true })
+        }));
+    }
     let mut rooms: Vec<(String, Value)> = Vec::new();
     for (code, room) in h.iter() {
+        if room.fixed { continue; }
         let st = lock(&room.st);
         if st.closed || st.info.get("public") != Some(&Value::Bool(true)) { continue; }
         rooms.push((code.clone(), json!({ "room": code, "name": st.name, "info": st.info, "n": st.guests.len() })));
     }
     drop(h);
     rooms.sort_by(|a, b| a.0.cmp(&b.0));
-    let rooms: Vec<Value> = rooms.into_iter().take(LIST_MAX).map(|r| r.1).collect();
-    json!({ "t": "rooms", "rooms": rooms }).to_string()
+    out.extend(rooms.into_iter().take(LIST_MAX).map(|r| r.1));
+    json!({ "t": "rooms", "rooms": out }).to_string()
 }
 
-fn host(conn: &mut Conn, name: &str, info: Option<&Value>) {
+/// A new room with a random code, or, with `claim`, the fixed slot of that code. The check and the insert are under one hub lock,
+/// so of two claims for the same slot exactly one wins. Fixed rooms don't count against `JF_ROOMS`.
+fn host(conn: &mut Conn, name: &str, info: Option<&Value>, claim: Option<&Value>) {
     if !matches!(conn.role, Role::None) { return conn.me.error("already"); }
     let c = cfg();
+    let slot = match claim {
+        None | Some(Value::Null) => None,
+        Some(v) => match fixed_slot(&v.as_str().unwrap_or("").trim().to_ascii_uppercase()) {
+            Some(f) => Some(f),
+            None => return conn.me.error("no-room"),
+        },
+    };
     let mut h = hub();
-    if h.len() >= c.rooms {
-        drop(h);
-        return conn.me.error("busy");
-    }
-    let Some(code) = (0..100).map(|_| room_code(rand64())).find(|k| !h.contains_key(k)) else {
-        drop(h);
-        return conn.me.error("busy");
+    let code = match slot {
+        Some(f) if h.contains_key(&f.code) => {
+            drop(h);
+            return conn.me.error("taken");
+        }
+        Some(f) => f.code.clone(),
+        None => {
+            let picked = if h.values().filter(|r| !r.fixed).count() >= c.rooms { None }
+                else { pick_code(rand64, |k| h.contains_key(k) || fixed_slot(k).is_some()) };
+            let Some(code) = picked else {
+                drop(h);
+                return conn.me.error("busy");
+            };
+            code
+        }
+    };
+    let (name, info) = match slot {
+        Some(f) => (f.name.clone(), clean_info(info).unwrap_or_else(|| f.info(json!({ "public": true })))),
+        None => (clean_name(name, "room"), clean_info(info).unwrap_or_else(|| json!({}))),
     };
     let room = Arc::new(Room {
         code: code.clone(),
+        fixed: slot.is_some(),
         st: Mutex::new(RoomSt {
-            name: clean_name(name, "room"),
-            info: clean_info(info).unwrap_or_else(|| json!({})),
+            name,
+            info,
             host: conn.me.clone(),
             guests: BTreeMap::new(),
             next: 1,
@@ -531,10 +629,11 @@ fn join(conn: &mut Conn, code: &str, name: &str) {
     if !matches!(conn.role, Role::None) { return conn.me.error("already"); }
     let code = code.trim().to_ascii_uppercase();
     let room = if code.len() == 6 { hub().get(&code).cloned() } else { None };
-    let Some(room) = room else { return conn.me.error("no-room") };
+    // An idle fixed slot says so, so the client knows to claim it instead.
+    let Some(room) = room else { return conn.me.error(if fixed_slot(&code).is_some() { "idle" } else { "no-room" }) };
     let name = clean_name(name, "player");
     let mut st = lock(&room.st);
-    if st.closed { drop(st); return conn.me.error("no-room"); }
+    if st.closed { drop(st); return conn.me.error(if room.fixed { "idle" } else { "no-room" }); }
     if st.guests.len() >= cfg().room_max || st.next > 65534 { drop(st); return conn.me.error("full"); }
     let id = st.next as u16;
     st.next += 1;
@@ -610,6 +709,57 @@ mod tests {
         assert_ne!(room_code(1), room_code(32));
         let set: std::collections::HashSet<String> = (0..2000).map(|_| room_code(rand64())).collect();
         assert!(set.len() > 1990);
+    }
+
+    #[test]
+    fn fixed_default() {
+        let f = parse_fixed(DEFAULT_FIXED);
+        let codes: Vec<&str> = f.iter().map(|x| x.code.as_str()).collect();
+        assert_eq!(codes, ["HGHLND", "DSTBWL", "FRSTBT", "ASHPT2", "TWNLKS", "CNYNRN", "RTATN2", "NEWBYS"]);
+        assert_eq!(f[0].name, "Highland Brawl");
+        assert_eq!(f[0].defaults, json!({ "map": "highland", "bots": 3 }));
+        assert_eq!(f[3].name, "Ash Pit");
+        assert_eq!(f[3].defaults, json!({ "map": "ashfall", "bots": 3 }));
+        assert_eq!(f[6].defaults, json!({ "map": "highland", "bots": 4, "rotate": true }));
+        assert_eq!(f[7].name, "Easy Hill");
+        assert_eq!(f[7].defaults, json!({ "map": "highland", "bots": 2, "skill": 0.2 }));
+        assert_eq!(f[7].info(json!({ "public": true, "idle": true })), json!({ "map": "highland", "bots": 2, "skill": 0.2, "public": true, "idle": true }));
+    }
+
+    #[test]
+    fn fixed_parse() {
+        assert!(parse_fixed("").is_empty());
+        assert!(parse_fixed(";;  ;").is_empty());
+        let f = parse_fixed(
+            " abcdef | Test \u{7}Room | dunes | 5 ;bad|x;ABCDEF|Dup|a|1;OOOOOO|Has O|a|1;ABCDE|Short|a|1;ABCDEFG|Long|a|1;\
+             KLMNPQ|No bots|frost|x;KLMNPR|Neg|frost|-1;KLMNPS|No map||1;MNPQRS|Bad extra|frost|1|oops;MNPQRT|Empty key|frost|1|=3;\
+             GHJKLM|Two|frost|0|rotate=true|skill=0.5|note=hi there;ZZZZZ2||lakes|2",
+        );
+        let codes: Vec<&str> = f.iter().map(|x| x.code.as_str()).collect();
+        assert_eq!(codes, ["ABCDEF", "GHJKLM", "ZZZZZ2"]);
+        assert_eq!(f[0].name, "Test Room");
+        assert_eq!(f[0].defaults, json!({ "map": "dunes", "bots": 5 }));
+        assert_eq!(f[1].defaults, json!({ "map": "frost", "bots": 0, "rotate": true, "skill": 0.5, "note": "hi there" }));
+        assert_eq!(f[2].name, "room");
+        // defaults too big for the info limit are skipped
+        assert!(parse_fixed(&format!("ABCDEF|Big|a|1|x={}", "y".repeat(700))).is_empty());
+        // junk never panics
+        for s in ["|||", "|||;", "A|B|C|D|E|F", "\u{0}|\u{0}|\u{0}|0", "AAAAAA|a|b|99999999999999999999"] { let _ = parse_fixed(s); }
+    }
+
+    #[test]
+    fn random_codes_skip_fixed() {
+        let fixed: Vec<Fixed> = parse_fixed(DEFAULT_FIXED);
+        let num = |code: &str| code.bytes().rev().fold(0u64, |x, b| x * 32 + ALPHABET.iter().position(|a| *a == b).unwrap() as u64);
+        assert_eq!(room_code(num("HGHLND")), "HGHLND");
+        // a generator that offers every fixed code first, then a free one
+        let mut offers: Vec<u64> = fixed.iter().map(|f| num(&f.code)).collect();
+        offers.push(num("K7Q2MX"));
+        let mut it = offers.into_iter();
+        let got = pick_code(|| it.next().unwrap_or(0), |k| fixed.iter().any(|f| f.code == k));
+        assert_eq!(got.as_deref(), Some("K7Q2MX"));
+        // nothing free: gives up
+        assert_eq!(pick_code(|| num("HGHLND"), |k| k == "HGHLND"), None);
     }
 
     #[test]

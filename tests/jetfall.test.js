@@ -269,7 +269,7 @@ test('discs: splash hurts and shoves, your own blast hurts you half as much, tea
   const w = new JF.World({ map: 'highland' });
   const a = spawned(w, 1, { team: 0 }), mate = spawned(w, 2, { team: 0 }), foe = spawned(w, 3, { team: 1 });
   const W = JF.WEAPONS.disc;
-  const at = [JF.SIZE / 2, 0, JF.SIZE / 2]; at[1] = w.terrain.height(at[0], at[2]);
+  const o = w.bases[0].o, at = [o.x + 60 * o.face, 0, o.z]; at[1] = w.terrain.height(at[0], at[2]); // open ground in front of a base
   for (const p of [a, mate, foe]) { p.pos = [at[0] + 2, at[1], at[2]]; p.vel = [0, 0, 0]; p.hp = ARMORS[p.armor].hp; p.spawnProt = 0; }
   w.splash([at[0], at[1] + 0.2, at[2]], W, { owner: 1, team: 0, kind: 'disc' }, null);
   assert.equal(mate.hp, ARMORS[mate.armor].hp, 'no team damage');
@@ -495,4 +495,48 @@ test('turrets: four discs take one down, and they cannot snap round to a target 
   let firstShot = -1;
   for (let i = 0; i < 300 && firstShot < 0; i++) { w2.step(); b.pos = back.slice(); b.vel = [0, 0, 0]; b.hp = 70; if (w2.events.some(e => e.k === 'tfire' && e.id === t2.id)) firstShot = i; }
   assert.ok(firstShot > 60, 'turret fired after ' + firstShot + ' ticks');
+});
+
+test('new map features: water slows and floats you, shots stop at its surface, lava burns, structures block', () => {
+  // water
+  const w = new JF.World({ map: 'lakes' });
+  const p = spawned(w, 1, { team: 0 });
+  const wh = w.terrain.waterH;
+  assert.ok(wh > 0, 'lakes has water');
+  const lake = [JF.SIZE / 2, JF.SIZE / 2 - 330];
+  assert.ok(w.terrain.height(lake[0], lake[1]) < wh - 10, 'the lake is deep');
+  p.pos = [lake[0], wh - 3, lake[1]]; p.vel = [30, 0, 0];
+  for (let i = 0; i < 120; i++) w.applyInput(p, idle());
+  assert.ok(Math.abs(p.vel[0]) < 5, 'water slowed you: ' + p.vel[0]);
+  assert.ok(p.pos[1] > wh - 2.5, 'floating near the top: ' + (p.pos[1] - wh));
+  const hit = w.traceProj({ pos: [lake[0], wh + 20, lake[1]], kind: 'disc', owner: -9, age: 9 }, [lake[0], wh - 20, lake[1]], -1);
+  assert.equal(hit.what, 'water');
+  assert.ok(Math.abs(hit.pos[1] - wh) < 0.01);
+  // lava
+  const a = new JF.World({ map: 'ashfall' });
+  const q = spawned(a, 1, { team: 0 });
+  let low = null;
+  for (let x = 400; x < 1650 && !low; x += 16) for (let z = 400; z < 1650 && !low; z += 16) if (a.terrain.height(x, z) < a.terrain.lavaH - 1 && a.terrain.normal(x, z)[1] > 0.95) low = [x, z];
+  assert.ok(low, 'there is lava');
+  q.pos = [low[0], a.terrain.height(low[0], low[1]), low[1]]; q.vel = [0, 0, 0]; q.spawnProt = 0;
+  for (let i = 0; i < 60 && q.alive; i++) { a.step(); a.applyInput(q, idle()); }
+  assert.ok(q.hp < ARMORS[q.armor].hp - 20 || !q.alive, 'burned: ' + q.hp);
+  // structures: mirrored pairs, and they stop you
+  for (const map of JF.MAP_KEYS) {
+    const m = new JF.World({ map });
+    const props = m.solids.filter(s => s.team < 0);
+    assert.ok(props.length >= 6, map + ' has things in the field');
+    const c = JF.SIZE / 2;
+    for (const s of props) {
+      const b = s.b, mb = [2 * c - b[3], b[1], 2 * c - b[5], 2 * c - b[0], b[4], 2 * c - b[2]];
+      assert.ok(props.some(o => o.b.every((v, i) => Math.abs(v - mb[i]) < 1e-6)), map + ': ' + s.mat + ' has a mirror twin');
+    }
+    const tall = props.find(s => s.b[4] - s.b[1] > 8 && s.b[3] - s.b[0] > 2.5 && s.b[5] - s.b[2] > 2.5);
+    if (!tall) continue;
+    const r = spawned(m, 9, { team: 0 });
+    const mid = (tall.b[2] + tall.b[5]) / 2, y = tall.b[1] + 4;
+    r.pos = [tall.b[0] - 6, y, mid]; r.vel = [80, 0, 0]; r.spawnProt = 0;
+    for (let i = 0; i < 20; i++) { r.vel[1] = Math.max(r.vel[1], 0); m.applyInput(r, idle({ b: B.JET })); }
+    assert.ok(r.pos[0] < tall.b[0] + 0.01 || r.pos[1] > tall.b[4] - 0.1 || r.pos[2] < tall.b[2] || r.pos[2] > tall.b[5], map + ': went through a ' + tall.mat);
+  }
 });

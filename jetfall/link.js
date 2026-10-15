@@ -57,7 +57,7 @@
       if (!msg || typeof msg !== 'object') return;
       if (waiting && (msg.t === waiting.want || msg.t === 'error')) {
         const w = waiting; waiting = null;
-        if (msg.t === 'error') w.rej(new Error(errorText(msg.why))); else w.res(msg);
+        if (msg.t === 'error') { const err = new Error(errorText(msg.why)); err.why = String(msg.why || ''); w.rej(err); } else w.res(msg);
         return;
       }
       if (msg.t === 'peer') { ev.emit('peer', msg.id | 0, String(msg.name || '')); if (link.role === 'host') startRtc(msg.id | 0); }
@@ -145,9 +145,10 @@
     };
     link.direct = to => { const rec = link.peers.get(to); return !!(rec && rec.open); };
     link.list = async () => { await link.ready; const r = await ask({ t: 'list' }, 'rooms'); return Array.isArray(r.rooms) ? r.rooms : []; };
-    link.host = async (name, info) => {
+    // room: a fixed server's code to claim it (the relay says 'taken' if someone already has)
+    link.host = async (name, info, room) => {
       await link.ready;
-      const r = await ask({ t: 'host', name, info }, 'hosted');
+      const r = await ask(room ? { t: 'host', name, info, room } : { t: 'host', name, info }, 'hosted');
       link.role = 'host'; link.room = String(r.room); link.id = 0;
       return r;
     };
@@ -164,7 +165,7 @@
   }
 
   function errorText(why) {
-    return ({ 'no-room': 'No game with that code. It may have ended.', full: 'That game is full.', busy: 'The server is busy. Try again in a bit.', kicked: 'The host removed you.', already: 'Already in a game.', 'bad-info': 'Bad game info.' })[why] || 'The game server said no (' + String(why).slice(0, 30) + ').';
+    return ({ 'no-room': 'No game with that code. It may have ended.', full: 'That game is full.', taken: 'Someone just started that server.', idle: 'Nobody is on that server yet.', busy: 'The server is busy. Try again in a bit.', kicked: 'The host removed you.', already: 'Already in a game.', 'bad-info': 'Bad game info.' })[why] || 'The game server said no (' + String(why).slice(0, 30) + ').';
   }
 
   root.JFLink = { connect, relayUrl, errorText };

@@ -202,7 +202,76 @@ async function join(h, name, code = h.room) {
   lister.send({ t: "list" });
   assert(!(await lister.next("rooms")).rooms.some((r) => r.room === h.room));
 
-  // room cap (JF_ROOMS=8; one room, priv, is still open)
+  // fixed servers: always listed first, in order, idle with their defaults until someone claims one
+  const FIXED = ["HGHLND", "DSTBWL", "FRSTBT", "ASHPT2", "TWNLKS", "CNYNRN", "RTATN2", "NEWBYS"];
+  const idle = (info) => ({ ...info, public: true, idle: true });
+  lister.send({ t: "list" });
+  rooms = (await lister.next("rooms")).rooms;
+  assert.deepStrictEqual(rooms.map((r) => r.room), [...FIXED, priv.room]);
+  assert.deepStrictEqual(rooms[0], { room: "HGHLND", name: "Highland Brawl", info: idle({ map: "highland", bots: 3 }), n: 0, fixed: true });
+  assert.deepStrictEqual(rooms[3], { room: "ASHPT2", name: "Ash Pit", info: idle({ map: "ashfall", bots: 3 }), n: 0, fixed: true });
+  assert.deepStrictEqual(rooms[6].info, idle({ map: "highland", bots: 4, rotate: true }));
+  assert.deepStrictEqual(rooms[7], { room: "NEWBYS", name: "Easy Hill", info: idle({ map: "highland", bots: 2, skill: 0.2 }), n: 0, fixed: true });
+  assert.strictEqual(rooms[8].fixed, undefined);
+
+  // claim one (any case): the code is kept and the name is the slot's
+  const fx = client(); await fx.open;
+  fx.send({ t: "host", name: "my own name", info: { public: true, map: "dunes", bots: 3, players: 1 }, room: "dstBwl" });
+  assert.deepStrictEqual(await fx.next((x) => x.t === "hosted" || x.t === "error"), { t: "hosted", room: "DSTBWL", id: 0 });
+  // a second claim is refused, and that connection can then join normally
+  const fx2 = client(); await fx2.open;
+  fx2.send({ t: "host", name: "me too", room: "DSTBWL" });
+  assert.deepStrictEqual(await fx2.next((x) => x.t === "hosted" || x.t === "error"), { t: "error", why: "taken" });
+  fx2.send({ t: "join", room: "dstbwl", name: "fred" });
+  assert.deepStrictEqual(await fx2.next((x) => x.t === "joined" || x.t === "error"), { t: "joined", room: "DSTBWL", id: 1 });
+  assert.deepStrictEqual(await fx.next("peer"), { t: "peer", id: 1, name: "fred" });
+  lister.send({ t: "list" });
+  rooms = (await lister.next("rooms")).rooms;
+  assert.deepStrictEqual(rooms[1], { room: "DSTBWL", name: "Dust Bowl", info: { public: true, map: "dunes", bots: 3, players: 1 }, n: 1, fixed: true });
+  assert.deepStrictEqual(rooms.map((r) => r.room), [...FIXED, priv.room]);
+  // joining an idle slot says "idle"; claiming a code that isn't a fixed slot says "no-room"
+  for (const code of ["FRSTBT", "frstbt"]) {
+    const j = client(); await j.open;
+    j.send({ t: "join", room: code, name: "j" });
+    assert.strictEqual((await j.next("error")).why, "idle");
+    j.ws.close();
+  }
+  for (const code of ["ZZZZZZ", priv.room, "", 123, "DSTBWLX"]) {
+    const j = client(); await j.open;
+    j.send({ t: "host", name: "j", room: code });
+    assert.strictEqual((await j.next((x) => x.t === "hosted" || x.t === "error")).why, "no-room", "claim " + code);
+    j.ws.close();
+  }
+  // the host leaving closes the room as usual, and the slot is idle again
+  fx.ws.close();
+  await fx2.next("closed"); await fx2.closed;
+  lister.send({ t: "list" });
+  rooms = (await lister.next("rooms")).rooms;
+  assert.deepStrictEqual(rooms[1], { room: "DSTBWL", name: "Dust Bowl", info: idle({ map: "dunes", bots: 3 }), n: 0, fixed: true });
+  // with no info, a claimed room lists the slot's defaults
+  const fx3 = client(); await fx3.open;
+  fx3.send({ t: "host", room: "DSTBWL" });
+  await fx3.next("hosted");
+  lister.send({ t: "list" });
+  assert.deepStrictEqual((await lister.next("rooms")).rooms[1].info, { map: "dunes", bots: 3, public: true });
+  fx3.ws.close();
+
+  // two claims at the same moment: exactly one wins
+  const claimed = [];
+  for (const code of ["HGHLND", "FRSTBT", "ASHPT2", "TWNLKS", "CNYNRN"]) {
+    const pair = [client(), client()];
+    await Promise.all(pair.map((x) => x.open));
+    pair.forEach((x) => x.send({ t: "host", name: "race", info: { public: true }, room: code }));
+    const got = await Promise.all(pair.map((x) => x.next((y) => y.t === "hosted" || y.t === "error")));
+    assert.deepStrictEqual(got.map((g) => g.t).sort(), ["error", "hosted"], code + " " + JSON.stringify(got));
+    assert.strictEqual(got.find((g) => g.t === "error").why, "taken");
+    assert.strictEqual(got.find((g) => g.t === "hosted").room, code);
+    claimed.push(pair[got.findIndex((g) => g.t === "hosted")]);
+    pair.forEach((x, i) => { if (got[i].t === "error") x.ws.close(); });
+  }
+
+  // room cap (JF_ROOMS=8; one room, priv, is still open, and the five fixed rooms above don't count).
+  // A normal host never gets a fixed code.
   const hosts = [];
   for (let i = 0; i < 10; i++) {
     const x = client(); await x.open;
@@ -210,16 +279,31 @@ async function join(h, name, code = h.room) {
     const r = await x.next((y) => y.t === "hosted" || y.t === "error");
     hosts.push(x);
     if (r.t === "error") { assert.strictEqual(r.why, "busy"); break; }
+    assert(!FIXED.includes(r.room), "normal room got a fixed code " + r.room);
   }
   assert.strictEqual(hosts.length, 8, "7 more rooms, then busy");
+  // a fixed slot can still be claimed when the normal rooms are full
+  const fx4 = client(); await fx4.open;
+  fx4.send({ t: "host", name: "x", room: "RTATN2" });
+  assert.strictEqual((await fx4.next((x) => x.t === "hosted" || x.t === "error")).room, "RTATN2");
   hosts.forEach((x) => x.ws.close());
+  [...claimed, fx4].forEach((x) => x.ws.close());
 
   // plain HTTP still works
   assert.strictEqual(await (await fetch(`http://localhost:${PORT}/healthz`)).text(), "ok");
 
   // timeouts: a connection that never hosts or joins, and one that goes quiet
-  srvs.push(spawn(bin, [], { env: { ...base, PORT: String(PORT2), JF_HELLO_SECS: "1", JF_IDLE_SECS: "2" }, stdio: "inherit" }));
+  // JF_FIXED replaces the fixed list; bad entries are skipped
+  const JF_FIXED = "abcdef|Test Room|dunes|5;bad|x;ABCDEF|Dup|a|1;OOOOOO|Has O|a|1;KLMNPQ|No bots|frost|x;MNPQRS|Bad extra|frost|1|oops;GHJKLM|Two|frost|0|rotate=true|skill=0.5";
+  srvs.push(spawn(bin, [], { env: { ...base, PORT: String(PORT2), JF_HELLO_SECS: "1", JF_IDLE_SECS: "2", JF_FIXED }, stdio: "inherit" }));
   await sleep(300);
+  const lister2 = client(PORT2); await lister2.open;
+  lister2.send({ t: "list" });
+  assert.deepStrictEqual((await lister2.next("rooms")).rooms, [
+    { room: "ABCDEF", name: "Test Room", info: { map: "dunes", bots: 5, public: true, idle: true }, n: 0, fixed: true },
+    { room: "GHJKLM", name: "Two", info: { map: "frost", bots: 0, rotate: true, skill: 0.5, public: true, idle: true }, n: 0, fixed: true },
+  ]);
+  lister2.ws.close();
   const lurk = client(PORT2); await lurk.open;
   const quiet = await host("q", {}, PORT2);
   const t1 = Date.now();
