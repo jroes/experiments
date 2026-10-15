@@ -210,3 +210,10 @@ body.touch #chatlog { bottom: 250px; }
 .mk .hb i { display: block; height: 100%; background: currentColor; }
 /* team arrow over players */
 .mk .tri { width: 0; height: 0; margin: 0 auto 1px; border-left: 6px solid transparent; border-right: 6px solid transparent; border-top: 8px solid currentColor; filter: drop-shadow(0 0 2px #000); }
+/* replay of a midair: black bars, and the HUD out of the way */
+body.replay::before, body.replay::after { content: ''; position: fixed; left: 0; right: 0; height: 9vh; background: #000; z-index: 5; pointer-events: none; }
+body.replay::before { top: 0; }
+body.replay::after { bottom: 0; }
+body.replay #dead { top: auto; bottom: calc(9vh + 10px); z-index: 6; }
+body.replay #dead b { color: #ffd34d; font-size: 24px; }
+body.replay :is(#cross, #hitmark, #dmgdir, #radar, #bars, #speed, #weapons, #station) { visibility: hidden; }

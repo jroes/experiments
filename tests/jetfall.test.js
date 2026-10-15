@@ -385,6 +385,25 @@ test('the client: welcome, snapshots, prediction and a smooth view', () => {
   assert.ok(maxErr < 3, 'prediction drifted ' + maxErr);
 });
 
+test('the client keeps a few seconds of history to replay, and draws from it at any tick', () => {
+  let client;
+  const h = new Net.Host({ send: (peer, bytes) => { if (peer === 0) client.receive(bytes); }, settings: { map: 'dunes', bots: 2 } });
+  client = new Net.Client({ send: b => h.receive(0, b), name: 'me', loadout: JF.DEFAULT_LOADOUT });
+  client.hello(0);
+  for (let f = 0; f < 60 * 10; f++) { h.update(1 / 60); client.update(1 / 60, idle()); }
+  const hist = client.hist.slice();
+  assert.ok(hist.length >= 100 && hist.length <= 140, 'kept ' + hist.length);
+  assert.ok(hist[hist.length - 1].tick - hist[0].tick > 60 * 5, 'about seven seconds');
+  assert.ok(client.histEv.every(e => e.t >= hist[0].tick), 'events older than the snapshots are dropped');
+  // a copy taken now still plays after the live history has moved on
+  for (let f = 0; f < 60 * 3; f++) { h.update(1 / 60); client.update(1 / 60, idle()); }
+  for (let t = hist[0].tick; t < hist[hist.length - 1].tick; t += 7) {
+    const v = client.viewAt(t, hist);
+    assert.ok(v && v.players.length >= 4);
+    for (const p of v.players) assert.ok(finite(p.pos));
+  }
+});
+
 test('a match ends, the next map starts, and the client follows without losing its place', () => {
   let client;
   const h = new Net.Host({ send: (peer, bytes) => { if (peer === 0) client.receive(bytes); }, settings: { map: 'highland', bots: 1, caps: 1, rotate: true } });
@@ -550,6 +569,23 @@ test('new map features: water slows and floats you, shots stop at its surface, l
     r.pos = [tall.b[0] - 6, y, mid]; r.vel = [80, 0, 0]; r.spawnProt = 0;
     for (let i = 0; i < 20; i++) { r.vel[1] = Math.max(r.vel[1], 0); m.applyInput(r, idle({ b: B.JET })); }
     assert.ok(r.pos[0] < tall.b[0] + 0.01 || r.pos[1] > tall.b[4] - 0.1 || r.pos[2] < tall.b[2] || r.pos[2] > tall.b[5], map + ': went through a ' + tall.mat);
+  }
+});
+
+test('a disc that kills someone in the air is a midair; on the ground it is not', () => {
+  for (const [up, want] of [[12, 1], [0, 0]]) {
+    const w = new JF.World({ map: 'dunes' });
+    const a = spawned(w, 1, { team: 0 }), b = spawned(w, 2, { team: 1 });
+    const o = w.bases[0].o, x = o.x + 90 * o.face, z = o.z;
+    b.pos = [x, w.terrain.height(x, z) + up, z]; b.vel = [0, 0, 0]; b.spawnProt = 0; b.hp = 5; b.ground = up === 0;
+    a.pos = [x - 30 * o.face, w.terrain.height(x - 30 * o.face, z) + up + 1, z]; a.vel = [0, 0, 0];
+    a.wi = a.weapons.indexOf('disc'); a.fireCd = 0; a.switchT = 0;
+    const e = JF.eye(a), dx = b.pos[0] - e[0], dy = b.pos[1] + 1 - e[1], dz = b.pos[2] - e[2];
+    const yaw = Math.atan2(-dx, -dz), pitch = Math.atan2(dy, Math.hypot(dx, dz));
+    for (let i = 0; i < 90 && b.alive; i++) { w.step(); w.applyInput(a, idle({ b: i === 0 ? B.FIRE : 0, yaw, pitch })); a.vel = [0, 0, 0]; }
+    const k = w.events.find(ev => ev.k === 'kill' && ev.id === b.id);
+    assert.ok(k, 'killed (' + up + ' m up)');
+    assert.equal(k.by, a.id); assert.equal(k.w, 'disc'); assert.equal(k.mid, want, up + ' m up');
   }
 });
 

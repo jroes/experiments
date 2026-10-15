@@ -67,6 +67,7 @@
 
   const RESPAWN_S = 3, AUTO_RESPAWN_S = 8;
   const FLAG_RETURN_S = 40;
+  const MIDAIR_H = 3; // this far over the land to count as a midair
   const FLAG_R = 2.4, FLAG_TOP = 3.6; // touch: this far from the pole, feet up to this high over its foot (it is drawn 2.9 m tall)
   const STATION_S = 0.9;
   const OBJ = {
@@ -874,7 +875,9 @@
         if (killer && killer.team !== q.team) killer.score += 1; // stopped a runner
         this.dropFlag(q, false);
       }
-      this.ev({ k: 'kill', id: q.id, by: killer ? killer.id : -1, w: weapon, x: q.pos[0], y: q.pos[1], z: q.pos[2] });
+      // a midair: a disc that got you while you were well off the ground (the page shows the victim a replay)
+      const mid = weapon === 'disc' && killer && killer.team !== q.team && !q.ground && q.pos[1] - this.terrain.height(q.pos[0], q.pos[2]) > MIDAIR_H;
+      this.ev({ k: 'kill', id: q.id, by: killer ? killer.id : -1, w: weapon, x: q.pos[0], y: q.pos[1], z: q.pos[2], mid: mid ? 1 : 0 });
     }
 
     laser(p, W) {
