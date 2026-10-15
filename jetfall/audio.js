@@ -104,6 +104,30 @@
       g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(o.gain || 0.2, t + (o.a || 0.004)); g.gain.exponentialRampToValueAtTime(0.0001, t + o.dur);
       src.connect(f); f.connect(g); g.connect(dest); src.start(t, Math.random() * 1.5); src.stop(t + o.dur + 0.05);
     },
+    // a robot voice: a buzz and a hiss through three formant filters, moved through the sounds of a word.
+    // segs: [time, F1, F2, F3, buzz level, hiss level, hiss centre, pitch]; values ramp from one row to the next
+    voice(dest, segs, o) {
+      const ctx = this.ctx, t0 = ctx.currentTime + 0.01, k = o.pitch || 1, end = segs[segs.length - 1][0];
+      const buzz = ctx.createOscillator(); buzz.type = 'sawtooth';
+      const vg = ctx.createGain(); vg.gain.value = 0;
+      const nz = ctx.createBufferSource(); nz.buffer = this.noise; nz.loop = true;
+      const nf = ctx.createBiquadFilter(); nf.type = 'bandpass'; nf.Q.value = 2.2;
+      const ng = ctx.createGain(); ng.gain.value = 0;
+      const sum = ctx.createGain(); sum.gain.value = o.gain || 1;
+      const fq = [], Q = [7, 11, 14], lv = [3.2, 2.4, 1.4];
+      for (let i = 0; i < 3; i++) {
+        const f = ctx.createBiquadFilter(), g = ctx.createGain();
+        f.type = 'bandpass'; f.Q.value = Q[i]; g.gain.value = lv[i];
+        vg.connect(f); f.connect(g); g.connect(sum); fq.push(f.frequency);
+      }
+      buzz.connect(vg); nz.connect(nf); nf.connect(ng); ng.connect(sum); sum.connect(dest);
+      segs.forEach((sg, i) => {
+        const t = t0 + sg[0], set = (prm, v) => i ? prm.linearRampToValueAtTime(v, t) : prm.setValueAtTime(v, t);
+        for (let j = 0; j < 3; j++) set(fq[j], sg[1 + j]);
+        set(vg.gain, sg[4]); set(ng.gain, sg[5]); set(nf.frequency, sg[6]); set(buzz.frequency, sg[7] * k);
+      });
+      buzz.start(t0); nz.start(t0, Math.random()); buzz.stop(t0 + end + 0.05); nz.stop(t0 + end + 0.05);
+    },
     // amt: how big (damage for hits, used by some sounds)
     play(name, pos, range, amt) {
       if (!this.ctx || !this.settings.sfx) return;
@@ -118,10 +142,31 @@
     },
   };
   const RANGE = { boom: 1000, mortar: 1100, chain: 280, disc: 320, blaster: 260, plasma: 320, gl: 280, laser: 650, tfire: 320, bounce: 100, small: 500, spark: 120, land: 120, splash: 200 };
-  const WET = { boom: 0.45, mortar: 0.3, disc: 0.2, plasma: 0.2, laser: 0.3, tfire: 0.25, small: 0.3, cap: 0.25, capLost: 0.25, win: 0.3, lose: 0.3, flagTake: 0.15, gendown: 0.4 };
+  const WET = { shazbot: 0.12, boom: 0.45, mortar: 0.3, disc: 0.2, plasma: 0.2, laser: 0.3, tfire: 0.25, small: 0.3, cap: 0.25, capLost: 0.25, win: 0.3, lose: 0.3, flagTake: 0.15, gendown: 0.4 };
+
+  // "Shazbot!" for quick chat, said by the voice above (browsers' own speech voices are too often silent)
+  const SHAZBOT = [
+    [0.00, 400, 1800, 2600, 0, 0, 2600, 150],
+    [0.02, 400, 1800, 2600, 0, 0.9, 2700, 150],     // sh
+    [0.13, 400, 1800, 2600, 0, 0.9, 2400, 150],
+    [0.15, 700, 1650, 2500, 1, 0.05, 2400, 165],     // a
+    [0.30, 720, 1600, 2500, 1, 0, 2400, 190],
+    [0.33, 350, 1600, 2500, 0.4, 0.45, 5200, 178],   // z
+    [0.40, 300, 1500, 2400, 0.35, 0.45, 5200, 168],
+    [0.42, 250, 900, 2300, 0.06, 0, 5200, 160],      // b: closed
+    [0.47, 250, 900, 2300, 0.06, 0, 1200, 160],
+    [0.49, 600, 1000, 2500, 1, 0.15, 1200, 178],     // b: open into o
+    [0.53, 730, 1100, 2500, 1, 0, 1200, 172],        // o
+    [0.66, 650, 1050, 2500, 0.85, 0, 1200, 128],
+    [0.69, 500, 1600, 2600, 0, 0, 4200, 120],        // t: closed
+    [0.73, 500, 1600, 2600, 0, 0, 4200, 120],
+    [0.74, 500, 1600, 2600, 0, 0.7, 4200, 120],      // t: burst
+    [0.80, 500, 1600, 2600, 0, 0, 4200, 120],
+  ];
 
   // r = a small random pitch factor for each play
   const SOUNDS = {
+    shazbot: (a, d, dist, amt) => a.voice(d, SHAZBOT, { pitch: amt || 1, gain: 0.3 }),
     disc: (a, d, dist, amt, r) => {
       a.tone(d, { f: 240 * r, to: 70, dur: 0.16, gain: 0.5, type: 'sine', glide: 0.12 });            // the thump
       a.hiss(d, { from: 3200 * r, to: 700, dur: 0.32, q: 1.6, gain: 0.22 });                       // the whoosh
