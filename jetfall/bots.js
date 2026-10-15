@@ -134,7 +134,7 @@
     bot.seeT -= dt;
     if (bot.seeT <= 0) {
       bot.seeT = 0.3 + Math.random() * 0.2;
-      let best = null, bd = mode === 'run' ? 90 : 220;
+      let best = null, bd = mode === 'run' ? 90 : 90 + skill * 130; // worse bots notice you later
       const eyeP = JF.eye(p);
       for (const q of w.players.values()) {
         if (!q.alive || q.team === p.team) continue;
@@ -143,12 +143,18 @@
         if (d < bd && !w.blocked(eyeP, [q.pos[0], q.pos[1] + 1.2, q.pos[2]])) { best = q; bd = d; }
       }
       if (mode === 'chase' && bot.enemy >= 0 && w.players.get(bot.enemy)) best = w.players.get(bot.enemy);
-      bot.enemy = best ? best.id : -1;
+      const id = best ? best.id : -1;
+      // a new target: it takes a moment to react
+      if (id !== bot.enemy && id >= 0) bot.react = 0.3 + (1 - skill) * 1.1 + Math.random() * 0.3;
+      bot.enemy = id;
       bot.errT -= 0.4;
       if (bot.errT <= 0) {
-        bot.errT = 1;
-        const e = (1 - skill) * 0.09 + 0.008;
+        // the aim wanders: worse bots wander a lot more, and they misjudge the lead and forget to aim at the feet
+        bot.errT = 0.7;
+        const e = Math.pow(1 - skill, 1.2) * 0.26 + 0.01;
         bot.aimErr = [(Math.random() - 0.5) * 2 * e, (Math.random() - 0.5) * 2 * e];
+        bot.leadK = 0.3 + 0.7 * skill + (Math.random() - 0.5) * (1 - skill) * 0.6;
+        bot.feet = Math.random() < skill;
       }
     }
     const enemy = bot.enemy >= 0 ? w.players.get(bot.enemy) : null;
@@ -239,10 +245,11 @@
       const eyeP = JF.eye(p);
       const W = wk ? WEAPONS[wk] : null;
       let tp = [enemy.pos[0], enemy.pos[1] + ARMORS[enemy.armor].h * 0.55, enemy.pos[2]];
-      if (W && W.r > 0 && enemy.ground) tp = [enemy.pos[0], enemy.pos[1] + 0.2, enemy.pos[2]]; // splash: aim at the feet
+      if (W && W.r > 0 && enemy.ground && bot.feet) tp = [enemy.pos[0], enemy.pos[1] + 0.2, enemy.pos[2]]; // splash: aim at the feet
       let aim;
       if (W && W.kind === 'proj') {
-        const relV = [enemy.vel[0] - p.vel[0] * W.inherit, enemy.vel[1] - p.vel[1] * W.inherit, enemy.vel[2] - p.vel[2] * W.inherit];
+        const k = bot.leadK == null ? 1 : bot.leadK;
+        const relV = [enemy.vel[0] * k - p.vel[0] * W.inherit, enemy.vel[1] * k - p.vel[1] * W.inherit, enemy.vel[2] * k - p.vel[2] * W.inherit];
         aim = JF.leadAim(eyeP, tp, relV, W.speed, W.grav);
       } else {
         const l = dist3(tp, eyeP) || 1;
@@ -254,13 +261,19 @@
       const dyaw = angDiff(bot.yaw, wantYaw), dp = Math.abs(bot.pitch - wantPitch);
       const tol = 0.04 + (W && W.r ? Math.min(0.15, W.r / Math.max(d, 1) * 0.6) : 0.02);
       const ready = W && (W.ammo > 0 ? p.ammo[wk] > 0 : (!W.minEnergy || p.energy >= W.minEnergy) && (!W.energy || p.energy >= W.energy));
-      if (weapon === p.wi && Math.abs(dyaw) < tol && dp < tol && ready) {
-        if (!(W.r > 0 && d < W.r * 0.8)) inp.b |= B.FIRE;
+      if (bot.react > 0) bot.react -= dt;
+      if (bot.hold > 0) bot.hold -= dt;
+      if (weapon === p.wi && Math.abs(dyaw) < tol && dp < tol && ready && bot.react <= 0 && !(bot.hold > 0)) {
+        if (!(W.r > 0 && d < W.r * 0.8)) {
+          inp.b |= B.FIRE;
+          // worse bots also wait a while between shots
+          if (!W.spin && p.fireCd <= 0) bot.hold = (1 - skill) * (0.4 + Math.random() * 1.2);
+        }
         if (W.kind === 'beam' && d > W.range) inp.b &= ~B.FIRE;
       }
-      if (W && W.spin && d < 120 && p.ammo[wk] > 0) inp.b |= B.FIRE; // keep it spinning
+      if (W && W.spin && d < 120 && p.ammo[wk] > 0 && bot.react <= 0) inp.b |= B.FIRE; // keep it spinning
       bot.grenT -= dt;
-      if (bot.grenT <= 0 && d < 28 && d > 8 && p.grenades > 0) { bot.grenT = 4 + Math.random() * 4; inp.b |= B.GREN; }
+      if (bot.grenT <= 0 && d < 28 && d > 8 && p.grenades > 0 && skill >= 0.4) { bot.grenT = 4 + Math.random() * 4; inp.b |= B.GREN; }
       // strafe a bit in a fight when not going anywhere in particular
       if (mode === 'patrol' || !want) {
         bot.wobble += dt;
@@ -293,7 +306,7 @@
     if (p.pack === 'shield' && enemy && !p.shieldOn && p.energy > A.energy * 0.5 && Math.random() < 0.02) inp.b |= B.PACK;
 
     // turn at a limited speed: better bots turn faster
-    const turn = (2.5 + skill * 7) * dt;
+    const turn = (1.5 + skill * 7) * dt;
     bot.yaw += clamp(angDiff(bot.yaw, wantYaw), -turn, turn);
     bot.pitch += clamp(wantPitch - bot.pitch, -turn, turn);
     bot.pitch = clamp(bot.pitch, -1.5, 1.5);
