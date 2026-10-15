@@ -144,6 +144,8 @@ host's copy is hidden. The host decides every hit.
   burns) and `weather`. Water and lava levels are worked out from the terrain, the same in every browser; water slows and floats you inside `movePlayer`
   and shots stop at its surface. Quick chat (V, then letters; V G S is "Shazbot!") sends a key from `vgs.js`, never text: the host looks it up, so it cannot be used to say anything else.
   It is read out loud with the browser's speech voices (a setting).
+- **Midair replay.** A disc that kills you well off the ground is a midair (`mid` on the kill event). The client keeps about 7 s of snapshots and events
+  (`hist`, `histEv`) and the page plays them back with `viewAt`: over the killer's shoulder, behind the disc, slow around the hit. It is only a picture.
 - The renderer is raw WebGL2 like the HD-2D one: the land is one mesh with the physics' own triangles, everything solid is an instanced box, sphere or cylinder,
   a sun shadow map around the camera, particles and beams as instanced quads. `?relay=ws://127.0.0.1:8135/jetfall` points a page at a local server;
   `JFGame.cam = { follow: id }` in the console follows a player (handy for screenshots). `tools/jetfall-og.js` makes the preview picture.

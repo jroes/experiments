@@ -18,6 +18,7 @@
   const PROTO = 1;
   const SNAP_EVERY = 3;           // ticks between snapshots (20 a second)
   const INTERP_TICKS = 7;         // draw others this far in the past
+  const HIST_SNAPS = 140;         // about seven seconds of snapshots kept for replays
   const MAX_PLAYERS = 32;
   const T = { CTRL: 0, INPUT: 1, SNAP: 2 };
 
@@ -467,6 +468,7 @@
       this.seq = 0;
       this.pending = [];
       this.snaps = [];           // recent snapshots, oldest first
+      this.hist = []; this.histEv = []; // the last few seconds of snapshots and events, for replays
       this.ackEv = 0; this.ackSnap = 0;
       this.events = [];          // new events for the page to show
       this.welcome = null;
@@ -502,7 +504,7 @@
         if (fresh) {
           this.world = new JF.World({ map: m.map });
           this.world.damage = null;
-          this.snaps = []; this.pending = []; this.me = null;
+          this.snaps = []; this.hist = []; this.histEv = []; this.pending = []; this.me = null;
           this.ackEv = m.ev | 0;
           this.events.push({ k: 'map', map: m.map });
         }
@@ -517,6 +519,8 @@
       if (this.snaps.length && s.tick <= this.snaps[this.snaps.length - 1].tick) return; // old or repeated
       this.snaps.push(s);
       while (this.snaps.length > 30) this.snaps.shift();
+      this.hist.push(s);
+      while (this.hist.length > HIST_SNAPS) this.hist.shift();
       this.ackSnap = s.tick;
       this.lastSnapAt = nowMs();
       // a smooth guess of the host's clock
@@ -527,7 +531,9 @@
         if (!e || typeof e.s !== 'number' || e.s <= this.ackEv) continue;
         this.ackEv = e.s;
         this.events.push(e);
+        if (typeof e.t === 'number') this.histEv.push(e);
       }
+      while (this.histEv.length && (this.histEv.length > 600 || this.histEv[0].t < this.hist[0].tick)) this.histEv.shift();
       this.reconcile(s);
     }
     // put my player where the host says, then redo the moves the host has not seen yet
@@ -600,14 +606,15 @@
     }
 
     // the interpolated picture of the world for drawing
-    view() {
-      if (!this.snaps.length) return null;
-      const t = this.estTick - INTERP_TICKS;
-      let a = this.snaps[0], b = null;
-      for (let i = this.snaps.length - 1; i >= 0; i--) {
-        if (this.snaps[i].tick <= t) { a = this.snaps[i]; b = this.snaps[i + 1] || null; break; }
+    view() { return this.viewAt(this.estTick - INTERP_TICKS, this.snaps); }
+    // the picture at host tick t from a list of snapshots (a replay passes its own copy of the history)
+    viewAt(t, snaps) {
+      if (!snaps.length) return null;
+      let a = snaps[0], b = null;
+      for (let i = snaps.length - 1; i >= 0; i--) {
+        if (snaps[i].tick <= t) { a = snaps[i]; b = snaps[i + 1] || null; break; }
       }
-      const last = this.snaps[this.snaps.length - 1];
+      const last = snaps === this.snaps ? snaps[snaps.length - 1] : a;
       const f = b ? clamp((t - a.tick) / (b.tick - a.tick), 0, 1) : 0;
       const players = [];
       for (const pa of a.players) {

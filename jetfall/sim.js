@@ -34,7 +34,7 @@
   // dmg is damage at the centre, r the splash radius (0 = direct hit only), knock the shove at the centre for light armor (m/s).
   const WEAPONS = {
     blaster: { name: 'Blaster',          kind: 'proj', code: 1, speed: 160, grav: 0,   dmg: 13,  r: 0,   knock: 2,  cd: 0.32, ammo: 0,   energy: 6, inherit: 0.4, life: 2.5, blurb: 'Uses energy, never ammo. Weak but always there.' },
-    chain:   { name: 'Chaingun',         kind: 'proj', code: 2, speed: 380, grav: 0,   dmg: 5,   r: 0,   knock: 1,  cd: 0.085, ammo: 200, spin: 0.35, spread: 0.022, inherit: 0.5, life: 1.0, quiet: true, blurb: 'Spins up, then a stream of bullets. Good up close and on flag runners.' },
+    chain:   { name: 'Chaingun',         kind: 'proj', code: 2, speed: 380, grav: 0,   dmg: 9,   r: 0,   knock: 1,  cd: 0.085, ammo: 200, spin: 0.3, spread: 0.016, inherit: 0.5, life: 1.0, quiet: true, blurb: 'Spins up, then a stream of bullets. Good up close and on flag runners.' },
     disc:    { name: 'Disc Launcher',    kind: 'proj', code: 3, speed: 68,  grav: 0,   dmg: 48,  r: 7.5, knock: 26, cd: 1.15, ammo: 15,  inherit: 0.5, life: 6, blurb: 'Slow disc, big blast, big shove. Aim at the feet, or under yourself to fly.' },
     gl:      { name: 'Grenade Launcher', kind: 'proj', code: 4, speed: 52,  grav: 1,   dmg: 42,  r: 8,   knock: 20, cd: 0.85, ammo: 12,  inherit: 1, life: 2.2, bounce: 0.45, fuse: true, blurb: 'Lobs grenades that bounce, then blow after two seconds. They go off on contact with a player.' },
     plasma:  { name: 'Plasma Rifle',     kind: 'proj', code: 5, speed: 62,  grav: 0,   dmg: 40,  r: 3.5, knock: 6,  cd: 0.6, ammo: 30,  inherit: 0.5, life: 5, blurb: 'Hot bolt, small splash, hits hard.' },
@@ -67,6 +67,8 @@
 
   const RESPAWN_S = 3, AUTO_RESPAWN_S = 8;
   const FLAG_RETURN_S = 40;
+  const MIDAIR_H = 3; // this far over the land to count as a midair
+  const FLAG_R = 2.4, FLAG_TOP = 3.6; // touch: this far from the pole, feet up to this high over its foot (it is drawn 2.9 m tall)
   const STATION_S = 0.9;
   const OBJ = {
     gen:     { name: 'Generator', hp: 700 },
@@ -576,6 +578,7 @@
       const s = base.spawns[Math.floor(this.rng() * base.spawns.length)];
       p.alive = true;
       p.pos = [s[0] + (this.rng() - 0.5) * 2, s[1] + 0.2, s[2] + (this.rng() - 0.5) * 2];
+      p.flagSeen = null; // no sweep from where you died
       p.vel = [0, 0, 0];
       p.yaw = base.o.face > 0 ? -Math.PI / 2 : Math.PI / 2; // facing the enemy
       p.pitch = 0;
@@ -783,14 +786,17 @@
       this.ev({ k: 'boom', w: pr.kind, x: at[0], y: at[1], z: at[2], id: pr.id, o: pr.owner, what: hit.what, dud: dud ? 1 : 0 });
       if (dud) return;
       const owner = this.players.get(pr.owner);
-      if (W.r > 0) this.splash(at, W, pr, hit.player);
+      // the blast's line of sight starts a little off whatever it hit: from the exact impact point the surface itself would block it
+      const n = hit.what === 'ground' || hit.what === 'solid' || hit.what === 'water' ? this.surfaceNormal(hit) : null;
+      if (W.r > 0) this.splash(at, W, pr, hit.player, n);
       else if (hit.player) {
         this.damage(hit.player, W.dmg, owner, pr.kind, pr.vel, W.knock, pr.team);
       }
       if (hit.what === 'solid' && hit.solid.obj && W.r === 0) this.hurtObj(hit.solid.obj, W.dmg, owner, pr.team);
     }
 
-    splash(at, W, pr, direct) {
+    splash(at, W, pr, direct, n) {
+      const eye = n ? [at[0] + n[0] * 0.4, at[1] + n[1] * 0.4, at[2] + n[2] * 0.4] : at;
       const owner = this.players.get(pr.owner);
       for (const q of this.players.values()) {
         if (!q.alive) continue;
@@ -799,7 +805,7 @@
         const cx = clamp(at[0], q.pos[0] - A.r, q.pos[0] + A.r), cy = clamp(at[1], q.pos[1], q.pos[1] + A.h), cz = clamp(at[2], q.pos[2] - A.r, q.pos[2] + A.r);
         const d = q === direct ? 0 : len3(cx - at[0], cy - at[1], cz - at[2]);
         if (d >= W.r) continue;
-        if (q !== direct && this.blocked(at, [q.pos[0], q.pos[1] + A.h * 0.5, q.pos[2]])) continue;
+        if (q !== direct && this.blocked(eye, [q.pos[0], q.pos[1] + A.h * 0.5, q.pos[2]])) continue;
         const f = 1 - d / W.r;
         // push away from the blast, from slightly below the centre so blasts at the feet lift you
         const mx = q.pos[0] - at[0], my = q.pos[1] + A.h * 0.5 - at[1] + 0.6, mz = q.pos[2] - at[2];
@@ -869,7 +875,9 @@
         if (killer && killer.team !== q.team) killer.score += 1; // stopped a runner
         this.dropFlag(q, false);
       }
-      this.ev({ k: 'kill', id: q.id, by: killer ? killer.id : -1, w: weapon, x: q.pos[0], y: q.pos[1], z: q.pos[2] });
+      // a midair: a disc that got you while you were well off the ground (the page shows the victim a replay)
+      const mid = weapon === 'disc' && killer && killer.team !== q.team && !q.ground && q.pos[1] - this.terrain.height(q.pos[0], q.pos[2]) > MIDAIR_H;
+      this.ev({ k: 'kill', id: q.id, by: killer ? killer.id : -1, w: weapon, x: q.pos[0], y: q.pos[1], z: q.pos[2], mid: mid ? 1 : 0 });
     }
 
     laser(p, W) {
@@ -972,12 +980,29 @@
     }
 
     // ----- flags -----
+    nearFlag(p, f, from) {
+      const A = ARMORS[p.armor];
+      const n = Math.min(12, Math.ceil(Math.sqrt((p.pos[0] - from[0]) ** 2 + (p.pos[1] - from[1]) ** 2 + (p.pos[2] - from[2]) ** 2) / 0.8));
+      for (let i = 0; i <= n; i++) {
+        const t = n ? i / n : 1;
+        const x = from[0] + (p.pos[0] - from[0]) * t, y = from[1] + (p.pos[1] - from[1]) * t, z = from[2] + (p.pos[2] - from[2]) * t;
+        const dx = f.pos[0] - x, dz = f.pos[2] - z;
+        if (dx * dx + dz * dz > FLAG_R * FLAG_R) continue;
+        if (y <= f.pos[1] + FLAG_TOP && y + A.h >= f.pos[1] - 0.6) return true;
+      }
+      return false;
+    }
+
+    // the flag counts as a post about 3 m tall with the cloth around it. Checked along the path walked since the last tick,
+    // so flying fast past it, or skimming over the top, still picks it up
     touchFlags(p) {
+      const last = p.flagSeen || p.pos;
+      const mx = p.pos[0] - last[0], my = p.pos[1] - last[1], mz = p.pos[2] - last[2];
+      const far = mx * mx + my * my + mz * mz > 30 * 30; // a jump this big is not a flight
+      p.flagSeen = p.pos.slice();
       for (const f of this.flags) {
         if (f.state === 'carried') continue;
-        const A = ARMORS[p.armor];
-        const dx = f.pos[0] - p.pos[0], dz = f.pos[2] - p.pos[2], dy = f.pos[1] - (p.pos[1] + A.h * 0.5);
-        if (dx * dx + dz * dz > 2.4 * 2.4 || Math.abs(dy) > A.h * 0.5 + 1.6) continue;
+        if (!this.nearFlag(p, f, far ? p.pos : last)) continue;
         if (f.team !== p.team) {
           if (p.flag >= 0) continue;
           f.state = 'carried'; f.carrier = p.id; p.flag = f.team;

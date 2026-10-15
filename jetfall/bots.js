@@ -203,7 +203,9 @@
     if (bot.jet && energyF < 0.12) bot.jet = false;
     if (!bot.jet && energyF > 0.55) bot.jet = true;
     const ahead = 25 + sp * 1.2;
-    const hAhead = w.terrain.height(p.pos[0] + mdx * ahead, p.pos[2] + mdz * ahead);
+    // water and lava ahead count as ground: fly over them, don't wade or burn
+    const fl = Math.max(w.terrain.waterH ?? -Infinity, w.terrain.lavaH ?? -Infinity);
+    const hAhead = Math.max(w.terrain.height(p.pos[0] + mdx * ahead, p.pos[2] + mdz * ahead), fl);
     let jet = false;
     const indoors = (() => { for (let t = 0; t < 2; t++) if (insideBunker(localOf(w, t, p.pos))) return true; return false; })();
     if (want && !indoors) {
@@ -221,7 +223,9 @@
     if (!p.ground && p.vel[1] < -22 && alt < 60 && p.energy > 3) jet = true; // land softly
     // get out of lava and water
     const lh = w.terrain.lavaH, wh = w.terrain.waterH;
-    if ((lh != null && ground < lh + 1 && alt < 6) || (wh != null && p.pos[1] < wh + 0.5)) { if (p.energy > 2) jet = true; }
+    if (lh != null && ground < lh + 1 && alt < 6 && p.energy > 2) jet = true;
+    // in water, float until there is energy to fly out in one go: tapping the jets with every drop of energy keeps you in it
+    if (wh != null && p.pos[1] < wh + 0.5) jet = bot.jet || (p.jetting && p.energy > 2);
     // about to fly into a hillside: pull up
     if (!p.ground && sp > 25 && p.energy > 2) {
       const ax = p.pos[0] + p.vel[0] * 0.6, az = p.pos[2] + p.vel[2] * 0.6, ay = p.pos[1] + p.vel[1] * 0.6;

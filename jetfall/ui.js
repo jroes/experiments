@@ -651,7 +651,7 @@
 
   function resetView() {
     fx = []; fxBeams = []; fxLights = []; debris = []; localProj = []; anims.clear(); feed = []; chat = [];
-    wasAlive = false; deathInfo = null; overShown = false; wantW = 255;
+    wasAlive = false; deathInfo = null; overShown = false; wantW = 255; replay = null; replayWant = null;
     $('over').hidden = true;
   }
   function myView() {
@@ -747,8 +747,11 @@
           if (e.by >= 0) addFeed(teamSpan(e.by, nameOf(e.by)) + ' <span class="dim">[' + esc(wname) + ']</span> ' + teamSpan(e.id, nameOf(e.id)));
           else addFeed(teamSpan(e.id, nameOf(e.id)) + ' <span class="dim">' + esc(wname === 'turret' ? 'was shot by a turret' : wname) + '</span>');
           deathBurst(e.x, e.y, e.z, Math.max(0, teamOf(e.id)));
-          if (e.by === myId && e.id !== myId) { hitT = now(); hitKill = true; Audio.play('kill'); center('', 'You took out ' + nameOf(e.id), '#fff', 2); }
-          if (e.id === myId) { deathInfo = { by: e.by, w: wname, at: [e.x, e.y, e.z], t: now() }; Audio.play('die'); }
+          if (e.by === myId && e.id !== myId) { hitT = now(); hitKill = true; Audio.play('kill'); center(e.mid ? 'Midair!' : '', 'You took out ' + nameOf(e.id), '#fff', 2); }
+          if (e.id === myId) {
+            deathInfo = { by: e.by, w: wname, at: [e.x, e.y, e.z], t: now() }; Audio.play('die');
+            if (e.mid && e.by >= 0) replayWant = { tick: e.t, by: e.by, me: myId, at: [e.x, e.y, e.z], start: now() + 0.9 };
+          }
           break;
         }
         case 'flag': {
@@ -799,7 +802,8 @@
         case 'team': addFeed(teamSpan(e.id, nameOf(e.id)) + ' <span class="dim">switched to ' + TEAMS[e.team].name + '</span>'); break;
         case 'chat':
           addChat((e.team != null ? '<span class="dim">[team]</span> ' : '') + teamSpan(e.id, e.name) + ': ' + (e.vgs ? '<b>' + esc(e.text) + '</b>' : esc(e.text)));
-          if (e.vgs && prefs.speak) speak(e.text, e.id); else Audio.play('chat');
+          if (e.vgs && prefs.speak) { if (e.id !== myId) speak(e.text, e.id); } // mine was said when I picked it
+          else Audio.play('chat');
           break;
         case 'over':
           Audio.play(e.winner === myTeam ? 'win' : e.winner < 0 ? 'ret' : 'lose');
@@ -816,13 +820,28 @@
     for (let i = 0; i < n; i++) puff(at[0], at[1], at[2], { life: rnd(0.25, 0.5), s0: 0.08, s1: 0.02, c: [3, 2.2, 1.2], v: [rnd(-7, 7), rnd(1, 9), rnd(-7, 7)], g: 20, kind: 2 });
   }
 
-  // quick chat read out loud, a different voice pitch for each player
+  // quick chat read out loud, a different voice pitch for each player.
+  // Chrome quirks: speak() right after cancel() is often dropped, an utterance nothing holds on to can be thrown away
+  // before it plays, and the queue can get stuck paused. So: hold the utterance, resume, and speak a moment after a cancel.
+  let voice = null, utter = null, speakT = 0;
+  function pickVoice() {
+    try {
+      const vs = window.speechSynthesis ? speechSynthesis.getVoices() : [];
+      voice = vs.find(v => /^en[-_]US/i.test(v.lang) && v.localService) || vs.find(v => /^en/i.test(v.lang)) || null;
+    } catch (e) { voice = null; }
+  }
+  if (window.speechSynthesis) { pickVoice(); try { speechSynthesis.addEventListener('voiceschanged', pickVoice); } catch (e) { /* old browsers */ } }
   function speak(text, id) {
     try {
-      if (!window.speechSynthesis) return;
+      if (!window.speechSynthesis || !Audio.settings.sfx) return;
       const u = new SpeechSynthesisUtterance(text);
-      u.pitch = 0.6 + ((id * 37) % 9) / 10; u.rate = 1.1; u.volume = Audio.settings.sfx ? Audio.settings.volume : 0;
-      speechSynthesis.cancel(); speechSynthesis.speak(u);
+      if (voice) u.voice = voice;
+      u.lang = voice ? voice.lang : 'en-US';
+      u.pitch = 0.6 + ((id * 37) % 9) / 10; u.rate = 1.1; u.volume = Math.min(1, Audio.settings.volume * 1.6);
+      utter = u;
+      const go = () => { speechSynthesis.resume(); speechSynthesis.speak(u); };
+      clearTimeout(speakT);
+      if (speechSynthesis.speaking || speechSynthesis.pending) { speechSynthesis.cancel(); speakT = setTimeout(go, 60); } else go();
     } catch (e) { /* no voices: the text is in the chat anyway */ }
   }
 
@@ -843,7 +862,11 @@
     const T = window.JFVGS.TREE;
     if (k === 'Escape' || k === 'V' && vgsPath === '') return closeVgs();
     if (vgsPath === '') { if (JF.has(T, k)) { vgsPath = k; drawVgs(); } return; }
-    if (JF.has(T[vgsPath].lines, k)) { if (S) S.client.ctrl({ t: 'chat', vgs: vgsPath + k }); closeVgs(); }
+    if (JF.has(T[vgsPath].lines, k)) {
+      // say it now, inside the key press: some browsers only let a page speak in answer to one
+      if (S) { S.client.ctrl({ t: 'chat', vgs: vgsPath + k }); if (prefs.speak) speak(T[vgsPath].lines[k], S.client.me ? S.client.me.id : 0); }
+      closeVgs();
+    }
   }
   function vgsKey(e) {
     e.preventDefault();
@@ -860,6 +883,85 @@
     const to = [from[0] + dir[0] * dist, from[1] + dir[1] * dist, from[2] + dir[2] * dist];
     const hit = w.traceProj({ pos: from, kind: 'chain', owner: -99, age: 9 }, to, -1);
     return hit ? hit.pos : to;
+  }
+
+  // ---------- replay of a midair disc that killed me ----------
+  // The client keeps the last few seconds of snapshots and events. Shortly after the death they are played back,
+  // the camera riding behind the disc and slowing down around the hit. Only a picture: nothing in the game changes.
+  let replay = null, replayWant = null;
+  function startReplay(c, k) {
+    const snaps = c.hist.slice(), evs = c.histEv.slice();
+    if (snaps.length < 10) return null;
+    const first = snaps[0].tick, last = snaps[snaps.length - 1].tick;
+    // the disc that did it: the killer's disc closest to me in the last snapshot before the kill that has one
+    let disc = -1;
+    for (let i = snaps.length - 1; i >= 0 && disc < 0; i--) {
+      const sn = snaps[i];
+      if (sn.tick >= k.tick) continue;
+      if (sn.tick < k.tick - 120) break;
+      const mine = sn.players.find(p => p.id === k.me);
+      let best = 1e9;
+      if (mine) for (const q of sn.proj) {
+        if (q.owner !== k.by || q.kind !== 'disc') continue;
+        const d = Math.hypot(q.pos[0] - mine.pos[0], q.pos[1] - mine.pos[1], q.pos[2] - mine.pos[2]);
+        if (d < best) { best = d; disc = q.id; }
+      }
+    }
+    let fired = k.tick - 60;
+    if (disc >= 0) { const s0 = snaps.find(sn => sn.proj.some(q => q.id === disc)); if (s0) fired = s0.tick; }
+    const t0 = Math.max(first, Math.min(fired - 40, k.tick - 60), k.tick - 200); // short enough to finish before the automatic respawn
+    const t1 = Math.min(last, k.tick + 50);
+    if (t1 - t0 < 30) return null;
+    return { snaps, evs, k, disc, fired, t0, t1, tick: t0, cam: null, look: null };
+  }
+  // one replay frame: moves the replay clock and camera, sets off its explosions, returns the view to draw
+  function replayFrame(c, dt) {
+    if (replayWant && now() >= replayWant.start) { replay = startReplay(c, replayWant); replayWant = null; }
+    if (!replay) return null;
+    const r = replay, k = r.k, prev = r.tick;
+    const slow = r.tick > k.tick - 20 && r.tick < k.tick + 14;
+    r.tick += dt * 60 * (slow ? 0.25 : 1);
+    if (r.tick >= r.t1) { replay = null; return null; }
+    const v = c.viewAt(r.tick, r.snaps);
+    if (!v) { replay = null; return null; }
+    v.you = -1; // draw me as everyone else saw me
+    for (const e of r.evs) {
+      if (e.t <= prev || e.t > r.tick) continue;
+      if (e.k === 'boom' && e.w !== 'chain') { explosion(e.x, e.y, e.z, e.w, e.dud); Audio.play(BOOM_STYLE[e.w] ? BOOM_STYLE[e.w].sound : 'boom', [e.x, e.y, e.z]); }
+      else if (e.k === 'kill') deathBurst(e.x, e.y, e.z, Math.max(0, teamOf(e.id)));
+    }
+    // the camera: over the killer's shoulder, then behind the disc, then holding on the hit
+    const victim = v.players.find(p => p.id === k.me && p.alive);
+    const vp = victim ? [victim.pos[0], victim.pos[1] + 1.1, victim.pos[2]] : k.at;
+    const killer = v.players.find(p => p.id === k.by && p.alive);
+    const d = r.disc >= 0 ? v.proj.find(q => q.id === r.disc) : null;
+    let want = null;
+    if (d) {
+      const l = Math.hypot(d.vel[0], d.vel[1], d.vel[2]) || 1;
+      want = [d.pos[0] - d.vel[0] / l * 4, d.pos[1] - d.vel[1] / l * 4 + 0.8, d.pos[2] - d.vel[2] / l * 4];
+    } else if (r.tick < r.fired && killer) {
+      const dx = vp[0] - killer.pos[0], dz = vp[2] - killer.pos[2], l = Math.hypot(dx, dz) || 1;
+      want = [killer.pos[0] - dx / l * 4 + dz / l * 1.2, killer.pos[1] + 2.8, killer.pos[2] - dz / l * 4 - dx / l * 1.2];
+    } else if (!r.cam) {
+      want = [vp[0] + 10, vp[1] + 4, vp[2] + 10];
+    }
+    if (!r.cam) { r.cam = (want || vp).slice(); r.look = vp.slice(); }
+    const kp = 1 - Math.exp(-dt * (slow ? 3 : 8)), kl = 1 - Math.exp(-dt * 6);
+    if (want) for (let i = 0; i < 3; i++) r.cam[i] += (want[i] - r.cam[i]) * kp;
+    for (let i = 0; i < 3; i++) r.look[i] += (vp[i] - r.look[i]) * kl;
+    const gh = c.world.terrain.height(r.cam[0], r.cam[2]) + 1;
+    if (r.cam[1] < gh) r.cam[1] = gh;
+    // something solid between the camera and what it watches: draw from in front of it instead
+    let eye = r.cam;
+    const block = c.world.traceProj({ pos: r.look, kind: 'chain', owner: -99, age: 9 }, r.cam, -1);
+    if (block && block.what !== 'player') {
+      const bx = r.look[0] - block.pos[0], by = r.look[1] - block.pos[1], bz = r.look[2] - block.pos[2], bl = Math.hypot(bx, by, bz) || 1;
+      eye = [block.pos[0] + bx / bl * 0.6, block.pos[1] + by / bl * 0.6, block.pos[2] + bz / bl * 0.6];
+    }
+    r.eye = eye;
+    const lx = r.look[0] - eye[0], ly = r.look[1] - eye[1], lz = r.look[2] - eye[2];
+    r.yaw = Math.atan2(-lx, -lz); r.pitch = Math.atan2(ly, Math.hypot(lx, lz));
+    return v;
   }
 
   // ---------- the frame ----------
@@ -894,8 +996,11 @@
     const me = c.me;
     const alive = !!(me && me.alive);
     if (alive && !wasAlive) { deathInfo = null; }
+    if (alive) { replay = null; replayWant = null; }
     wasAlive = alive;
-    buildScene(view, dt);
+    const rv = replayFrame(c, dt);
+    document.body.classList.toggle('replay', !!rv);
+    buildScene(rv || view, dt);
     hud(view, dt);
     // sound listener
     if (camPos) { Audio.listener.pos = camPos; Audio.listener.yaw = yaw; }
@@ -991,6 +1096,7 @@
       eye = [at[0] + Math.sin(yaw + k) * 14, at[1] + 7, at[2] + Math.cos(yaw + k) * 14];
       camYaw = yaw + k; camPitch = -0.4;
     }
+    if (replay && replay.eye) { eye = replay.eye.slice(); camYaw = replay.yaw; camPitch = replay.pitch; firstPerson = false; }
     if (debugCam && debugCam.follow != null) {
       const fp = view.players.find(p => p.id === debugCam.follow);
       if (fp) { const f = JF.aimDir(fp.yaw + (debugCam.turn || 0), -0.15); const d = debugCam.dist || 5; eye = [fp.pos[0] - f[0] * d, fp.pos[1] + 2.2 - f[1] * d, fp.pos[2] - f[2] * d]; camYaw = fp.yaw + (debugCam.turn || 0); camPitch = -0.15; firstPerson = false; }
@@ -1209,8 +1315,8 @@
       $('dead').hidden = alive;
       if (!alive) {
         const ready = me.deadT >= JF.RESPAWN_S;
-        $('dead').querySelector('b').textContent = deathInfo ? 'You died' : 'Get ready';
-        let txt = deathInfo ? (deathInfo.by >= 0 && deathInfo.by !== myId ? 'by ' + nameOf(deathInfo.by) + ' (' + deathInfo.w + ')' : deathInfo.w) : '';
+        $('dead').querySelector('b').textContent = replay ? 'Midair!' : deathInfo ? 'You died' : 'Get ready';
+        let txt = replay ? 'Replay: ' + nameOf(replay.k.by) + '\u2019s disc' : deathInfo ? (deathInfo.by >= 0 && deathInfo.by !== myId ? 'by ' + nameOf(deathInfo.by) + ' (' + deathInfo.w + ')' : deathInfo.w) : '';
         txt += ' · ' + (ready ? (isTouch ? 'tap FIRE to respawn' : 'click to respawn') : 'respawn in ' + Math.ceil(JF.RESPAWN_S - me.deadT));
         setText('deadtxt', ' ' + txt);
       }
@@ -1247,7 +1353,8 @@
     const myR = c.roster.find(x => x.id === myId);
     setText('fps', prefs.fps ? fpsShow + ' fps' + (myR && !S.isHost ? ' · ' + myR.ping + ' ms' : '') : '');
     // markers on screen
-    markers(view);
+    $('markers').style.display = replay ? 'none' : '';
+    if (!replay) markers(view);
     radar(view);
     // scoreboard, map, end screen
     $('scores').hidden = !tabDown;
@@ -1453,5 +1560,5 @@
     if (prefs.name) join(hash); else { setMenuMsg('Pick a name, then press Join to play in game ' + hash + '.'); $('name').focus(); }
   }
   // for tests and debugging
-  window.JFGame = { get session() { return S; }, prefs, renderer, playBots, join, leave, hostOnline, get yaw() { return yaw; }, set yaw(v) { yaw = v; }, get pitch() { return pitch; }, set pitch(v) { pitch = v; }, keys, mouse, get frameMs() { return frameMs; }, set cam(v) { debugCam = v; }, get cam() { return debugCam; } };
+  window.JFGame = { get session() { return S; }, prefs, renderer, playBots, join, leave, hostOnline, get yaw() { return yaw; }, set yaw(v) { yaw = v; }, get pitch() { return pitch; }, set pitch(v) { pitch = v; }, keys, mouse, get frameMs() { return frameMs; }, set cam(v) { debugCam = v; }, get cam() { return debugCam; }, get replay() { return replay; } };
 })();
