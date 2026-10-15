@@ -539,9 +539,9 @@
   };
   function explosion(x, y, z, kind, dud) {
     const st = BOOM_STYLE[kind] || BOOM_STYLE.disc;
-    const g = client() && client().world ? client().world.terrain.height(x, z) : -1e9;
+    const g = sceneClient() && sceneClient().world ? sceneClient().world.terrain.height(x, z) : -1e9;
     const onGround = y - g < 2;
-    const dust = client() && client().world ? client().world.def.look.mid : [0.5, 0.45, 0.4];
+    const dust = sceneClient() && sceneClient().world ? sceneClient().world.def.look.mid : [0.5, 0.45, 0.4];
     if (dud) { puff(x, y, z, { life: 0.6, s0: 1, s1: 3, c: [0.5, 0.5, 0.5], kind: 1, blend: 1, a: 0.6 }); return; }
     const R0 = st.r;
     if (kind === 'chain') {
@@ -591,7 +591,7 @@
     fxBeams = fxBeams.filter(b => b.life > 0);
     for (const l of fxLights) l.life -= dt;
     fxLights = fxLights.filter(l => l.life > 0);
-    const w = client() && client().world;
+    const w = sceneClient() && sceneClient().world;
     for (const d of debris) {
       d.life -= dt; d.v[1] -= 20 * dt;
       d.p[0] += d.v[0] * dt; d.p[1] += d.v[1] * dt; d.p[2] += d.v[2] * dt;
@@ -638,6 +638,7 @@
 
   // ---------- view state ----------
   const client = () => S && S.client;
+  const sceneClient = () => S ? S.client : attract && attract.viewer; // what the 3D scene draws: the game, or the match behind the menu
   let camPos = null;
   const anims = new Map();
   let feed = [], chat = [], centerMsg = { text: '', sub: '', until: 0, color: '' };
@@ -802,7 +803,7 @@
         case 'team': addFeed(teamSpan(e.id, nameOf(e.id)) + ' <span class="dim">switched to ' + TEAMS[e.team].name + '</span>'); break;
         case 'chat':
           addChat((e.team != null ? '<span class="dim">[team]</span> ' : '') + teamSpan(e.id, e.name) + ': ' + (e.vgs ? '<b>' + esc(e.text) + '</b>' : esc(e.text)));
-          if (e.vgs && prefs.speak) { if (e.id !== myId) speak(e.text, e.id); } // mine was said when I picked it
+          if (e.vgs && prefs.speak) { if (e.id !== myId) sayLine(e.vgs, e.text, e.id); } // mine was said when I picked it
           else Audio.play('chat');
           break;
         case 'over':
@@ -831,6 +832,11 @@
     } catch (e) { voice = null; }
   }
   if (window.speechSynthesis) { pickVoice(); try { speechSynthesis.addEventListener('voiceschanged', pickVoice); } catch (e) { /* old browsers */ } }
+  // "Shazbot!" has its own voice in the game's sounds; the other lines use the browser's
+  function sayLine(key, text, id) {
+    if (key === 'GS') Audio.play('shazbot', null, null, 0.85 + ((id * 37) % 7) / 20);
+    else speak(text, id);
+  }
   function speak(text, id) {
     try {
       if (!window.speechSynthesis || !Audio.settings.sfx) return;
@@ -839,6 +845,10 @@
       u.lang = voice ? voice.lang : 'en-US';
       u.pitch = 0.6 + ((id * 37) % 9) / 10; u.rate = 1.1; u.volume = Math.min(1, Audio.settings.volume * 1.6);
       utter = u;
+      // no voice at all on some setups: if nothing has started soon, at least make the chat sound
+      let started = false;
+      u.onstart = () => { started = true; };
+      setTimeout(() => { if (!started && utter === u) Audio.play('chat'); }, 700);
       const go = () => { speechSynthesis.resume(); speechSynthesis.speak(u); };
       clearTimeout(speakT);
       if (speechSynthesis.speaking || speechSynthesis.pending) { speechSynthesis.cancel(); speakT = setTimeout(go, 60); } else go();
@@ -864,7 +874,7 @@
     if (vgsPath === '') { if (JF.has(T, k)) { vgsPath = k; drawVgs(); } return; }
     if (JF.has(T[vgsPath].lines, k)) {
       // say it now, inside the key press: some browsers only let a page speak in answer to one
-      if (S) { S.client.ctrl({ t: 'chat', vgs: vgsPath + k }); if (prefs.speak) speak(T[vgsPath].lines[k], S.client.me ? S.client.me.id : 0); }
+      if (S) { S.client.ctrl({ t: 'chat', vgs: vgsPath + k }); if (prefs.speak) sayLine(vgsPath + k, T[vgsPath].lines[k], S.client.me ? S.client.me.id : 0); }
       closeVgs();
     }
   }
@@ -885,25 +895,27 @@
     return hit ? hit.pos : to;
   }
 
-  // ---------- replay of a midair disc that killed me ----------
-  // The client keeps the last few seconds of snapshots and events. Shortly after the death they are played back,
-  // the camera riding behind the disc and slowing down around the hit. Only a picture: nothing in the game changes.
-  let replay = null, replayWant = null;
-  function startReplay(c, k) {
-    const snaps = c.hist.slice(), evs = c.histEv.slice();
+  // ---------- replays of midair discs ----------
+  // A replay is a copy of the last few seconds of snapshots and events, played back with a camera that rides the disc
+  // and slows down around the hit. Used when a midair kills me, and by the match behind the menu. Only a picture.
+  let replay = null, replayWant = null, camOverride = null;
+  const viewer = { snaps: null };
+  const viewAt = (t, snaps) => Net.Client.prototype.viewAt.call(viewer, t, snaps);
+  // k: { tick, by (killer), me (victim), at }
+  function makeReplay(snaps, evs, k) {
     if (snaps.length < 10) return null;
     const first = snaps[0].tick, last = snaps[snaps.length - 1].tick;
-    // the disc that did it: the killer's disc closest to me in the last snapshot before the kill that has one
+    // the disc that did it: the killer's disc closest to the victim in the last snapshot before the kill that has one
     let disc = -1;
     for (let i = snaps.length - 1; i >= 0 && disc < 0; i--) {
       const sn = snaps[i];
       if (sn.tick >= k.tick) continue;
       if (sn.tick < k.tick - 120) break;
-      const mine = sn.players.find(p => p.id === k.me);
+      const vic = sn.players.find(p => p.id === k.me);
       let best = 1e9;
-      if (mine) for (const q of sn.proj) {
+      if (vic) for (const q of sn.proj) {
         if (q.owner !== k.by || q.kind !== 'disc') continue;
-        const d = Math.hypot(q.pos[0] - mine.pos[0], q.pos[1] - mine.pos[1], q.pos[2] - mine.pos[2]);
+        const d = Math.hypot(q.pos[0] - vic.pos[0], q.pos[1] - vic.pos[1], q.pos[2] - vic.pos[2]);
         if (d < best) { best = d; disc = q.id; }
       }
     }
@@ -914,23 +926,21 @@
     if (t1 - t0 < 30) return null;
     return { snaps, evs, k, disc, fired, t0, t1, tick: t0, cam: null, look: null };
   }
-  // one replay frame: moves the replay clock and camera, sets off its explosions, returns the view to draw
-  function replayFrame(c, dt) {
-    if (replayWant && now() >= replayWant.start) { replay = startReplay(c, replayWant); replayWant = null; }
-    if (!replay) return null;
-    const r = replay, k = r.k, prev = r.tick;
+  // moves a replay on by dt and sets off its explosions; returns the view to draw (the camera is r.eye, r.yaw, r.pitch), or null when it is over
+  function stepReplay(r, dt, world, o) {
+    const k = r.k, prev = r.tick;
     const slow = r.tick > k.tick - 20 && r.tick < k.tick + 14;
     r.tick += dt * 60 * (slow ? 0.25 : 1);
-    if (r.tick >= r.t1) { replay = null; return null; }
-    const v = c.viewAt(r.tick, r.snaps);
-    if (!v) { replay = null; return null; }
-    v.you = -1; // draw me as everyone else saw me
+    if (r.tick >= r.t1) return null;
+    const v = viewAt(r.tick, r.snaps);
+    if (!v) return null;
+    v.you = -1; // the victim is drawn as everyone else saw them
     for (const e of r.evs) {
       if (e.t <= prev || e.t > r.tick) continue;
-      if (e.k === 'boom' && e.w !== 'chain') { explosion(e.x, e.y, e.z, e.w, e.dud); Audio.play(BOOM_STYLE[e.w] ? BOOM_STYLE[e.w].sound : 'boom', [e.x, e.y, e.z]); }
-      else if (e.k === 'kill') deathBurst(e.x, e.y, e.z, Math.max(0, teamOf(e.id)));
+      if (e.k === 'boom' && e.w !== 'chain') { explosion(e.x, e.y, e.z, e.w, e.dud); if (o.loud) Audio.play(BOOM_STYLE[e.w] ? BOOM_STYLE[e.w].sound : 'boom', [e.x, e.y, e.z]); }
+      else if (e.k === 'kill') deathBurst(e.x, e.y, e.z, Math.max(0, o.team(e.id)));
     }
-    // the camera: over the killer's shoulder, then behind the disc, then holding on the hit
+    // over the killer's shoulder, then behind the disc, then holding on the hit
     const victim = v.players.find(p => p.id === k.me && p.alive);
     const vp = victim ? [victim.pos[0], victim.pos[1] + 1.1, victim.pos[2]] : k.at;
     const killer = v.players.find(p => p.id === k.by && p.alive);
@@ -945,23 +955,156 @@
     } else if (!r.cam) {
       want = [vp[0] + 10, vp[1] + 4, vp[2] + 10];
     }
-    if (!r.cam) { r.cam = (want || vp).slice(); r.look = vp.slice(); }
-    const kp = 1 - Math.exp(-dt * (slow ? 3 : 8)), kl = 1 - Math.exp(-dt * 6);
-    if (want) for (let i = 0; i < 3; i++) r.cam[i] += (want[i] - r.cam[i]) * kp;
-    for (let i = 0; i < 3; i++) r.look[i] += (vp[i] - r.look[i]) * kl;
-    const gh = c.world.terrain.height(r.cam[0], r.cam[2]) + 1;
-    if (r.cam[1] < gh) r.cam[1] = gh;
+    easeCam(r, want, vp, dt, slow ? 3 : 8, 6, world);
+    return v;
+  }
+  // a camera o ({ cam, look }) eased towards a spot and a point to look at; sets o.eye, o.yaw, o.pitch
+  function easeCam(o, want, look, dt, kp, kl, world) {
+    if (!o.cam) { o.cam = (want || look).slice(); o.look = look.slice(); }
+    const ep = 1 - Math.exp(-dt * kp), el = 1 - Math.exp(-dt * kl);
+    if (want) for (let i = 0; i < 3; i++) o.cam[i] += (want[i] - o.cam[i]) * ep;
+    for (let i = 0; i < 3; i++) o.look[i] += (look[i] - o.look[i]) * el;
+    const gh = world.terrain.height(o.cam[0], o.cam[2]) + 1;
+    if (o.cam[1] < gh) o.cam[1] = gh;
     // something solid between the camera and what it watches: draw from in front of it instead
-    let eye = r.cam;
-    const block = c.world.traceProj({ pos: r.look, kind: 'chain', owner: -99, age: 9 }, r.cam, -1);
+    let eye = o.cam;
+    const block = world.traceProj({ pos: o.look, kind: 'chain', owner: -99, age: 9 }, o.cam, -1);
     if (block && block.what !== 'player') {
-      const bx = r.look[0] - block.pos[0], by = r.look[1] - block.pos[1], bz = r.look[2] - block.pos[2], bl = Math.hypot(bx, by, bz) || 1;
+      const bx = o.look[0] - block.pos[0], by = o.look[1] - block.pos[1], bz = o.look[2] - block.pos[2], bl = Math.hypot(bx, by, bz) || 1;
       eye = [block.pos[0] + bx / bl * 0.6, block.pos[1] + by / bl * 0.6, block.pos[2] + bz / bl * 0.6];
     }
-    r.eye = eye;
-    const lx = r.look[0] - eye[0], ly = r.look[1] - eye[1], lz = r.look[2] - eye[2];
-    r.yaw = Math.atan2(-lx, -lz); r.pitch = Math.atan2(ly, Math.hypot(lx, lz));
+    o.eye = eye;
+    const lx = o.look[0] - eye[0], ly = o.look[1] - eye[1], lz = o.look[2] - eye[2];
+    o.yaw = Math.atan2(-lx, -lz); o.pitch = Math.atan2(ly, Math.hypot(lx, lz));
+  }
+  // my own midair death, a moment after it happened
+  function replayFrame(c, dt) {
+    if (replayWant && now() >= replayWant.start) { replay = makeReplay(c.hist.slice(), c.histEv.slice(), replayWant); replayWant = null; }
+    if (!replay) return null;
+    const v = stepReplay(replay, dt, c.world, { loud: true, team: teamOf });
+    if (!v) replay = null;
     return v;
+  }
+
+  // ---------- behind the menu: a bot match, cut to replays of its midairs ----------
+  // It runs on this page with no network. Natural midairs come about once a minute, so when there has not been one
+  // for a while the director sets one up: a bot in the air gets a well-led disc from an enemy (and is low enough to die of it).
+  let attract = null;
+  const ATTRACT_STAGE_S = 12;
+  function attractStart() {
+    const cur = renderer.world && renderer.world.mapKey;
+    const map = JF.MAP_KEYS.includes(cur) ? cur : JF.MAP_KEYS.includes(prefs.host.map) ? prefs.host.map : 'highland';
+    const host = new Net.Host({ send() {}, settings: { map, bots: 4, skill: 0.85, caps: 99, minutes: 60 } });
+    for (let i = 0; i < 60 * 30; i++) host.tickOnce(); // skip the walk out of the bases (about a tenth of a second of work)
+    attract = { host, w: null, snaps: [], evs: [], lastEv: 0, snapTick: -99, replay: null, want: null, lastMid: now(), stageAt: now() + 5,
+      follow: -1, cutAt: 0, cam: null, look: null, viewer: { world: null, me: null, myPos: () => null } };
+    attractWorld(attract);
+  }
+  function attractWorld(a) {
+    a.w = a.host.world; a.viewer.world = a.w; renderer.setMap(a.w);
+    a.snaps = []; a.evs = []; a.lastEv = a.w.evSeq; a.replay = null; a.want = null; a.cam = null;
+  }
+  const attractTeam = id => { const p = attract && attract.w.players.get(id); return p ? p.team : -1; };
+  const attractName = id => { const p = attract && attract.w.players.get(id); return p ? p.name : '?'; };
+  function attractFrame(dt) {
+    if (!attract) attractStart();
+    const a = attract;
+    a.host.update(dt);
+    if (a.host.world !== a.w) attractWorld(a); // the match ended and the next map started
+    const w = a.w;
+    if (w.tick - a.snapTick >= Net.SNAP_EVERY) {
+      a.snapTick = w.tick;
+      const rd = new Net.Reader(Net.encodeSnap(w, 255, 0, w.evSeq, null)); rd.u8();
+      a.snaps.push(Net.decodeSnap(rd));
+      if (a.snaps.length > 140) a.snaps.shift();
+    }
+    for (const e of w.events) {
+      if (e.s <= a.lastEv) continue;
+      a.lastEv = e.s; a.evs.push(e);
+      if (!a.replay) {
+        if (e.k === 'boom' && e.w !== 'chain') explosion(e.x, e.y, e.z, e.w, e.dud);
+        else if (e.k === 'kill') deathBurst(e.x, e.y, e.z, Math.max(0, attractTeam(e.id)));
+      }
+      if (e.k === 'kill' && e.mid && e.by >= 0 && !a.replay && !a.want) { a.want = { tick: e.t, by: e.by, me: e.id, at: [e.x, e.y, e.z], start: now() + 0.4 }; a.lastMid = now(); }
+    }
+    while (a.evs.length && a.snaps.length && a.evs[0].t < a.snaps[0].tick) a.evs.shift();
+    if (!a.replay && !a.want && now() - a.lastMid > ATTRACT_STAGE_S && now() > a.stageAt) { a.stageAt = now() + 2.5; stageMidair(w); }
+    if (a.want && now() >= a.want.start) {
+      a.replay = makeReplay(a.snaps.slice(), a.evs.slice(), a.want);
+      if (a.replay) $('bgcap').textContent = 'Midair! ' + attractName(a.want.by) + ' \u25B8 ' + attractName(a.want.me);
+      a.want = null;
+    }
+    let view = null;
+    if (a.replay) { view = stepReplay(a.replay, dt, w, { loud: false, team: attractTeam }); if (!view) { a.replay = null; a.cam = null; } }
+    $('bgcap').hidden = !a.replay;
+    if (a.replay) camOverride = a.replay;
+    else {
+      view = viewAt(w.tick - Net.SNAP_EVERY + a.host.acc * 60, a.snaps);
+      if (!view) return;
+      view.you = -1;
+      camOverride = followCam(a, view, dt);
+    }
+    // the menu panel sits in the middle of wide screens: turn the camera so what it watches is off to the left
+    if (camOverride && innerWidth > 900) {
+      const hf = Math.atan(Math.tan(vfov() / 2) * innerWidth / innerHeight);
+      camOverride = Object.assign({}, camOverride, { yaw: camOverride.yaw - Math.atan(Math.tan(hf) * 0.5) });
+    }
+    stepFx(dt);
+    buildScene(view, dt);
+    camOverride = null;
+  }
+  // between replays: ride along with someone fast, in the air if possible, and cut to someone else now and then
+  function followCam(a, v, dt) {
+    let f = v.players.find(p => p.id === a.follow && p.alive);
+    if (!f || now() > a.cutAt) {
+      let best = null, bs = -1;
+      for (const p of v.players) {
+        if (!p.alive) continue;
+        const sc = Math.hypot(p.vel[0], p.vel[1], p.vel[2]) + (p.ground ? 0 : 15) + (p.id === a.follow ? -10 : 0);
+        if (sc > bs) { bs = sc; best = p; }
+      }
+      a.cutAt = now() + 7;
+      if (best && best !== f) { if (f) a.cam = null; a.follow = best.id; f = best; }
+    }
+    if (!f) return null;
+    const sp = Math.hypot(f.vel[0], f.vel[2]);
+    const dir = sp > 3 ? [f.vel[0] / sp, 0, f.vel[2] / sp] : [-Math.sin(f.yaw), 0, -Math.cos(f.yaw)];
+    const side = [-dir[2], 0, dir[0]];
+    const want = [f.pos[0] - dir[0] * 9 + side[0] * 3, f.pos[1] + 3.5, f.pos[2] - dir[2] * 9 + side[2] * 3];
+    const look = [f.pos[0] + dir[0] * 6, f.pos[1] + 1.2, f.pos[2] + dir[2] * 6];
+    easeCam(a, want, look, dt, 3, 4, a.w);
+    return a;
+  }
+  // a bot in the air, an enemy with a disc at a good distance and a clear line: lead the shot and let it fly
+  function stageMidair(w) {
+    const ps = [...w.players.values()].filter(p => p.alive);
+    let best = null;
+    for (const t of ps) {
+      // coasting through the air (no jets): where they will be is easy to work out
+      if (t.ground || t.jetting || t.spawnProt > 0 || t.pos[1] - w.terrain.height(t.pos[0], t.pos[2]) < 8) continue;
+      for (const s of ps) {
+        if (s.team === t.team || !s.weapons.includes('disc')) continue;
+        const d = Math.hypot(t.pos[0] - s.pos[0], t.pos[1] - s.pos[1], t.pos[2] - s.pos[2]);
+        if (d < 25 || d > 75) continue;
+        if (w.blocked(JF.eye(s), [t.pos[0], t.pos[1] + 1, t.pos[2]])) continue;
+        const sc = Math.abs(d - 42);
+        if (!best || sc < best.sc) best = { s, t, sc };
+      }
+    }
+    if (!best) return;
+    const { s, t } = best, e = JF.eye(s), W = JF.WEAPONS.disc;
+    // where they will be when the disc gets there, less what the disc takes from the shooter's speed
+    const fall = 0.5 * JF.GRAV;
+    let aim = [t.pos[0], t.pos[1] + 1, t.pos[2]];
+    for (let i = 0; i < 6; i++) {
+      const ft = Math.hypot(aim[0] - e[0], aim[1] - e[1], aim[2] - e[2]) / W.speed;
+      aim = [t.pos[0] + (t.vel[0] - s.vel[0] * W.inherit) * ft, t.pos[1] + 1 + (t.vel[1] - s.vel[1] * W.inherit) * ft - fall * ft * ft, t.pos[2] + (t.vel[2] - s.vel[2] * W.inherit) * ft];
+    }
+    if (w.blocked(e, aim) || aim[1] < w.terrain.height(aim[0], aim[2]) + 2) return;
+    const dx = aim[0] - e[0], dy = aim[1] - e[1], dz = aim[2] - e[2], l = Math.hypot(dx, dy, dz);
+    s.yaw = Math.atan2(-dx, -dz); s.pitch = Math.atan2(dy, Math.hypot(dx, dz));
+    t.hp = Math.min(t.hp, 8);
+    w.launch(s, 'disc', e, [dx / l, dy / l, dz / l]);
   }
 
   // ---------- the frame ----------
@@ -970,7 +1113,8 @@
     const t = performance.now();
     const dt = Math.min(0.1, (t - lastFrame) / 1000);
     lastFrame = t;
-    if (!S || !renderer) { if (renderer && renderer.terrain && !S) idleScene(dt); return; }
+    if (!S || !renderer) { if (renderer && renderer.terrain && !S) { if (prefs.quality === 'low') idleScene(dt); else attractFrame(dt); } return; }
+    if (attract) { attract = null; $('bgcap').hidden = true; }
     const c = S.client;
     const ctl = controls();
     jumpPulse = false;
@@ -1000,7 +1144,9 @@
     wasAlive = alive;
     const rv = replayFrame(c, dt);
     document.body.classList.toggle('replay', !!rv);
+    camOverride = rv ? replay : null;
     buildScene(rv || view, dt);
+    camOverride = null;
     hud(view, dt);
     // sound listener
     if (camPos) { Audio.listener.pos = camPos; Audio.listener.yaw = yaw; }
@@ -1031,7 +1177,7 @@
     a.phase += d * 1.6;
     a.last = p.pos.slice();
     // a splash going into the water
-    const wh = client().world.terrain.waterH;
+    const wh = sceneClient().world.terrain.waterH;
     if (wh != null) {
       const under = p.pos[1] < wh;
       if (under && !a.under && a.seen) {
@@ -1048,7 +1194,7 @@
   // weather around the camera: rain, snow, ash or dust, from the map's look
   let weatherPts = null;
   function weather(eye, dt, time) {
-    const kind = client().world.def.weather;
+    const kind = sceneClient().world.def.weather;
     if (!kind || prefs.quality === 'low') return;
     const n = kind === 'rain' ? 500 : kind === 'snow' ? 450 : kind === 'ash' ? 300 : 120, R = 45;
     if (!weatherPts || weatherPts.kind !== kind) {
@@ -1069,7 +1215,7 @@
   }
 
   function buildScene(view, dt) {
-    const c = client(), me = c.me, w = c.world;
+    const c = sceneClient(), me = c.me, w = c.world;
     const time = performance.now() / 1000;
     const myId = view.you;
     const alive = !!(me && me.alive);
@@ -1096,7 +1242,7 @@
       eye = [at[0] + Math.sin(yaw + k) * 14, at[1] + 7, at[2] + Math.cos(yaw + k) * 14];
       camYaw = yaw + k; camPitch = -0.4;
     }
-    if (replay && replay.eye) { eye = replay.eye.slice(); camYaw = replay.yaw; camPitch = replay.pitch; firstPerson = false; }
+    if (camOverride) { eye = camOverride.eye.slice(); camYaw = camOverride.yaw; camPitch = camOverride.pitch; firstPerson = false; }
     if (debugCam && debugCam.follow != null) {
       const fp = view.players.find(p => p.id === debugCam.follow);
       if (fp) { const f = JF.aimDir(fp.yaw + (debugCam.turn || 0), -0.15); const d = debugCam.dist || 5; eye = [fp.pos[0] - f[0] * d, fp.pos[1] + 2.2 - f[1] * d, fp.pos[2] - f[2] * d]; camYaw = fp.yaw + (debugCam.turn || 0); camPitch = -0.15; firstPerson = false; }
@@ -1560,5 +1706,5 @@
     if (prefs.name) join(hash); else { setMenuMsg('Pick a name, then press Join to play in game ' + hash + '.'); $('name').focus(); }
   }
   // for tests and debugging
-  window.JFGame = { get session() { return S; }, prefs, renderer, playBots, join, leave, hostOnline, get yaw() { return yaw; }, set yaw(v) { yaw = v; }, get pitch() { return pitch; }, set pitch(v) { pitch = v; }, keys, mouse, get frameMs() { return frameMs; }, set cam(v) { debugCam = v; }, get cam() { return debugCam; }, get replay() { return replay; } };
+  window.JFGame = { get session() { return S; }, prefs, renderer, playBots, join, leave, hostOnline, get yaw() { return yaw; }, set yaw(v) { yaw = v; }, get pitch() { return pitch; }, set pitch(v) { pitch = v; }, keys, mouse, get frameMs() { return frameMs; }, set cam(v) { debugCam = v; }, get cam() { return debugCam; }, get replay() { return replay; }, get attract() { return attract; } };
 })();

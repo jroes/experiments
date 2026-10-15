@@ -217,3 +217,6 @@ body.replay::after { bottom: 0; }
 body.replay #dead { top: auto; bottom: calc(9vh + 10px); z-index: 6; }
 body.replay #dead b { color: #ffd34d; font-size: 24px; }
 body.replay :is(#cross, #hitmark, #dmgdir, #radar, #bars, #speed, #weapons, #station) { visibility: hidden; }
+/* the menu's background match: a caption while it replays a midair */
+#bgcap { position: fixed; left: 0; right: 0; text-align: center; z-index: 2; bottom: calc(12px + env(safe-area-inset-bottom)); pointer-events: none; font-size: 15px; font-weight: bold;
+  letter-spacing: 1px; color: #ffd34d; text-shadow: 0 1px 3px #000, 0 0 12px rgba(0, 0, 0, 0.8); }
