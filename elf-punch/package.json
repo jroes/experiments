@@ -3,9 +3,10 @@
   "private": true,
   "description": "Integration test for the Rust server (node test.js after ./build.sh)",
   "scripts": {
-    "test": "node test.js && node test-kv.js && node test-lab.js",
+    "test": "node test.js && node test-kv.js && node test-lab.js && node test-relay.js",
     "test:kv": "node test-kv.js",
-    "test:lab": "node test-lab.js"
+    "test:lab": "node test-lab.js",
+    "test:relay": "node test-relay.js"
   },
   "devDependencies": {
     "ws": "^8.18.0"

@@ -1,0 +1,1130 @@
+/*
+ * Jetfall: the rules. Jetpacks, skiing, capture the flag. No DOM here, so it runs in node and in a worker.
+ *
+ * The host's browser runs the one true World. Every other browser runs `movePlayer` for its own player only
+ * (prediction) and is corrected by the host's snapshots. So movement must be the same function in both places:
+ * keep everything that moves a player inside movePlayer and the state it reads inside the player.
+ *
+ * Units are metres and seconds. y is up. The map is SIZE x SIZE metres.
+ */
+(function (root) {
+  'use strict';
+
+  const TICK = 1 / 60;
+  const GRAV = 20;
+  const N = 256, CELL = 8, SIZE = N * CELL;   // heightfield: (N+1)^2 heights, 8 m apart
+  const AREA_MIN = 230, AREA_MAX = SIZE - 230;  // the mission area; outside it you are pushed back
+  const CEILING = 900;
+  const TEAMS = [
+    { name: 'Ember', color: '#ff7a3d', rgb: [1.0, 0.45, 0.2] },
+    { name: 'Azure', color: '#4fb3ff', rgb: [0.3, 0.65, 1.0] },
+  ];
+
+  // input buttons
+  const B = { FIRE: 1, JET: 2, JUMP: 4, PACK: 8, GREN: 16, ALT: 32 };
+
+  const ARMORS = {
+    light:  { name: 'Light',  hp: 70,  mass: 1.0, run: 12, accel: 70, jet: 37, jetCost: 22, energy: 60,  regen: 11, jump: 8,   r: 0.5,  h: 2.0, slots: 3, grenades: 3, impact: 30 },
+    medium: { name: 'Medium', hp: 105, mass: 1.45, run: 10, accel: 60, jet: 33, jetCost: 22, energy: 75,  regen: 11, jump: 7.5, r: 0.6,  h: 2.3, slots: 4, grenades: 4, impact: 28 },
+    heavy:  { name: 'Heavy',  hp: 165, mass: 2.1, run: 8,  accel: 50, jet: 30, jetCost: 21, energy: 95,  regen: 11, jump: 7,   r: 0.75, h: 2.6, slots: 5, grenades: 5, impact: 26 },
+  };
+  const ARMOR_KEYS = ['light', 'medium', 'heavy'];
+
+  // kind: 'proj' flies, 'hitscan' is instant, 'beam' is held.
+  // dmg is damage at the centre, r the splash radius (0 = direct hit only), knock the shove at the centre for light armor (m/s).
+  const WEAPONS = {
+    blaster: { name: 'Blaster',          kind: 'proj', code: 1, speed: 160, grav: 0,   dmg: 13,  r: 0,   knock: 2,  cd: 0.32, ammo: 0,   energy: 6, inherit: 0.4, life: 2.5, blurb: 'Uses energy, never ammo. Weak but always there.' },
+    chain:   { name: 'Chaingun',         kind: 'proj', code: 2, speed: 380, grav: 0,   dmg: 5,   r: 0,   knock: 1,  cd: 0.085, ammo: 200, spin: 0.35, spread: 0.022, inherit: 0.5, life: 1.0, quiet: true, blurb: 'Spins up, then a stream of bullets. Good up close and on flag runners.' },
+    disc:    { name: 'Disc Launcher',    kind: 'proj', code: 3, speed: 68,  grav: 0,   dmg: 48,  r: 7.5, knock: 26, cd: 1.15, ammo: 15,  inherit: 0.5, life: 6, blurb: 'Slow disc, big blast, big shove. Aim at the feet, or under yourself to fly.' },
+    gl:      { name: 'Grenade Launcher', kind: 'proj', code: 4, speed: 52,  grav: 1,   dmg: 42,  r: 8,   knock: 20, cd: 0.85, ammo: 12,  inherit: 0.8, life: 2.2, bounce: 0.45, fuse: true, blurb: 'Lobs grenades that bounce, then blow after two seconds. They go off on contact with a player.' },
+    plasma:  { name: 'Plasma Rifle',     kind: 'proj', code: 5, speed: 62,  grav: 0,   dmg: 40,  r: 3.5, knock: 6,  cd: 0.6, ammo: 30,  inherit: 0.5, life: 5, blurb: 'Hot bolt, small splash, hits hard.' },
+    mortar:  { name: 'Mortar',           kind: 'proj', code: 6, speed: 48,  grav: 1,   dmg: 110, r: 18,  knock: 34, cd: 2.0, ammo: 10,  inherit: 0.8, life: 8, arm: 0.25, blurb: 'Heavy armor only. Long arc, huge blast. Wrecks generators.' },
+    laser:   { name: 'Laser Rifle',      kind: 'hitscan', code: 7, range: 450, dmg: 18, perEnergy: 0.85, minEnergy: 25, cd: 1.4, ammo: 0, blurb: 'Light armor only. Instant hit, burns all your energy: the more you have, the harder it hits. Head shots count double.' },
+    elf:     { name: 'ELF Projector',    kind: 'beam', code: 8, range: 42, drain: 55, dmg: 7, ammo: 0, cd: 0, blurb: 'Hold on someone to drain their energy and hurt them a little. Grounds jetters.' },
+  };
+  const WEAPON_KEYS = ['blaster', 'chain', 'disc', 'gl', 'plasma', 'mortar', 'laser', 'elf'];
+  const NOT_FOR = { light: ['mortar'], medium: ['mortar', 'laser'], heavy: ['laser'] };
+  // projectiles that are not a carried weapon
+  const EXTRA_PROJ = {
+    hgren:  { name: 'Hand grenade', kind: 'proj', code: 9,  speed: 30, grav: 1, dmg: 45, r: 9, knock: 22, inherit: 1, life: 2.0, bounce: 0.4, fuse: true },
+    tbolt:  { name: 'Turret',       kind: 'proj', code: 10, speed: 75, grav: 0, dmg: 22, r: 3.5, knock: 8, inherit: 0, life: 4 },
+  };
+  const PROJ = Object.assign({}, WEAPONS, EXTRA_PROJ);
+  const PROJ_BY_CODE = {};
+  for (const [k, w] of Object.entries(PROJ)) PROJ_BY_CODE[w.code] = k;
+
+  const PACKS = {
+    none:   { name: 'No pack', blurb: '' },
+    energy: { name: 'Energy pack', regen: 9, blurb: 'Faster energy: fly longer, jet more often.' },
+    repair: { name: 'Repair pack', blurb: 'Hold the pack key: heals you, or whatever friendly thing you look at up close (generator, turret, station, a friend).' },
+    shield: { name: 'Shield pack', blurb: 'Press the pack key to switch on. Damage eats energy instead of health.' },
+    ammo:   { name: 'Ammo pack',   blurb: 'Half again as much ammo, and two more grenades.' },
+  };
+  const PACK_KEYS = ['none', 'energy', 'repair', 'shield', 'ammo'];
+
+  const SPAWN_KIT = { armor: 'light', weapons: ['blaster', 'chain', 'disc'], pack: 'none' };
+  const DEFAULT_LOADOUT = { armor: 'medium', weapons: ['disc', 'chain', 'plasma', 'gl'], pack: 'energy' };
+
+  const RESPAWN_S = 3, AUTO_RESPAWN_S = 8;
+  const FLAG_RETURN_S = 40;
+  const STATION_S = 0.9;
+  const OBJ = {
+    gen:     { name: 'Generator', hp: 700 },
+    station: { name: 'Inventory station', hp: 320 },
+    turret:  { name: 'Turret', hp: 300, range: 140, cd: 1.6 },
+    sensor:  { name: 'Sensor', hp: 260 },
+  };
+  const ONLINE_AT = 0.6; // a destroyed thing comes back when repaired to this fraction
+
+  const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
+  const has = (o, k) => typeof k === 'string' && Object.prototype.hasOwnProperty.call(o, k);
+  const len3 = (x, y, z) => Math.sqrt(x * x + y * y + z * z);
+
+  // ---------- random numbers (seeded; the world keeps its own) ----------
+  function mulberry(seed) {
+    let a = seed | 0;
+    return function () {
+      a = (a + 0x6D2B79F5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  // ---------- noise for the land ----------
+  function hash2(x, z, s) {
+    let h = Math.imul(x | 0, 374761393) ^ Math.imul(z | 0, 668265263) ^ Math.imul(s | 0, 2147483587);
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    h ^= h >>> 16;
+    return (h >>> 0) / 4294967296;
+  }
+  function vnoise(x, z, s) {
+    const ix = Math.floor(x), iz = Math.floor(z), fx = x - ix, fz = z - iz;
+    const ux = fx * fx * (3 - 2 * fx), uz = fz * fz * (3 - 2 * fz);
+    const a = hash2(ix, iz, s), b = hash2(ix + 1, iz, s), c = hash2(ix, iz + 1, s), d = hash2(ix + 1, iz + 1, s);
+    return (a + (b - a) * ux) + ((c + (d - c) * ux) - (a + (b - a) * ux)) * uz;
+  }
+  function fbm(x, z, s, oct, gain) {
+    let sum = 0, amp = 1, norm = 0;
+    for (let i = 0; i < oct; i++) {
+      sum += amp * (vnoise(x, z, s + i * 101) * 2 - 1);
+      norm += amp; amp *= gain; x *= 2.03; z *= 2.03;
+    }
+    return sum / norm;
+  }
+  function ridged(x, z, s, oct) {
+    let sum = 0, amp = 1, norm = 0;
+    for (let i = 0; i < oct; i++) {
+      const v = 1 - Math.abs(vnoise(x, z, s + i * 57) * 2 - 1);
+      sum += amp * v * v; norm += amp; amp *= 0.5; x *= 2.1; z *= 2.1;
+    }
+    return sum / norm;
+  }
+
+  // ---------- maps ----------
+  // Everything about how a map looks is here too, so a map is one piece of data. The renderer reads `look`.
+  const MAPS = {
+    highland: {
+      name: 'Highland', blurb: 'Green rolling hills. Long ski runs between the bases.',
+      seed: 7, amp: 150, freq: 1 / 520, ridge: 0.35, rough: 0.48, dist: 620, off: 160, baseH: null,
+      look: {
+        skyTop: [0.22, 0.42, 0.75], skyHorizon: [0.72, 0.82, 0.92], sun: [0.55, 0.45, 0.35], sunColor: [1.1, 1.0, 0.86], ambient: [0.36, 0.43, 0.55],
+        fog: [0.66, 0.75, 0.86], fogDist: 1700, clouds: 0.55,
+        low: [0.27, 0.42, 0.16], mid: [0.36, 0.48, 0.2], high: [0.5, 0.48, 0.42], rock: [0.42, 0.4, 0.37], snow: [0.93, 0.95, 0.98], snowLine: 0.8,
+      },
+    },
+    dunes: {
+      name: 'Dust Basin', blurb: 'Big dunes under an orange sky. Fast going downhill.',
+      seed: 21, amp: 120, freq: 1 / 430, ridge: 0.15, rough: 0.4, dist: 650, off: -120, baseH: null,
+      look: {
+        skyTop: [0.38, 0.45, 0.62], skyHorizon: [0.98, 0.72, 0.45], sun: [-0.4, 0.38, 0.55], sunColor: [1.0, 0.82, 0.6], ambient: [0.55, 0.45, 0.4],
+        fog: [0.92, 0.7, 0.5], fogDist: 1400, clouds: 0.2, rocks: 250,
+        low: [0.72, 0.52, 0.32], mid: [0.8, 0.6, 0.38], high: [0.68, 0.48, 0.32], rock: [0.55, 0.38, 0.27], snow: [0.85, 0.7, 0.5], snowLine: 2,
+      },
+    },
+    frost: {
+      name: 'Frostline', blurb: 'Snow and steep ridges. Low cloud, hard to see far.',
+      seed: 33, amp: 190, freq: 1 / 480, ridge: 0.6, rough: 0.5, dist: 600, off: 200, baseH: null,
+      look: {
+        skyTop: [0.5, 0.58, 0.68], skyHorizon: [0.8, 0.84, 0.88], sun: [0.2, 0.42, -0.6], sunColor: [0.95, 0.96, 1.0], ambient: [0.55, 0.6, 0.7],
+        fog: [0.78, 0.82, 0.87], fogDist: 950, clouds: 0.8, rocks: 700, rockCol: [0.5, 0.52, 0.56],
+        low: [0.82, 0.86, 0.9], mid: [0.88, 0.9, 0.94], high: [0.95, 0.96, 0.98], rock: [0.38, 0.4, 0.45], snow: [0.97, 0.98, 1.0], snowLine: 0.3,
+      },
+    },
+    ashfall: {
+      name: 'Ashfall', blurb: 'Dark volcanic rock and a red sky. Sharp peaks, good cover.',
+      seed: 47, amp: 170, freq: 1 / 400, ridge: 0.7, rough: 0.55, dist: 610, off: -180, baseH: null,
+      look: {
+        skyTop: [0.12, 0.08, 0.12], skyHorizon: [0.62, 0.25, 0.14], sun: [0.55, 0.3, 0.3], sunColor: [1.0, 0.6, 0.4], ambient: [0.38, 0.28, 0.3],
+        fog: [0.35, 0.16, 0.12], fogDist: 1250, clouds: 0.4, rocks: 1300,
+        low: [0.16, 0.14, 0.14], mid: [0.22, 0.19, 0.18], high: [0.3, 0.27, 0.25], rock: [0.12, 0.11, 0.11], snow: [0.5, 0.45, 0.42], snowLine: 0.9,
+        lava: true,
+      },
+    },
+  };
+  const MAP_KEYS = Object.keys(MAPS);
+
+  // base origins: point symmetric about the centre, so neither side has the better land
+  function basePositions(def) {
+    const c = SIZE / 2;
+    return [
+      { x: c - def.dist, z: c - def.off, face: 1 },
+      { x: c + def.dist, z: c + def.off, face: -1 },
+    ];
+  }
+
+  // ---------- terrain ----------
+  function makeTerrain(mapKey, seedOverride) {
+    const def = MAPS[mapKey];
+    const seed = seedOverride == null ? def.seed : seedOverride | 0;
+    const H = new Float32Array((N + 1) * (N + 1));
+    const raw = (x, z) => {
+      const nx = x * def.freq, nz = z * def.freq;
+      const base = fbm(nx, nz, seed, 6, def.rough);
+      const r = ridged(nx * 0.7 + 13.1, nz * 0.7 - 7.7, seed + 9, 5);
+      const broad = fbm(nx * 0.35 + 3.3, nz * 0.35 + 1.7, seed + 77, 3, 0.5);
+      return def.amp * (0.55 * base + def.ridge * (r - 0.45) + 0.6 * broad);
+    };
+    const bases = basePositions(def);
+    // flatten around each base: the pad is level, then blends into the hills
+    let padH = 0;
+    for (const b of bases) padH += raw(b.x, b.z) + raw(SIZE - b.x, SIZE - b.z);
+    padH /= 4;
+    for (let iz = 0; iz <= N; iz++) {
+      for (let ix = 0; ix <= N; ix++) {
+        const x = ix * CELL, z = iz * CELL;
+        let h = (raw(x, z) + raw(SIZE - x, SIZE - z)) * 0.5 * 1.35; // symmetric land
+        for (const b of bases) {
+          const d = Math.sqrt((x - b.x) * (x - b.x) + (z - b.z) * (z - b.z));
+          const t = clamp((d - 45) / 110, 0, 1), s = t * t * (3 - 2 * t);
+          h = padH + (h - padH) * s;
+        }
+        // raise the rim outside the mission area so the edge reads as a wall of hills
+        const ex = Math.max(0, AREA_MIN - x, x - AREA_MAX), ez = Math.max(0, AREA_MIN - z, z - AREA_MAX);
+        const e = Math.sqrt(ex * ex + ez * ez);
+        h += e * e * 0.004;
+        H[iz * (N + 1) + ix] = h;
+      }
+    }
+    // lowest point at 20 m so nothing is below 0
+    let lo = Infinity;
+    for (let i = 0; i < H.length; i++) if (H[i] < lo) lo = H[i];
+    for (let i = 0; i < H.length; i++) H[i] = H[i] - lo + 20;
+    return new Terrain(H, padH - lo + 20);
+  }
+
+  class Terrain {
+    constructor(heights, padH) { this.h = heights; this.padH = padH; }
+    at(ix, iz) {
+      ix = ix < 0 ? 0 : ix > N ? N : ix; iz = iz < 0 ? 0 : iz > N ? N : iz;
+      return this.h[iz * (N + 1) + ix];
+    }
+    // the same two triangles per cell as the mesh that is drawn: split along x+z = 1
+    height(x, z) {
+      let gx = x / CELL, gz = z / CELL;
+      if (gx < 0) gx = 0; else if (gx > N - 1e-6) gx = N - 1e-6;
+      if (gz < 0) gz = 0; else if (gz > N - 1e-6) gz = N - 1e-6;
+      const ix = Math.floor(gx), iz = Math.floor(gz), fx = gx - ix, fz = gz - iz;
+      const h00 = this.at(ix, iz), h10 = this.at(ix + 1, iz), h01 = this.at(ix, iz + 1), h11 = this.at(ix + 1, iz + 1);
+      if (fx + fz <= 1) return h00 + (h10 - h00) * fx + (h01 - h00) * fz;
+      return h11 + (h01 - h11) * (1 - fx) + (h10 - h11) * (1 - fz);
+    }
+    normal(x, z, out) {
+      out = out || [0, 1, 0];
+      let gx = clamp(x / CELL, 0, N - 1e-6), gz = clamp(z / CELL, 0, N - 1e-6);
+      const ix = Math.floor(gx), iz = Math.floor(gz), fx = gx - ix, fz = gz - iz;
+      let dx, dz;
+      if (fx + fz <= 1) { dx = this.at(ix + 1, iz) - this.at(ix, iz); dz = this.at(ix, iz + 1) - this.at(ix, iz); }
+      else { dx = this.at(ix + 1, iz + 1) - this.at(ix, iz + 1); dz = this.at(ix + 1, iz + 1) - this.at(ix + 1, iz); }
+      const nx = -dx / CELL, nz = -dz / CELL, l = len3(nx, 1, nz);
+      out[0] = nx / l; out[1] = 1 / l; out[2] = nz / l;
+      return out;
+    }
+    // first point where the segment a->b goes under the ground: returns t in [0,1] or -1
+    raycast(ax, ay, az, bx, by, bz) {
+      const dx = bx - ax, dy = by - ay, dz = bz - az;
+      const dist = Math.sqrt(dx * dx + dz * dz) + Math.abs(dy) * 0.25;
+      const steps = Math.max(1, Math.ceil(dist / 2.5));
+      let pt = 0;
+      if (ay < this.height(ax, az)) return 0;
+      for (let i = 1; i <= steps; i++) {
+        const t = i / steps;
+        const x = ax + dx * t, y = ay + dy * t, z = az + dz * t;
+        if (y < this.height(x, z)) {
+          let lo = pt, hi = t;
+          for (let k = 0; k < 8; k++) {
+            const m = (lo + hi) / 2;
+            if (ay + dy * m < this.height(ax + dx * m, az + dz * m)) hi = m; else lo = m;
+          }
+          return hi;
+        }
+        pt = t;
+      }
+      return -1;
+    }
+  }
+
+  // ---------- boxes (buildings and things) ----------
+  // A box is [minX, minY, minZ, maxX, maxY, maxZ]. Bases are point-mirrored, so every box stays axis aligned.
+  function segBox(ax, ay, az, dx, dy, dz, b, pad) {
+    pad = pad || 0;
+    let t0 = 0, t1 = 1;
+    const o = [ax, ay, az], d = [dx, dy, dz];
+    for (let i = 0; i < 3; i++) {
+      const lo = b[i] - pad, hi = b[i + 3] + pad;
+      if (Math.abs(d[i]) < 1e-9) { if (o[i] < lo || o[i] > hi) return -1; continue; }
+      let ta = (lo - o[i]) / d[i], tb = (hi - o[i]) / d[i];
+      if (ta > tb) { const s = ta; ta = tb; tb = s; }
+      if (ta > t0) t0 = ta;
+      if (tb < t1) t1 = tb;
+      if (t0 > t1) return -1;
+    }
+    return t0;
+  }
+
+  // One base, in local coordinates: +x faces the enemy. y = 0 is the floor.
+  // Returns walls (plain solid boxes) and things (generator, stations, turrets, flag stand, spawn points).
+  function baseLayout() {
+    const W = [];
+    const box = (x0, y0, z0, x1, y1, z1, mat) => W.push({ b: [x0, y0, z0, x1, y1, z1], mat: mat || 'wall' });
+    // bunker 24 x 18, walls 1 thick, 8 high, doors 4 wide and 4.5 high front and back
+    for (const s of [-1, 1]) {
+      const x0 = s < 0 ? -12 : 11, x1 = s < 0 ? -11 : 12;
+      box(x0, 0, -9, x1, 8, -2.2);
+      box(x0, 0, 2.2, x1, 8, 9);
+      box(x0, 4.6, -2.2, x1, 8, 2.2);
+    }
+    box(-12, 0, -9, 12, 8, -8);
+    box(-12, 0, 8, 12, 8, 9);
+    box(-12, 8, -9, 12, 9, 9, 'roof');
+    box(-12, -2, -9, 12, 0.08, 9, 'floor');
+    // a low wall on the roof edge for cover
+    box(-12, 9, -9, -11.3, 10.2, 9, 'trim');
+    box(11.3, 9, -9, 12, 10.2, -3, 'trim');
+    box(11.3, 9, 3, 12, 10.2, 9, 'trim');
+    // sensor mast behind
+    box(-34, -2, -1, -32, 22, 1, 'mast');
+    // cover outside the front door
+    box(17, -2, -6, 19, 3, -2, 'cover');
+    box(17, -2, 2, 19, 3, 6, 'cover');
+    box(-4, -2, 13, 4, 2.4, 15, 'cover');
+    box(-4, -2, -15, 4, 2.4, -13, 'cover');
+
+    const things = [
+      { kind: 'gen', b: [-1.6, 0.08, -1.6, 1.6, 3.6, 1.6] },
+      { kind: 'station', b: [4.5, 0, -7.9, 7.5, 0.42, -5.6] },
+      { kind: 'station', b: [-7.5, 0, 5.6, -4.5, 0.42, 7.9] },
+      { kind: 'turret', b: [9.2, 9, -8.4, 10.8, 10.4, -6.8] },
+      { kind: 'turret', b: [9.2, 9, 6.8, 10.8, 10.4, 8.4] },
+      { kind: 'sensor', b: [-34.8, 22, -1.8, -31.2, 24.5, 1.8] },
+    ];
+    const flag = [0, 9, 0];
+    const stand = { b: [-1, 9, -1, 1, 9.4, 1], mat: 'stand' };
+    W.push(stand);
+    const spawns = [[-8, 0.2, -4], [-8, 0.2, 4], [6, 0.2, 3], [-6, 0.2, -3], [-28, 0, -10], [-28, 0, 10], [-40, 0, -6], [-40, 0, 6]];
+    return { walls: W, things, flag: [0, 9.4, 0], spawns };
+  }
+
+  // place a local box into the world for a base at (bx, by, bz) facing `face` (+1 or -1)
+  function placeBox(b, o) {
+    if (o.face > 0) return [o.x + b[0], o.y + b[1], o.z + b[2], o.x + b[3], o.y + b[4], o.z + b[5]];
+    return [o.x - b[3], o.y + b[1], o.z - b[5], o.x - b[0], o.y + b[4], o.z - b[2]];
+  }
+  const placePt = (p, o) => [o.x + p[0] * o.face, o.y + p[1], o.z + p[2] * o.face];
+
+  // ---------- the world ----------
+  class World {
+    constructor(opts) {
+      opts = opts || {};
+      this.mapKey = has(MAPS, opts.map) ? opts.map : 'highland';
+      this.def = MAPS[this.mapKey];
+      this.terrain = opts.terrain || makeTerrain(this.mapKey);
+      this.rng = mulberry(opts.seed == null ? 12345 : opts.seed);
+      this.capLimit = clamp(opts.capLimit | 0 || 5, 1, 20);
+      this.timeLimit = clamp(+opts.timeLimit || 20 * 60, 60, 3600);
+      this.tick = 0;
+      this.time = 0;
+      this.players = new Map();
+      this.proj = [];
+      this.nextProj = 1;
+      this.events = [];
+      this.evSeq = 0;
+      this.score = [0, 0];
+      this.over = null;   // { winner, at }
+      this.solids = [];   // { b, mat, team, obj }
+      this.objects = [];
+      this.flags = [];
+      this.bases = [];
+      this.buildBases();
+    }
+
+    buildBases() {
+      const L = baseLayout();
+      const pos = basePositions(this.def);
+      const y = this.terrain.padH;
+      pos.forEach((p, team) => {
+        const o = { x: p.x, y, z: p.z, face: p.face };
+        const base = { team, o, spawns: L.spawns.map(s => placePt(s, o)), bounds: null };
+        for (const s of base.spawns) s[1] = Math.max(s[1], this.terrain.height(s[0], s[2]) + 0.1);
+        let bb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+        for (const w of L.walls) {
+          const b = placeBox(w.b, o);
+          this.solids.push({ b, mat: w.mat, team });
+          for (let i = 0; i < 3; i++) { bb[i] = Math.min(bb[i], b[i]); bb[i + 3] = Math.max(bb[i + 3], b[i + 3]); }
+        }
+        for (const t of L.things) {
+          const b = placeBox(t.b, o);
+          const obj = { id: this.objects.length, kind: t.kind, team, b, hp: OBJ[t.kind].hp, max: OBJ[t.kind].hp, up: true, yaw: o.face > 0 ? -Math.PI / 2 : Math.PI / 2, pitch: 0, cd: 0, target: -1, repairT: 0 };
+          obj.c = [(b[0] + b[3]) / 2, (b[1] + b[4]) / 2, (b[2] + b[5]) / 2];
+          this.objects.push(obj);
+          this.solids.push({ b, mat: t.kind, team, obj });
+          for (let i = 0; i < 3; i++) { bb[i] = Math.min(bb[i], b[i]); bb[i + 3] = Math.max(bb[i + 3], b[i + 3]); }
+        }
+        base.bounds = bb;
+        this.bases.push(base);
+        const home = placePt(L.flag, o);
+        this.flags.push({ team, home, pos: home.slice(), vel: [0, 0, 0], state: 'home', carrier: -1, returnAt: 0 });
+      });
+      this.baseBounds = this.bases.map(b => b.bounds);
+    }
+
+    // ----- players -----
+    addPlayer(o) {
+      const id = o.id;
+      const team = o.team === 0 || o.team === 1 ? o.team : this.smallerTeam();
+      const p = newPlayer(id, cleanName(o.name), team, !!o.bot);
+      p.loadout = cleanLoadout(o.loadout) || { ...DEFAULT_LOADOUT, weapons: DEFAULT_LOADOUT.weapons.slice() };
+      this.players.set(id, p);
+      p.deadT = RESPAWN_S - 0.4; p.wantSpawn = true;
+      this.ev({ k: 'join', id, name: p.name, team });
+      return p;
+    }
+    removePlayer(id) {
+      const p = this.players.get(id);
+      if (!p) return;
+      if (p.flag >= 0) this.dropFlag(p, true);
+      this.players.delete(id);
+      this.ev({ k: 'leave', id, name: p.name });
+    }
+    smallerTeam() {
+      const n = [0, 0];
+      for (const p of this.players.values()) n[p.team]++;
+      return n[0] <= n[1] ? 0 : 1;
+    }
+    setTeam(id, team) {
+      const p = this.players.get(id);
+      if (!p || (team !== 0 && team !== 1) || p.team === team) return;
+      if (p.alive) this.kill(p, null, 'team');
+      p.team = team;
+      this.ev({ k: 'team', id, team });
+    }
+
+    ev(e) { e.t = this.tick; e.s = ++this.evSeq; this.events.push(e); }
+
+    spawn(p) {
+      const base = this.bases[p.team];
+      const s = base.spawns[Math.floor(this.rng() * base.spawns.length)];
+      p.alive = true;
+      p.pos = [s[0] + (this.rng() - 0.5) * 2, s[1] + 0.2, s[2] + (this.rng() - 0.5) * 2];
+      p.vel = [0, 0, 0];
+      p.yaw = base.o.face > 0 ? -Math.PI / 2 : Math.PI / 2; // facing the enemy
+      p.pitch = 0;
+      p.spawnYaw = p.yaw;
+      equip(p, SPAWN_KIT);
+      p.lastHitBy = -1;
+      p.spawnProt = 2;
+      this.ev({ k: 'spawn', id: p.id });
+    }
+
+    // run one tick of one player's own input (movement, weapons). Called once per input the player sent.
+    applyInput(p, inp) {
+      if (!p.alive) {
+        if ((inp.b & B.FIRE) && !(p.prevB & B.FIRE)) p.wantSpawn = true;
+        p.prevB = inp.b;
+        p.yaw = inp.yaw; p.pitch = inp.pitch;
+        return;
+      }
+      movePlayer(this, p, inp, TICK);
+      this.usePlayerTools(p, inp, TICK);
+      p.prevB = inp.b;
+    }
+
+    // everything else that moves on its own: projectiles, flags, turrets, timers
+    step() {
+      const dt = TICK;
+      this.tick++;
+      this.time += dt;
+      if (this.over) return;
+      for (const p of this.players.values()) {
+        if (!p.alive) {
+          p.deadT += dt;
+          if (p.deadT >= RESPAWN_S && (p.wantSpawn || p.bot || p.deadT >= AUTO_RESPAWN_S)) { p.wantSpawn = false; this.spawn(p); }
+          continue;
+        }
+        if (p.spawnProt > 0) p.spawnProt -= dt;
+        this.stations(p, dt);
+        this.touchFlags(p);
+        if (p.pos[1] < this.terrain.height(p.pos[0], p.pos[2]) - 5) this.kill(p, null, 'stuck'); // fell through somehow
+      }
+      this.stepProjectiles(dt);
+      this.stepFlags(dt);
+      this.stepObjects(dt);
+      if (this.time >= this.timeLimit) this.finish(this.score[0] === this.score[1] ? -1 : this.score[0] > this.score[1] ? 0 : 1);
+      if (this.events.length > 4000) this.events.splice(0, this.events.length - 2000);
+    }
+
+    finish(winner) {
+      if (this.over) return;
+      this.over = { winner, at: this.tick };
+      this.ev({ k: 'over', winner });
+    }
+
+    power(team) {
+      const g = this.objects.find(o => o.kind === 'gen' && o.team === team);
+      return !!(g && g.up);
+    }
+
+    // ----- weapons and packs -----
+    usePlayerTools(p, inp, dt) {
+      const A = ARMORS[p.armor];
+      if (p.fireCd > 0) p.fireCd -= dt;
+      if (p.switchT > 0) p.switchT -= dt;
+      if (p.gcd > 0) p.gcd -= dt;
+      // switch weapon
+      if (inp.w !== 255 && inp.w < p.weapons.length && inp.w !== p.wi) { p.wi = inp.w; p.switchT = 0.3; p.spin = 0; }
+      const wk = p.weapons[p.wi];
+      const W = wk && WEAPONS[wk];
+      const fire = (inp.b & B.FIRE) !== 0;
+      if (W && W.spin) p.spin = fire ? Math.min(W.spin, p.spin + dt) : Math.max(0, p.spin - dt * 0.6);
+      p.elfT = -1;
+      if (W && fire && p.switchT <= 0) {
+        if (W.kind === 'beam') this.elf(p, W, dt);
+        else if (p.fireCd <= 0 && (!W.spin || p.spin >= W.spin)) this.fireWeapon(p, wk, W);
+      }
+      // hand grenade
+      if ((inp.b & B.GREN) && !(p.prevB & B.GREN) && p.grenades > 0 && p.gcd <= 0) {
+        p.grenades--; p.gcd = 0.6;
+        const f = aimDir(p.yaw, p.pitch + 0.12);
+        this.launch(p, 'hgren', eye(p), f);
+        this.ev({ k: 'fire', id: p.id, w: 'hgren' });
+      }
+      // packs
+      const pressed = (inp.b & B.PACK) && !(p.prevB & B.PACK);
+      p.repairing = -2;
+      if (p.pack === 'shield') {
+        if (pressed) p.shieldOn = !p.shieldOn;
+        if (p.shieldOn) { p.energy -= 3.5 * dt; if (p.energy <= 0) { p.energy = 0; p.shieldOn = false; } }
+      } else p.shieldOn = false;
+      if (p.pack === 'repair' && (inp.b & B.PACK)) this.repair(p, dt);
+      void A;
+    }
+
+    fireWeapon(p, wk, W) {
+      if (W.ammo > 0) {
+        if ((p.ammo[wk] | 0) <= 0) { p.fireCd = 0.3; this.ev({ k: 'dry', id: p.id }); return; }
+        p.ammo[wk]--;
+      }
+      if (W.energy) {
+        if (p.energy < W.energy) { p.fireCd = 0.2; return; }
+        p.energy -= W.energy;
+      }
+      p.fireCd = W.cd;
+      p.shots = (p.shots + 1) & 255;
+      if (W.kind === 'hitscan') return this.laser(p, W);
+      let f = aimDir(p.yaw, p.pitch);
+      if (W.spread) {
+        const s = W.spread;
+        f = [f[0] + (this.rng() - 0.5) * 2 * s, f[1] + (this.rng() - 0.5) * 2 * s, f[2] + (this.rng() - 0.5) * 2 * s];
+        const l = len3(f[0], f[1], f[2]); f = [f[0] / l, f[1] / l, f[2] / l];
+      }
+      this.launch(p, wk, eye(p), f);
+      this.ev({ k: 'fire', id: p.id, w: wk });
+    }
+
+    // start a projectile at the eye, then move it out to the muzzle (blocked if a wall is in between)
+    launch(p, kind, from, dir) {
+      const W = PROJ[kind];
+      const v = [dir[0] * W.speed + p.vel[0] * W.inherit, dir[1] * W.speed + p.vel[1] * W.inherit, dir[2] * W.speed + p.vel[2] * W.inherit];
+      const r = rightDir(p.yaw);
+      const muzzle = [from[0] + dir[0] * 0.9 + r[0] * 0.35, from[1] + dir[1] * 0.9 - 0.25, from[2] + dir[2] * 0.9 + r[2] * 0.35];
+      const pr = { id: this.nextProj++ & 0xffff, kind, owner: p.id, team: p.team, pos: from.slice(), vel: v, age: 0, shot: p.shots, prev: from.slice() };
+      // the hop from eye to muzzle can hit something (point blank)
+      const hit = this.traceProj(pr, muzzle, p.id);
+      if (hit) { this.explode(pr, hit); return; }
+      pr.pos = muzzle; pr.prev = muzzle.slice();
+      this.proj.push(pr);
+    }
+
+    // trace a projectile from its position to `to`; returns { pos, t, player?, obj?, normal } or null
+    traceProj(pr, to, skipId) {
+      const a = pr.pos, dx = to[0] - a[0], dy = to[1] - a[1], dz = to[2] - a[2];
+      let best = null;
+      const tg = this.terrain.raycast(a[0], a[1], a[2], to[0], to[1], to[2]);
+      if (tg >= 0) best = { t: tg, what: 'ground' };
+      for (let i = 0; i < this.bases.length; i++) {
+        if (segBox(a[0], a[1], a[2], dx, dy, dz, this.baseBounds[i], 1) < 0) continue;
+        for (const s of this.solids) {
+          if (s.team !== i) continue;
+          const t = segBox(a[0], a[1], a[2], dx, dy, dz, s.b, 0);
+          if (t >= 0 && (!best || t < best.t)) best = { t, what: 'solid', solid: s };
+        }
+      }
+      const pad = PROJ[pr.kind].r ? 0.15 : 0.1;
+      for (const q of this.players.values()) {
+        if (!q.alive || q.id === skipId) continue;
+        if (q.id === pr.owner && pr.age < 0.25) continue;
+        const A = ARMORS[q.armor];
+        const t = segBox(a[0], a[1], a[2], dx, dy, dz, [q.pos[0] - A.r, q.pos[1], q.pos[2] - A.r, q.pos[0] + A.r, q.pos[1] + A.h, q.pos[2] + A.r], pad);
+        if (t >= 0 && (!best || t < best.t)) best = { t, what: 'player', player: q };
+      }
+      if (!best) return null;
+      best.pos = [a[0] + dx * best.t, a[1] + dy * best.t, a[2] + dz * best.t];
+      return best;
+    }
+
+    stepProjectiles(dt) {
+      const keep = [];
+      for (const pr of this.proj) {
+        const W = PROJ[pr.kind];
+        pr.age += dt;
+        if (W.grav) pr.vel[1] -= GRAV * dt;
+        const to = [pr.pos[0] + pr.vel[0] * dt, pr.pos[1] + pr.vel[1] * dt, pr.pos[2] + pr.vel[2] * dt];
+        const hit = this.traceProj(pr, to, -1);
+        if (hit) {
+          if (W.bounce && hit.what !== 'player') {
+            // grenades bounce off land and walls, then go off when the fuse runs out
+            const n = this.surfaceNormal(hit);
+            const vn = pr.vel[0] * n[0] + pr.vel[1] * n[1] + pr.vel[2] * n[2];
+            pr.vel = [(pr.vel[0] - 2 * vn * n[0]) * W.bounce, (pr.vel[1] - 2 * vn * n[1]) * W.bounce, (pr.vel[2] - 2 * vn * n[2]) * W.bounce];
+            pr.pos = [hit.pos[0] + n[0] * 0.08, hit.pos[1] + n[1] * 0.08, hit.pos[2] + n[2] * 0.08];
+            if (Math.abs(vn) > 6) this.ev({ k: 'bounce', x: pr.pos[0], y: pr.pos[1], z: pr.pos[2] });
+          } else if (W.arm && pr.age < W.arm && hit.what !== 'player') {
+            pr.age = W.life; this.explode(pr, hit, true); continue; // a dud: no damage before it arms
+          } else { this.explode(pr, hit); continue; }
+        } else pr.pos = to;
+        if (pr.age >= W.life || pr.pos[1] > CEILING + 200) {
+          if (W.fuse || W.grav) this.explode(pr, { pos: pr.pos, what: 'air' });
+          continue;
+        }
+        keep.push(pr);
+      }
+      this.proj = keep;
+    }
+
+    surfaceNormal(hit) {
+      if (hit.what === 'solid') {
+        const b = hit.solid.b, p = hit.pos;
+        const d = [p[0] - b[0], b[3] - p[0], p[1] - b[1], b[4] - p[1], p[2] - b[2], b[5] - p[2]];
+        let k = 0;
+        for (let i = 1; i < 6; i++) if (d[i] < d[k]) k = i;
+        return [[-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1]][k];
+      }
+      return this.terrain.normal(hit.pos[0], hit.pos[2]);
+    }
+
+    explode(pr, hit, dud) {
+      const W = PROJ[pr.kind];
+      const at = hit.pos;
+      this.ev({ k: 'boom', w: pr.kind, x: at[0], y: at[1], z: at[2], id: pr.id, o: pr.owner, what: hit.what, dud: dud ? 1 : 0 });
+      if (dud) return;
+      const owner = this.players.get(pr.owner);
+      if (W.r > 0) this.splash(at, W, pr, hit.player);
+      else if (hit.player) {
+        this.damage(hit.player, W.dmg, owner, pr.kind, pr.vel, W.knock, pr.team);
+      }
+      if (hit.what === 'solid' && hit.solid.obj && W.r === 0) this.hurtObj(hit.solid.obj, W.dmg, owner, pr.team);
+    }
+
+    splash(at, W, pr, direct) {
+      const owner = this.players.get(pr.owner);
+      for (const q of this.players.values()) {
+        if (!q.alive) continue;
+        const A = ARMORS[q.armor];
+        // nearest point of the player's box
+        const cx = clamp(at[0], q.pos[0] - A.r, q.pos[0] + A.r), cy = clamp(at[1], q.pos[1], q.pos[1] + A.h), cz = clamp(at[2], q.pos[2] - A.r, q.pos[2] + A.r);
+        const d = q === direct ? 0 : len3(cx - at[0], cy - at[1], cz - at[2]);
+        if (d >= W.r) continue;
+        if (q !== direct && this.blocked(at, [q.pos[0], q.pos[1] + A.h * 0.5, q.pos[2]])) continue;
+        const f = 1 - d / W.r;
+        // push away from the blast, from slightly below the centre so blasts at the feet lift you
+        const mx = q.pos[0] - at[0], my = q.pos[1] + A.h * 0.5 - at[1] + 0.6, mz = q.pos[2] - at[2];
+        const l = len3(mx, my, mz) || 1;
+        const self = q.id === pr.owner;
+        const dmg = W.dmg * (0.25 + 0.75 * f) * (self ? 0.5 : 1);
+        this.damage(q, dmg, owner, pr.kind, [mx / l, my / l, mz / l], W.knock * (0.3 + 0.7 * f), pr.team, true);
+      }
+      for (const o of this.objects) {
+        if (o.team === pr.team) continue;
+        const cx = clamp(at[0], o.b[0], o.b[3]), cy = clamp(at[1], o.b[1], o.b[4]), cz = clamp(at[2], o.b[2], o.b[5]);
+        const d = len3(cx - at[0], cy - at[1], cz - at[2]);
+        if (d >= W.r) continue;
+        this.hurtObj(o, W.dmg * (1 - d / W.r) * (o.kind === 'gen' ? 1.3 : 1), owner, pr.team);
+      }
+    }
+
+    // is the straight line between two points blocked by land or a building?
+    blocked(a, b) {
+      if (this.terrain.raycast(a[0], a[1], a[2], b[0], b[1], b[2]) >= 0) return true;
+      const dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2];
+      for (let i = 0; i < this.bases.length; i++) {
+        if (segBox(a[0], a[1], a[2], dx, dy, dz, this.baseBounds[i], 0) < 0) continue;
+        for (const s of this.solids) if (s.team === i && !s.obj && segBox(a[0], a[1], a[2], dx, dy, dz, s.b, -0.05) >= 0) return true;
+      }
+      return false;
+    }
+
+    // dir is the direction of the shove (for direct hits the projectile's velocity)
+    damage(q, dmg, by, weapon, dir, knock, team, splash) {
+      if (!q.alive) return;
+      const friendly = team === q.team && (!by || by.id !== q.id);
+      if (friendly) return; // no team damage
+      if (q.spawnProt > 0 && by && by.id !== q.id) dmg *= 0.25;
+      // shove
+      if (knock && dir) {
+        const l = len3(dir[0], dir[1], dir[2]) || 1, k = knock / ARMORS[q.armor].mass;
+        q.vel[0] += dir[0] / l * k; q.vel[1] += dir[1] / l * k; q.vel[2] += dir[2] / l * k;
+        q.ground = false; q.kick = 0.2;
+      }
+      if (q.shieldOn && q.energy > 0) {
+        const absorb = Math.min(dmg, q.energy * 1.4);
+        q.energy -= absorb / 1.4; dmg -= absorb;
+        this.ev({ k: 'shield', id: q.id });
+      }
+      if (dmg <= 0) return;
+      q.hp -= dmg;
+      if (by && by.id !== q.id) { q.lastHitBy = by.id; q.lastHitT = this.time; this.ev({ k: 'hit', by: by.id, id: q.id, d: Math.round(dmg) }); }
+      if (q.hp <= 0) this.kill(q, by, weapon);
+      void splash;
+    }
+
+    kill(q, by, weapon) {
+      if (!q.alive) return;
+      q.alive = false; q.hp = 0; q.deadT = 0; q.wantSpawn = false; q.deaths++;
+      q.shieldOn = false;
+      let killer = by && by.id !== q.id ? by : null;
+      // falling or flying out after someone hit you still counts for them
+      if (!killer && q.lastHitBy >= 0 && this.time - q.lastHitT < 6) killer = this.players.get(q.lastHitBy) || null;
+      if (killer && killer.team !== q.team) { killer.kills++; killer.score += 1; }
+      else if (weapon !== 'team') q.score = Math.max(0, q.score - 1);
+      if (q.flag >= 0) {
+        if (killer && killer.team !== q.team) killer.score += 1; // stopped a runner
+        this.dropFlag(q, false);
+      }
+      this.ev({ k: 'kill', id: q.id, by: killer ? killer.id : -1, w: weapon, x: q.pos[0], y: q.pos[1], z: q.pos[2] });
+    }
+
+    laser(p, W) {
+      const e = p.energy;
+      if (e < W.minEnergy) { p.fireCd = 0.3; this.ev({ k: 'dry', id: p.id }); return; }
+      p.energy = 0;
+      const from = eye(p), f = aimDir(p.yaw, p.pitch);
+      const to = [from[0] + f[0] * W.range, from[1] + f[1] * W.range, from[2] + f[2] * W.range];
+      const hit = this.traceProj({ pos: from, kind: 'laser', owner: p.id, age: 1 }, to, p.id);
+      const end = hit ? hit.pos : to;
+      this.ev({ k: 'laser', id: p.id, x0: from[0], y0: from[1], z0: from[2], x: end[0], y: end[1], z: end[2] });
+      if (hit && hit.player && hit.player.team !== p.team) {
+        const q = hit.player, head = hit.pos[1] > q.pos[1] + ARMORS[q.armor].h - 0.45;
+        const dmg = (W.dmg + e * W.perEnergy) * (head ? 2 : 1);
+        this.damage(q, dmg, p, head ? 'laser-head' : 'laser', f, 2, p.team);
+      } else if (hit && hit.what === 'solid' && hit.solid.obj) this.hurtObj(hit.solid.obj, W.dmg, p, p.team);
+    }
+
+    elf(p, W, dt) {
+      const from = eye(p), f = aimDir(p.yaw, p.pitch);
+      let best = null, bestScore = Infinity;
+      for (const q of this.players.values()) {
+        if (!q.alive || q.team === p.team) continue;
+        const c = [q.pos[0] - from[0], q.pos[1] + ARMORS[q.armor].h * 0.6 - from[1], q.pos[2] - from[2]];
+        const d = len3(c[0], c[1], c[2]);
+        if (d > W.range) continue;
+        const cos = (c[0] * f[0] + c[1] * f[1] + c[2] * f[2]) / d;
+        if (cos < 0.985) continue;
+        const sc = d * (2 - cos);
+        if (sc < bestScore && !this.blocked(from, [q.pos[0], q.pos[1] + 1, q.pos[2]])) { best = q; bestScore = sc; }
+      }
+      if (!best) return;
+      p.elfT = best.id;
+      best.energy = Math.max(0, best.energy - W.drain * dt);
+      this.damage(best, W.dmg * dt, p, 'elf', null, 0, p.team);
+    }
+
+    repair(p, dt) {
+      const from = eye(p), f = aimDir(p.yaw, p.pitch);
+      const to = [from[0] + f[0] * 9, from[1] + f[1] * 9, from[2] + f[2] * 9];
+      // a friendly object in front of you
+      let best = null, bt = Infinity;
+      for (const o of this.objects) {
+        if (o.team !== p.team || o.hp >= o.max) continue;
+        const t = segBox(from[0], from[1], from[2], to[0] - from[0], to[1] - from[1], to[2] - from[2], o.b, 0.6);
+        if (t >= 0 && t < bt) { best = o; bt = t; }
+      }
+      if (best) {
+        best.hp = Math.min(best.max, best.hp + 70 * dt);
+        best.repairBy = p.id;
+        if (!best.up && best.hp >= best.max * ONLINE_AT) { best.up = true; p.score += 1; this.ev({ k: 'obj', id: best.id, up: 1, by: p.id }); }
+        p.repairing = 1000 + best.id;
+        return;
+      }
+      let friend = null;
+      for (const q of this.players.values()) {
+        if (!q.alive || q.team !== p.team || q === p || q.hp >= ARMORS[q.armor].hp) continue;
+        const A = ARMORS[q.armor];
+        const t = segBox(from[0], from[1], from[2], to[0] - from[0], to[1] - from[1], to[2] - from[2], [q.pos[0] - A.r, q.pos[1], q.pos[2] - A.r, q.pos[0] + A.r, q.pos[1] + A.h, q.pos[2] + A.r], 0.5);
+        if (t >= 0) { friend = q; break; }
+      }
+      const who = friend || p;
+      const max = ARMORS[who.armor].hp;
+      if (who.hp < max) { who.hp = Math.min(max, who.hp + 16 * dt); p.repairing = who.id; }
+    }
+
+    hurtObj(o, dmg, by, team) {
+      if (o.team === team || dmg <= 0) return;
+      const was = o.hp;
+      o.hp = Math.max(0, o.hp - dmg);
+      if (was > 0 && o.hp <= 0 && o.up) {
+        o.up = false;
+        if (by) by.score += o.kind === 'gen' ? 3 : 1;
+        this.ev({ k: 'obj', id: o.id, up: 0, by: by ? by.id : -1 });
+      }
+    }
+
+    // ----- stations -----
+    stations(p, dt) {
+      if (p.stationCd > 0) { p.stationCd -= dt; }
+      let on = null;
+      for (const o of this.objects) {
+        if (o.kind !== 'station' || o.team !== p.team) continue;
+        const b = o.b;
+        if (p.pos[0] > b[0] && p.pos[0] < b[3] && p.pos[2] > b[2] && p.pos[2] < b[5] && p.pos[1] > b[4] - 0.3 && p.pos[1] < b[4] + 0.6) { on = o; break; }
+      }
+      if (!on) { p.stationT = 0; p.stationId = -1; return; }
+      if (!on.up || !this.power(p.team)) { p.stationId = -2; p.stationT = 0; return; }
+      if (p.stationCd > 0) { p.stationId = -3; return; }
+      p.stationId = on.id;
+      p.stationT += dt;
+      if (p.stationT >= STATION_S) {
+        const flag = p.flag;
+        equip(p, p.loadout);
+        p.flag = flag;
+        p.stationT = 0; p.stationCd = 3;
+        this.ev({ k: 'station', id: p.id });
+      }
+    }
+
+    // ----- flags -----
+    touchFlags(p) {
+      for (const f of this.flags) {
+        if (f.state === 'carried') continue;
+        const A = ARMORS[p.armor];
+        const dx = f.pos[0] - p.pos[0], dz = f.pos[2] - p.pos[2], dy = f.pos[1] - (p.pos[1] + A.h * 0.5);
+        if (dx * dx + dz * dz > 2.4 * 2.4 || Math.abs(dy) > A.h * 0.5 + 1.6) continue;
+        if (f.team !== p.team) {
+          if (p.flag >= 0) continue;
+          f.state = 'carried'; f.carrier = p.id; p.flag = f.team;
+          p.score += 1;
+          this.ev({ k: 'flag', a: 'take', team: f.team, id: p.id });
+        } else if (f.state === 'dropped') {
+          this.returnFlag(f, p);
+        } else if (f.state === 'home' && p.flag >= 0) {
+          // capture
+          const other = this.flags[p.flag];
+          other.state = 'home'; other.pos = other.home.slice(); other.carrier = -1; other.vel = [0, 0, 0];
+          p.flag = -1; p.caps++; p.score += 5;
+          this.score[p.team]++;
+          this.ev({ k: 'flag', a: 'cap', team: other.team, id: p.id });
+          if (this.score[p.team] >= this.capLimit) this.finish(p.team);
+        }
+      }
+    }
+    returnFlag(f, by) {
+      f.state = 'home'; f.pos = f.home.slice(); f.carrier = -1; f.vel = [0, 0, 0];
+      if (by) by.score += 1;
+      this.ev({ k: 'flag', a: 'return', team: f.team, id: by ? by.id : -1 });
+    }
+    dropFlag(p, quiet) {
+      const f = this.flags[p.flag];
+      p.flag = -1;
+      if (!f) return;
+      f.state = 'dropped'; f.carrier = -1;
+      f.pos = [p.pos[0], p.pos[1] + 1, p.pos[2]];
+      f.vel = [p.vel[0] * 0.7, Math.max(4, p.vel[1] * 0.5 + 4), p.vel[2] * 0.7];
+      f.returnAt = this.time + FLAG_RETURN_S;
+      this.ev({ k: 'flag', a: 'drop', team: f.team, id: p.id, quiet: quiet ? 1 : 0 });
+    }
+    stepFlags(dt) {
+      for (const f of this.flags) {
+        if (f.state === 'carried') {
+          const c = this.players.get(f.carrier);
+          if (!c || !c.alive) { f.state = 'dropped'; f.returnAt = this.time + FLAG_RETURN_S; continue; }
+          f.pos = [c.pos[0], c.pos[1] + ARMORS[c.armor].h * 0.6, c.pos[2]];
+          f.vel = c.vel.slice();
+        } else if (f.state === 'dropped') {
+          if (this.time >= f.returnAt) { this.returnFlag(f, null); continue; }
+          f.vel[1] -= GRAV * dt;
+          const to = [f.pos[0] + f.vel[0] * dt, f.pos[1] + f.vel[1] * dt, f.pos[2] + f.vel[2] * dt];
+          const hit = this.traceProj({ pos: f.pos, kind: 'disc', owner: -1, age: 9 }, to, -1);
+          if (hit && hit.what !== 'player') {
+            f.pos = [hit.pos[0], hit.pos[1] + 0.05, hit.pos[2]];
+            const n = this.surfaceNormal(hit);
+            if (n[1] > 0.5) f.vel = [0, 0, 0];
+            else { const vn = f.vel[0] * n[0] + f.vel[1] * n[1] + f.vel[2] * n[2]; f.vel = [f.vel[0] - vn * n[0] * 1.3, f.vel[1] - vn * n[1] * 1.3, f.vel[2] - vn * n[2] * 1.3]; }
+          } else f.pos = to;
+          // out of the area or below the land: send it home
+          if (f.pos[0] < 0 || f.pos[0] > SIZE || f.pos[2] < 0 || f.pos[2] > SIZE || f.pos[1] < this.terrain.height(f.pos[0], f.pos[2]) - 3) this.returnFlag(f, null);
+        }
+      }
+    }
+
+    // ----- turrets and generators -----
+    stepObjects(dt) {
+      for (const o of this.objects) {
+        if (o.kind !== 'turret') continue;
+        if (o.cd > 0) o.cd -= dt;
+        o.target = -1;
+        if (!o.up || !this.power(o.team)) continue;
+        const head = [o.c[0], o.b[4] + 0.3, o.c[2]];
+        let best = null, bd = OBJ.turret.range;
+        for (const q of this.players.values()) {
+          if (!q.alive || q.team === o.team) continue;
+          const c = [q.pos[0], q.pos[1] + 1, q.pos[2]];
+          const d = len3(c[0] - head[0], c[1] - head[1], c[2] - head[2]);
+          if (d < bd && !this.blocked(head, c)) { best = q; bd = d; }
+        }
+        if (!best) continue;
+        o.target = best.id;
+        const W = PROJ.tbolt;
+        const aim = leadAim(head, [best.pos[0], best.pos[1] + 1, best.pos[2]], best.vel, W.speed, 0);
+        o.yaw = Math.atan2(-aim[0], -aim[2]);
+        o.pitch = Math.asin(clamp(aim[1], -1, 1));
+        if (o.cd <= 0) {
+          o.cd = OBJ.turret.cd;
+          const muzzle = [head[0] + aim[0] * 1.2, head[1] + aim[1] * 1.2, head[2] + aim[2] * 1.2];
+          this.proj.push({ id: this.nextProj++ & 0xffff, kind: 'tbolt', owner: -1 - o.id, team: o.team, pos: muzzle, vel: [aim[0] * W.speed, aim[1] * W.speed, aim[2] * W.speed], age: 0, shot: 0, prev: muzzle.slice() });
+          this.ev({ k: 'tfire', id: o.id });
+        }
+      }
+    }
+  }
+
+  // ---------- players ----------
+  function newPlayer(id, name, team, bot) {
+    return {
+      id, name, team, bot,
+      alive: false, deadT: 0, wantSpawn: false,
+      pos: [SIZE / 2, 200, SIZE / 2], vel: [0, 0, 0], yaw: 0, pitch: 0,
+      ground: false, gn: [0, 1, 0], skiing: false, jetting: false, kick: 0,
+      armor: 'light', hp: 70, energy: 60,
+      weapons: ['blaster'], wi: 0, ammo: {}, pack: 'none', grenades: 0,
+      fireCd: 0, switchT: 0, spin: 0, gcd: 0, shots: 0, elfT: -1, repairing: -2,
+      shieldOn: false, flag: -1, spawnProt: 0,
+      stationT: 0, stationCd: 0, stationId: -1,
+      loadout: null, prevB: 0, seq: 0,
+      kills: 0, deaths: 0, caps: 0, score: 0, lastHitBy: -1, lastHitT: 0,
+    };
+  }
+
+  function equip(p, lo) {
+    const A = ARMORS[lo.armor];
+    p.armor = lo.armor;
+    p.hp = A.hp; p.energy = A.energy;
+    p.weapons = lo.weapons.slice(0, A.slots);
+    p.pack = lo.pack;
+    p.ammo = {};
+    const mult = lo.pack === 'ammo' ? 1.5 : 1;
+    for (const w of p.weapons) p.ammo[w] = Math.round(WEAPONS[w].ammo * mult);
+    p.grenades = A.grenades + (lo.pack === 'ammo' ? 2 : 0);
+    if (p.wi >= p.weapons.length) p.wi = 0;
+    p.flag = -1; p.shieldOn = false; p.spin = 0; p.fireCd = 0.2;
+  }
+
+  // a loadout from the player (or the network): only known names, only what the armor can carry
+  function cleanLoadout(lo) {
+    if (!lo || typeof lo !== 'object') return null;
+    const armor = has(ARMORS, lo.armor) ? lo.armor : null;
+    if (!armor) return null;
+    const A = ARMORS[armor];
+    const ws = [];
+    if (Array.isArray(lo.weapons)) for (const w of lo.weapons) {
+      if (typeof w === 'string' && has(WEAPONS, w) && !NOT_FOR[armor].includes(w) && !ws.includes(w) && ws.length < A.slots) ws.push(w);
+    }
+    if (!ws.length) ws.push('blaster');
+    const pack = has(PACKS, lo.pack) ? lo.pack : 'none';
+    return { armor, weapons: ws, pack };
+  }
+
+  function cleanName(s) {
+    s = String(s == null ? '' : s).replace(/[\u0000-\u001f\u007f<>]/g, '').trim().slice(0, 20);
+    return s || 'player';
+  }
+
+  const aimDir = (yaw, pitch) => {
+    const cp = Math.cos(pitch);
+    return [-Math.sin(yaw) * cp, Math.sin(pitch), -Math.cos(yaw) * cp];
+  };
+  const rightDir = yaw => [Math.cos(yaw), 0, -Math.sin(yaw)];
+  const eye = p => [p.pos[0], p.pos[1] + ARMORS[p.armor].h - 0.25, p.pos[2]];
+
+  // where to aim from `from` to hit something at `pos` moving at `vel`, with a projectile of `speed` (and gravity scale g)
+  function leadAim(from, pos, vel, speed, g) {
+    let t = len3(pos[0] - from[0], pos[1] - from[1], pos[2] - from[2]) / speed;
+    let aim = [0, 0, -1];
+    for (let i = 0; i < 4; i++) {
+      const tx = pos[0] + vel[0] * t - from[0], ty = pos[1] + vel[1] * t - from[1] + 0.5 * GRAV * g * t * t, tz = pos[2] + vel[2] * t - from[2];
+      const l = len3(tx, ty, tz) || 1;
+      aim = [tx / l, ty / l, tz / l];
+      t = l / speed;
+    }
+    return aim;
+  }
+
+  // ---------- movement (shared with prediction: keep it a pure function of world geometry, player and input) ----------
+  // Input: { b: buttons, mx, mz: -1..1 strafe and forward, yaw, pitch, w: weapon index or 255 }
+  function movePlayer(world, p, inp, dt) {
+    const A = ARMORS[p.armor];
+    p.yaw = inp.yaw; p.pitch = inp.pitch;
+    const v = p.vel;
+    // wish direction on the flat
+    const sy = Math.sin(p.yaw), cy = Math.cos(p.yaw);
+    let wx = -sy * inp.mz + cy * inp.mx, wz = -cy * inp.mz - sy * inp.mx;
+    let wl = Math.sqrt(wx * wx + wz * wz);
+    if (wl > 1) { wx /= wl; wz /= wl; wl = 1; }
+    const hold = b => (inp.b & b) !== 0;
+    const press = b => hold(b) && !(p.prevB & b);
+    if (p.kick > 0) p.kick -= dt;
+
+    // energy and jets
+    const regen = A.regen + (p.pack === 'energy' ? PACKS.energy.regen : 0);
+    p.jetting = false;
+    if (hold(B.JET) && p.energy > (p.wasJet ? 0 : 3) && p.pos[1] < CEILING) {
+      p.jetting = true;
+      p.energy -= A.jetCost * dt;
+      if (p.energy < 0) p.energy = 0;
+      let up = A.jet, side = 0;
+      if (wl > 0.05) { up = A.jet * (1 - 0.15 * wl); side = A.jet * 0.5 * wl; }
+      // sideways thrust only helps until you are already going fast that way
+      const along = (v[0] * wx + v[2] * wz) / (wl || 1);
+      if (along > 38) side *= Math.max(0, 1 - (along - 38) / 12);
+      v[1] += up * dt;
+      if (wl > 0) { v[0] += wx / wl * side * dt; v[2] += wz / wl * side * dt; }
+    } else {
+      p.energy = Math.min(A.energy, p.energy + regen * dt);
+    }
+    p.wasJet = p.jetting;
+
+    v[1] -= GRAV * dt;
+    p.skiing = false;
+    if (p.ground && p.kick <= 0) {
+      const n = p.gn;
+      const walk = n[1] > 0.72;
+      if (hold(B.JUMP)) {
+        // ski: no friction, the hill does the work. A little steering.
+        p.skiing = true;
+        if (wl > 0) { v[0] += wx * 5 * dt; v[2] += wz * 5 * dt; }
+        if (press(B.JUMP)) { v[0] += n[0] * A.jump * 0.3; v[1] += A.jump; v[2] += n[2] * A.jump * 0.3; p.ground = false; }
+      } else if (walk) {
+        // walking: speed up towards the wish speed, and slow down hard above it (no friction loss while skiing)
+        const tx = wx * A.run, tz = wz * A.run;
+        const dx = tx - v[0], dz = tz - v[2];
+        const dl = Math.sqrt(dx * dx + dz * dz);
+        const acc = (Math.sqrt(v[0] * v[0] + v[2] * v[2]) > A.run + 1 ? A.accel * 0.7 : A.accel) * dt;
+        if (dl > 0) { const k = Math.min(1, acc / dl); v[0] += dx * k; v[2] += dz * k; }
+        // follow the slope: standing on a hill does not slide you down it
+        if (!p.jetting) v[1] = -(n[0] * v[0] + n[2] * v[2]) / n[1];
+      }
+    } else {
+      // air control: small, and only to speed up in a direction you are slow in
+      if (wl > 0) {
+        const along = v[0] * wx + v[2] * wz;
+        if (along < 14 * wl) { v[0] += wx * 7 * dt; v[2] += wz * 7 * dt; }
+      }
+    }
+    // air drag
+    const sp = len3(v[0], v[1], v[2]);
+    if (sp > 1) { const k = Math.max(0, 1 - 0.00038 * sp * dt); v[0] *= k; v[1] *= k; v[2] *= k; }
+    if (p.pos[1] > CEILING && v[1] > 0) v[1] *= 0.9;
+
+    // mission area: a push back towards the middle
+    const x = p.pos[0], z = p.pos[2];
+    if (x < AREA_MIN) v[0] += (AREA_MIN - x) * 1.5 * dt + 20 * dt;
+    if (x > AREA_MAX) v[0] -= (x - AREA_MAX) * 1.5 * dt + 20 * dt;
+    if (z < AREA_MIN) v[2] += (AREA_MIN - z) * 1.5 * dt + 20 * dt;
+    if (z > AREA_MAX) v[2] -= (z - AREA_MAX) * 1.5 * dt + 20 * dt;
+
+    // move in small steps so fast skiers cannot pass through walls
+    const dist = len3(v[0], v[1], v[2]) * dt;
+    const steps = Math.min(24, Math.max(1, Math.ceil(dist / 0.35)));
+    const h = dt / steps;
+    let touched = false, landed = null;
+    for (let i = 0; i < steps; i++) {
+      p.pos[0] += v[0] * h; p.pos[1] += v[1] * h; p.pos[2] += v[2] * h;
+      p.pos[0] = clamp(p.pos[0], 4, SIZE - 4); p.pos[2] = clamp(p.pos[2], 4, SIZE - 4);
+      const c = collide(world, p, A);
+      if (c) { touched = true; if (!landed || c.impact < landed.impact) landed = c; }
+    }
+    // stay stuck to the ground over small bumps when walking
+    if (!touched && p.ground && !p.jetting && !hold(B.JUMP) && v[1] <= 0.5) {
+      const g = world.terrain.height(p.pos[0], p.pos[2]);
+      if (p.pos[1] - g < 0.4 && p.pos[1] - g > -0.01) { p.pos[1] = g; touched = true; landed = { n: world.terrain.normal(p.pos[0], p.pos[2]), impact: 0 }; }
+    }
+    p.ground = touched && landed.n[1] > 0.3;
+    if (landed) p.gn = landed.n;
+    p.fallDmg = 0;
+    if (landed && landed.impact < -A.impact) p.fallDmg = (-landed.impact - A.impact) * 2.2;
+    if (p.fallDmg > 0 && world.damage) world.damage(p, p.fallDmg, null, 'fall', null, 0, -1);
+  }
+
+  // push the player out of the land and the buildings; returns the contact (normal and how hard you hit) or null
+  function collide(world, p, A) {
+    const v = p.vel;
+    let hit = null;
+    const g = world.terrain.height(p.pos[0], p.pos[2]);
+    if (p.pos[1] < g) {
+      const n = world.terrain.normal(p.pos[0], p.pos[2]);
+      p.pos[1] = g;
+      const vn = v[0] * n[0] + v[1] * n[1] + v[2] * n[2];
+      if (vn < 0) { v[0] -= vn * n[0]; v[1] -= vn * n[1]; v[2] -= vn * n[2]; }
+      hit = { n, impact: vn };
+    }
+    const r = A.r;
+    const px0 = p.pos[0] - r, px1 = p.pos[0] + r, py0 = p.pos[1], py1 = p.pos[1] + A.h, pz0 = p.pos[2] - r, pz1 = p.pos[2] + r;
+    const bbs = world.baseBounds;
+    for (let i = 0; i < bbs.length; i++) {
+      const bb = bbs[i];
+      if (px1 < bb[0] || px0 > bb[3] || py1 < bb[1] || py0 > bb[4] || pz1 < bb[2] || pz0 > bb[5]) continue;
+      for (const s of world.solids) {
+        if (s.team !== i) continue;
+        const b = s.b;
+        const qx0 = p.pos[0] - r, qx1 = p.pos[0] + r, qy0 = p.pos[1], qy1 = p.pos[1] + A.h, qz0 = p.pos[2] - r, qz1 = p.pos[2] + r;
+        if (qx1 <= b[0] || qx0 >= b[3] || qz1 <= b[2] || qz0 >= b[5]) continue;
+        // standing on top (or a hair above): that is ground too
+        if (qy0 >= b[4] - 1e-4 && qy0 <= b[4] + 0.06 && v[1] <= 0.5) { p.pos[1] = b[4]; const imp = Math.min(0, v[1]); if (v[1] < 0) v[1] = 0; hit = pick(hit, [0, 1, 0], imp); continue; }
+        if (qy1 <= b[1] || qy0 >= b[4]) continue;
+        const ox = Math.min(qx1 - b[0], b[3] - qx0), oy0 = b[4] - qy0, oy1 = qy1 - b[1], oz = Math.min(qz1 - b[2], b[5] - qz0);
+        // step up onto low things (station pads, steps, the flag stand)
+        if (oy0 <= 0.55) { p.pos[1] = b[4]; if (v[1] < 0) { const imp = v[1]; v[1] = 0; hit = pick(hit, [0, 1, 0], imp); } else hit = pick(hit, [0, 1, 0], 0); continue; }
+        const oy = Math.min(oy0, oy1);
+        if (oy <= ox && oy <= oz) {
+          if (oy0 < oy1) { p.pos[1] = b[4]; if (v[1] < 0) { const imp = v[1]; v[1] = 0; hit = pick(hit, [0, 1, 0], imp); } else hit = pick(hit, [0, 1, 0], 0); }
+          else { p.pos[1] = b[1] - A.h; if (v[1] > 0) v[1] = 0; }
+        } else if (ox <= oz) {
+          if (qx1 - b[0] < b[3] - qx0) { p.pos[0] = b[0] - r; if (v[0] > 0) v[0] = 0; } else { p.pos[0] = b[3] + r; if (v[0] < 0) v[0] = 0; }
+        } else {
+          if (qz1 - b[2] < b[5] - qz0) { p.pos[2] = b[2] - r; if (v[2] > 0) v[2] = 0; } else { p.pos[2] = b[5] + r; if (v[2] < 0) v[2] = 0; }
+        }
+      }
+    }
+    return hit;
+  }
+  const pick = (a, n, impact) => (!a || impact < a.impact ? { n, impact } : a);
+
+  const api = {
+    TICK, GRAV, N, CELL, SIZE, AREA_MIN, AREA_MAX, CEILING, TEAMS, B,
+    ARMORS, ARMOR_KEYS, WEAPONS, WEAPON_KEYS, NOT_FOR, PROJ, PROJ_BY_CODE, PACKS, PACK_KEYS, OBJ, ONLINE_AT,
+    SPAWN_KIT, DEFAULT_LOADOUT, RESPAWN_S, AUTO_RESPAWN_S, FLAG_RETURN_S, STATION_S,
+    MAPS, MAP_KEYS, basePositions, baseLayout, placeBox,
+    mulberry, fbm, vnoise, makeTerrain, Terrain, segBox,
+    World, newPlayer, equip, cleanLoadout, cleanName, movePlayer, aimDir, rightDir, eye, leadAim, clamp, has,
+  };
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  else root.JF = api;
+})(typeof window !== 'undefined' ? window : globalThis);

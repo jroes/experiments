@@ -148,3 +148,51 @@ The galaxy is saved with the game, so it does not change if the seed or code doe
 Client: `warptraders/universe/`. To reset the universe, delete `/data/lab/warptraders.json` and restart.
 
 Tests: `cargo test --release` (rules and framework), `npm run test:lab` (several players over HTTP, with a restart in the middle).
+
+## Jetfall relay (`/jetfall`)
+
+A WebSocket room relay for Jetfall, the browser FPS. One player's browser is the host and runs the game. The server only puts people
+in rooms, passes WebRTC signaling between host and guests, and passes game packets itself when WebRTC can't connect. Everything is in
+memory: a restart drops every room. Code: `src/relay.rs`. Test: `npm run test:relay`.
+
+Connect to `wss://<server>/jetfall`. Text frames are JSON:
+
+| Client sends | What happens |
+| --- | --- |
+| `{"t":"host","name":"Dock fight","info":{...}}` | `{"t":"hosted","room":"K7Q2MX","id":0}`. Codes are 6 characters from `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`. |
+| `{"t":"info","info":{...}}` | host only: replaces the listing info (a JSON object, at most 600 bytes, else `{"t":"error","why":"bad-info"}`) |
+| `{"t":"join","room":"k7q2mx","name":"ann"}` | joiner gets `{"t":"joined","room":"K7Q2MX","id":3}`, host gets `{"t":"peer","id":3,"name":"ann"}` |
+| `{"t":"list"}` | `{"t":"rooms","rooms":[{"room","name","info","n"}]}`: rooms whose info has `"public":true`, at most 50, `n` = guests |
+| `{"t":"sig","to":0,"d":{...}}` | the target gets `{"t":"sig","from":3,"d":{...}}`. Guests can only send to the host (0). |
+| `{"t":"kick","id":3}` | host only: the guest gets `{"t":"error","why":"kicked"}` and is closed; the host gets `{"t":"left","id":3}` |
+| `{"t":"ping"}` | `{"t":"pong"}` |
+
+The server also sends `{"t":"left","id":N}` to the host when a guest goes, and `{"t":"closed"}` to every guest when the host goes (then
+closes them; the room is gone). Errors: `no-room`, `full`, `busy` (too many rooms), `already` (a connection hosts or joins once),
+`bad-info`, `kicked`. Junk and unknown messages are ignored. Guest ids run from 1 and are never reused in a room. Names are trimmed,
+lose control characters and keep at most 24 characters (empty becomes `player` or `room`).
+
+Binary frames are game packets: the first 2 bytes (big-endian) are who it's for, the rest is passed on untouched. The receiver gets the
+same payload with the first 2 bytes changed to who it's from. Guests can only send to 0 (the host); the host sends to a guest id or
+`0xFFFF` for every guest. Anything else is dropped without a word.
+
+Limits (env, default):
+
+| What | Default | Variable |
+| --- | --- | --- |
+| Guests per room | 15 | `JF_ROOM_MAX` |
+| Rooms | 40 | `JF_ROOMS` |
+| Relay connections | 150 | `JF_CONNS` (more get a `503` before the upgrade) |
+| Binary message | 65,536 bytes | `JF_BIN_MAX` (bigger closes with 1009) |
+| Text message | 16,384 bytes | `JF_TEXT_MAX` (bigger closes with 1009) |
+| Host messages and bytes per second | 1500 and 2,000,000 | `JF_HOST_MSGS`, `JF_HOST_BYTES` |
+| Guest messages and bytes per second | 300 and 200,000 | `JF_GUEST_MSGS`, `JF_GUEST_BYTES` |
+| Closed after nothing received for | 60 s | `JF_IDLE_SECS` (so clients send a `ping` every 20 s or so) |
+| Closed if it hasn't hosted or joined within | 30 s | `JF_HELLO_SECS` |
+
+Over the rate, messages are dropped and the connection stays up. Like `/kv`, there are no accounts: anyone with a room code can join,
+and the host decides who stays.
+
+How it's built: tungstenite only does the handshake. After that each connection has one thread that reads frames, and any thread can
+write a frame straight into another player's socket (a mutex per socket, 1 s write timeout, `TCP_NODELAY`). A socket that can't take a
+write in time is closed. 200 round trips host to guest to host take about 40 ms locally.
