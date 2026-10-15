@@ -46,6 +46,7 @@
   <div id="roomtag"></div>
   <div id="net"></div>
   <div id="fps"></div>
+  <div id="vgs" hidden></div>
   <div id="chatbox" hidden><span id="chatto">say:</span><input id="chatin" maxlength="140" autocomplete="off"></div>
 </div>
 
@@ -59,6 +60,7 @@
     <button data-b="next">GUN</button>
     <button data-b="gren">GREN</button>
     <button data-b="pack">PACK</button>
+    <button data-b="say">SAY</button>
   </div>
   <button id="tmenu">≡</button>
 </div>
@@ -69,27 +71,28 @@
     <h1>JETFALL</h1>
     <p class="tag">Jetpacks, skiing, capture the flag.</p>
     <label class="name">Your name <input id="name" maxlength="20" autocomplete="nickname" placeholder="name"></label>
-    <div class="go">
-      <button id="playBots" class="primary">Play against bots</button>
-      <button id="hostBtn">Host a game for friends</button>
-      <div class="join"><input id="code" maxlength="6" placeholder="CODE" autocapitalize="characters" autocomplete="off"><button id="joinBtn">Join</button></div>
-    </div>
-    <div id="menuMsg" class="msg"></div>
-    <h3>Open games <button id="refresh" class="small">refresh</button></h3>
+    <h3>Servers <span class="dim" id="roomsNote"></span> <button id="refresh" class="small">refresh</button></h3>
+    <div class="srv-head"><span>name</span><span>map</span><span>players</span><span></span></div>
     <div id="rooms" class="rooms"><span class="dim">Looking…</span></div>
+    <div id="menuMsg" class="msg"></div>
+    <div class="go">
+      <button id="hostBtn" class="primary">Start a server</button>
+      <button id="playBots">Practice offline</button>
+    </div>
+    <div class="join"><input id="code" maxlength="6" placeholder="CODE" autocapitalize="characters" autocomplete="off"><button id="joinBtn">Join by code</button></div>
     <div class="links"><button id="helpBtn" class="link">How to play</button> · <button id="settingsBtn" class="link">Settings</button> · <a href="../">more games</a></div>
   </div>
 </div>
 
 <dialog id="hostDlg">
-  <h2>Host a game</h2>
+  <h2>Start a server</h2>
   <label>Game name <input id="hName" maxlength="24"></label>
   <label>Map <select id="hMap"></select></label>
   <label>Bots per team <select id="hBots"><option>0</option><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option><option>6</option><option>8</option></select></label>
   <label>Bot skill <select id="hSkill"><option value="0.2">Easy</option><option value="0.5" selected>Normal</option><option value="0.8">Hard</option><option value="1">Brutal</option></select></label>
   <label>Captures to win <select id="hCaps"><option>3</option><option selected>5</option><option>8</option></select></label>
   <label>Time limit <select id="hMins"><option value="10">10 minutes</option><option value="20" selected>20 minutes</option><option value="30">30 minutes</option></select></label>
-  <label class="check"><input type="checkbox" id="hPublic" checked> <span>List it under Open games. Anyone can join a listed game. Unlisted games need the code.</span></label>
+  <label class="check"><input type="checkbox" id="hPublic" checked> <span>Show it in the server list, so anyone can join. Off: only people with the code.</span></label>
   <p class="fine">Your browser runs the game, so keep this tab open. If you leave, the game ends for everyone. Bots fill empty seats and step aside when friends join.</p>
   <div class="row"><button value="cancel" id="hCancel">Cancel</button><button id="hGo" class="primary">Start</button></div>
 </dialog>
@@ -144,6 +147,7 @@
   <label>Volume <input type="range" id="sVol" min="0" max="1" step="0.05"></label>
   <label class="check"><input type="checkbox" id="sSfx"> <span>Sound</span></label>
   <label class="check"><input type="checkbox" id="sFps"> <span>Show frame rate and ping</span></label>
+  <label class="check"><input type="checkbox" id="sSpeak"> <span>Read quick chat out loud</span></label>
   <label class="check"><input type="checkbox" id="sSkiHold"> <span>Ski with the jump key held (off: press Shift to ski)</span></label>
   <div class="row"><button id="sDone" class="primary">Done</button></div>
 </dialog>
@@ -171,7 +175,8 @@
     <tr><td>Space</td><td>jump, hold to ski</td><td>1 to 5, wheel, Q</td><td>weapons</td></tr>
     <tr><td>G</td><td>throw grenade</td><td>R</td><td>use pack</td></tr>
     <tr><td>I</td><td>loadout</td><td>Tab</td><td>scores</td></tr>
-    <tr><td>T / Y</td><td>chat / team chat</td><td>V</td><td>third person</td></tr>
+    <tr><td>T / Y</td><td>chat / team chat</td><td>V</td><td>quick chat (V G S: Shazbot!)</td></tr>
+    <tr><td>F</td><td>third person</td><td></td><td></td></tr>
     <tr><td>M</td><td>map</td><td>K</td><td>respawn now</td></tr>
   </table>
   <p class="fine">On a phone: left thumb moves, drag on the right to look, buttons for the rest. A keyboard and mouse is a lot easier.</p>
@@ -191,6 +196,7 @@
 <script src="../shared/update.js"></script>
 <script src="sim.js"></script>
 <script src="bots.js"></script>
+<script src="vgs.js"></script>
 <script src="net.js"></script>
 <script src="link.js"></script>
 <script src="render.js"></script>

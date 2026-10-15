@@ -21,7 +21,7 @@
       loadout: JF.cleanLoadout(o.loadout) || JSON.parse(JSON.stringify(JF.DEFAULT_LOADOUT)),
       sens: num(o.sens, 0.2, 3, 1), invert: o.invert === true, fov: num(o.fov, 70, 110, 90),
       quality: ['low', 'mid', 'high'].includes(o.quality) ? o.quality : null,
-      fps: o.fps === true, skiHold: o.skiHold !== false, third: o.third === true,
+      fps: o.fps === true, skiHold: o.skiHold !== false, third: o.third === true, speak: o.speak !== false,
       host: o.host && typeof o.host === 'object' ? o.host : {},
     };
   }
@@ -203,34 +203,40 @@
   };
 
   let roomsBusy = false;
+  // The server list is the front page: it fills in on its own every few seconds while the menu is showing.
+  let roomsShown = false;
   async function refreshRooms() {
     if (roomsBusy) return;
     roomsBusy = true;
     const box = $('rooms');
-    box.innerHTML = '<span class="dim">Looking…</span>';
+    if (!roomsShown) box.innerHTML = '<span class="dim">Looking…</span>';
     let link;
     try {
       link = Link.connect();
-      const rooms = await link.list();
+      const rooms = (await link.list()).filter(r => r && r.info && typeof r.info === 'object' && r.info.v === Net.PROTO);
+      const people = r => (Number.isInteger(r.info.n) && r.info.n > 0 ? Math.min(r.info.n, 64) : (r.n | 0) + 1);
+      rooms.sort((a, b) => people(b) - people(a) || String(a.name).localeCompare(String(b.name)));
       box.innerHTML = '';
-      const ok = rooms.filter(r => r && r.info && r.info.v === Net.PROTO);
-      if (!ok.length) box.innerHTML = '<span class="dim">No open games right now. Host one, or play against bots.</span>';
-      for (const r of ok) {
+      roomsShown = true;
+      $('roomsNote').textContent = rooms.length ? rooms.length + (rooms.length === 1 ? ' up' : ' up') : '';
+      if (!rooms.length) box.innerHTML = '<span class="dim">No servers up right now. Start one: your browser runs it and bots play until people join. Or practice offline.</span>';
+      for (const r of rooms) {
         const div = document.createElement('div'); div.className = 'room';
         const map = JF.has(JF.MAPS, r.info.map) ? JF.MAPS[r.info.map].name : '?';
-        const n = (r.n | 0) + 1;
-        const nm = document.createElement('div');
-        nm.innerHTML = '<b></b><div class="info"></div>';
-        nm.querySelector('b').textContent = String(r.name || 'game').slice(0, 24);
-        nm.querySelector('.info').textContent = map + ' · ' + n + (n === 1 ? ' player' : ' players') + (r.info.bots ? ' + ' + (r.info.bots | 0) + ' bots' : '');
-        const btn = document.createElement('button'); btn.textContent = 'Join';
-        btn.onclick = () => { if (needName()) join(r.room); };
-        div.append(nm, btn); box.appendChild(div);
+        const n = people(r), bots = Number.isInteger(r.info.bots) ? Math.max(0, Math.min(r.info.bots, 64)) : 0;
+        const sc = Array.isArray(r.info.score) ? (r.info.score[0] | 0) + ':' + (r.info.score[1] | 0) : '';
+        const cell = (cls, text) => { const c = document.createElement('span'); c.className = cls; c.textContent = text; return c; };
+        const btn = document.createElement('button'); btn.textContent = 'Join'; btn.className = 'primary';
+        div.append(cell('nm', String(r.name || 'server').slice(0, 24)), cell('mp', map + (sc ? ' ' + sc : '')), cell('pl', n + (bots ? ' + ' + bots + ' bots' : '')), btn);
+        div.onclick = () => { if (needName()) join(r.room); };
+        box.appendChild(div);
       }
     } catch (e) {
-      box.innerHTML = '<span class="dim">Could not reach the game server. You can still play against bots.</span>';
+      roomsShown = false;
+      box.innerHTML = '<span class="dim">Could not reach the server list. You can still practice offline.</span>';
     } finally { if (link) link.close(); roomsBusy = false; }
   }
+  setInterval(() => { if (!S && !$('menu').hidden && document.visibilityState === 'visible' && !document.querySelector('dialog[open]')) refreshRooms(); }, 5000);
   $('refresh').onclick = refreshRooms;
 
   // ---------- dialogs ----------
@@ -247,16 +253,16 @@
   // settings
   function fillSettings() {
     $('sSens').value = prefs.sens; $('sInvert').checked = prefs.invert; $('sFov').value = prefs.fov; $('sFovN').textContent = prefs.fov + '°';
-    $('sQual').value = prefs.quality; $('sVol').value = Audio.settings.volume; $('sSfx').checked = Audio.settings.sfx; $('sFps').checked = prefs.fps; $('sSkiHold').checked = prefs.skiHold;
+    $('sQual').value = prefs.quality; $('sVol').value = Audio.settings.volume; $('sSfx').checked = Audio.settings.sfx; $('sFps').checked = prefs.fps; $('sSkiHold').checked = prefs.skiHold; $('sSpeak').checked = prefs.speak;
   }
   $('settingsBtn').onclick = () => { fillSettings(); openDlg('setDlg'); };
   const readSettings = () => {
     prefs.sens = +$('sSens').value; prefs.invert = $('sInvert').checked; prefs.fov = +$('sFov').value; $('sFovN').textContent = prefs.fov + '°';
-    prefs.quality = $('sQual').value; prefs.fps = $('sFps').checked; prefs.skiHold = $('sSkiHold').checked;
+    prefs.quality = $('sQual').value; prefs.fps = $('sFps').checked; prefs.skiHold = $('sSkiHold').checked; prefs.speak = $('sSpeak').checked;
     Audio.set({ volume: +$('sVol').value, sfx: $('sSfx').checked });
     applyQuality(); savePrefs();
   };
-  for (const id of ['sSens', 'sInvert', 'sFov', 'sQual', 'sVol', 'sSfx', 'sFps', 'sSkiHold']) $(id).addEventListener('input', readSettings);
+  for (const id of ['sSens', 'sInvert', 'sFov', 'sQual', 'sVol', 'sSfx', 'sFps', 'sSkiHold', 'sSpeak']) $(id).addEventListener('input', readSettings);
   $('sDone').onclick = () => $('setDlg').close();
 
   // loadout
@@ -297,6 +303,7 @@
   // pause
   function openPause() {
     if (!S) return;
+    closeVgs();
     $('pRoom').textContent = S.room ? 'game ' + S.room : 'practice';
     $('pInvite').hidden = !S.room;
     if (S.room) { $('pCode').textContent = S.room; $('pLink').value = location.origin + location.pathname + '#' + S.room; }
@@ -379,9 +386,12 @@
     if (e.repeat) { keys[e.code] = true; return; }
     keys[e.code] = true;
     if (e.code === 'Space') { e.preventDefault(); jumpPulse = true; }
+    if (vgsOpen() && e.code !== 'KeyV') { vgsKey(e); return; }
     if (/^Digit[1-5]$/.test(e.code)) { const i = +e.code.slice(5) - 1; const me = S.client.me; if (me && i < me.weapons.length) { lastW = me.wi; wantW = i; Audio.play('switch'); } }
     if (e.code === 'KeyQ') { const me = S.client.me; if (me) { const t = lastW; lastW = me.wi; wantW = t; } }
-    if (e.code === 'KeyV') { thirdPerson = !thirdPerson; prefs.third = thirdPerson; savePrefs(); }
+    if (vgsOpen()) { vgsKey(e); return; }
+    if (e.code === 'KeyF') { thirdPerson = !thirdPerson; prefs.third = thirdPerson; savePrefs(); }
+    if (e.code === 'KeyV') { openVgs(); return; }
     if (e.code === 'KeyI') { fillLoadout(); openDlg('loadDlg'); }
     if (e.code === 'KeyT' || e.code === 'KeyY' || e.code === 'Enter') { e.preventDefault(); openChat(e.code === 'KeyY'); }
     if (e.code === 'KeyK') S.client.ctrl({ t: 'kill' });
@@ -437,6 +447,7 @@
         e.preventDefault(); b.classList.add('down'); Audio.start();
         if (k === 'fire' || k === 'jet' || k === 'ski') touch[k] = true;
         if (k === 'next') cycleWeapon(1);
+        if (k === 'say') { if (vgsOpen()) closeVgs(); else openVgs(); }
         if (k === 'gren') keys.KeyG = true;
         if (k === 'pack') keys.KeyR = true;
         if (k === 'ski') jumpPulse = true;
@@ -684,7 +695,10 @@
           Audio.play('laser', [e.x0, e.y0, e.z0]);
           break;
         }
-        case 'hit':
+        case 'hit': {
+          hitFlash.set(e.id, now());
+          const at = pAt(e.id);
+          if (at && e.id !== myId) sparks(at, e.d);
           if (e.by === myId) { hitT = now(); hitKill = false; Audio.play('hit'); }
           if (e.id === myId) {
             hurtFlash = Math.min(0.6, hurtFlash + e.d / 60);
@@ -693,6 +707,14 @@
             Audio.play('hurt');
           }
           break;
+        }
+        case 'ohit': {
+          const o = c.world.objects[e.id]; if (!o) break;
+          objHit.set(e.id, now());
+          sparks([o.c[0] + rnd(-0.6, 0.6), o.c[1] + rnd(-0.3, 0.6), o.c[2] + rnd(-0.6, 0.6)], e.d);
+          if (e.by === myId) { hitT = now(); hitKill = false; Audio.play('hit'); myObjHit.set(e.id, now()); }
+          break;
+        }
         case 'shield': { const at = pAt(e.id); if (at) { Audio.play('shield', at); shieldFlash.set(e.id, now()); } break; }
         case 'kill': {
           const wname = e.w === 'fall' ? 'fell' : e.w === 'tbolt' ? 'turret' : e.w === 'suicide' ? 'gave up' : e.w === 'team' ? 'switched team' : e.w === 'stuck' ? 'got stuck' : JF.has(JF.PROJ, e.w) ? JF.PROJ[e.w].name : e.w === 'laser-head' ? 'Laser Rifle (head)' : String(e.w);
@@ -750,8 +772,8 @@
         case 'leave': addFeed('<span class="dim">' + esc(e.name) + ' left</span>'); break;
         case 'team': addFeed(teamSpan(e.id, nameOf(e.id)) + ' <span class="dim">switched to ' + TEAMS[e.team].name + '</span>'); break;
         case 'chat':
-          addChat((e.team != null ? '<span class="dim">[team]</span> ' : '') + teamSpan(e.id, e.name) + ': ' + esc(e.text));
-          Audio.play('chat');
+          addChat((e.team != null ? '<span class="dim">[team]</span> ' : '') + teamSpan(e.id, e.name) + ': ' + (e.vgs ? '<b>' + esc(e.text) + '</b>' : esc(e.text)));
+          if (e.vgs && prefs.speak) speak(e.text, e.id); else Audio.play('chat');
           break;
         case 'over':
           Audio.play(e.winner === myTeam ? 'win' : e.winner < 0 ? 'ret' : 'lose');
@@ -759,7 +781,52 @@
       }
     }
   }
-  const shieldFlash = new Map();
+  const shieldFlash = new Map(), hitFlash = new Map(), objHit = new Map(), myObjHit = new Map();
+
+  // little bright bits flying off whatever got hit, more for a harder hit
+  function sparks(at, dmg) {
+    const n = Math.min(14, 3 + Math.round((dmg || 5) / 6));
+    puff(at[0], at[1], at[2], { life: 0.12, s0: 0.5 + Math.min(1.5, (dmg || 5) / 30), s1: 0.2, c: [3, 2.4, 1.6] });
+    for (let i = 0; i < n; i++) puff(at[0], at[1], at[2], { life: rnd(0.25, 0.5), s0: 0.08, s1: 0.02, c: [3, 2.2, 1.2], v: [rnd(-7, 7), rnd(1, 9), rnd(-7, 7)], g: 20, kind: 2 });
+  }
+
+  // quick chat read out loud, a different voice pitch for each player
+  function speak(text, id) {
+    try {
+      if (!window.speechSynthesis) return;
+      const u = new SpeechSynthesisUtterance(text);
+      u.pitch = 0.6 + ((id * 37) % 9) / 10; u.rate = 1.1; u.volume = Audio.settings.sfx ? Audio.settings.volume : 0;
+      speechSynthesis.cancel(); speechSynthesis.speak(u);
+    } catch (e) { /* no voices: the text is in the chat anyway */ }
+  }
+
+  // ---------- quick chat menu (V) ----------
+  let vgsPath = null; // null = closed, '' = top level, 'G' = in a group
+  const vgsOpen = () => vgsPath !== null;
+  function openVgs() { vgsPath = ''; drawVgs(); }
+  function closeVgs() { vgsPath = null; $('vgs').hidden = true; }
+  function drawVgs() {
+    const T = window.JFVGS.TREE;
+    let h = '';
+    if (vgsPath === '') { h = '<b>Quick chat</b>'; for (const [k, g] of Object.entries(T)) h += '<div data-k="' + k + '"><i>' + k + '</i> ' + esc(g.name) + (g.team ? ' <span class="dim">team</span>' : '') + '</div>'; }
+    else { const g = T[vgsPath]; h = '<b>' + esc(g.name) + '</b>'; for (const [k, t] of Object.entries(g.lines)) h += '<div data-k="' + k + '"><i>' + k + '</i> ' + esc(t) + '</div>'; }
+    h += '<div class="dim" data-k="Escape"><i>esc</i> close</div>';
+    $('vgs').innerHTML = h; $('vgs').hidden = false;
+  }
+  function vgsPick(k) {
+    const T = window.JFVGS.TREE;
+    if (k === 'Escape' || k === 'V' && vgsPath === '') return closeVgs();
+    if (vgsPath === '') { if (JF.has(T, k)) { vgsPath = k; drawVgs(); } return; }
+    if (JF.has(T[vgsPath].lines, k)) { if (S) S.client.ctrl({ t: 'chat', vgs: vgsPath + k }); closeVgs(); }
+  }
+  function vgsKey(e) {
+    e.preventDefault();
+    keys[e.code] = false;
+    if (e.code === 'Escape' || e.code === 'Backspace') return closeVgs();
+    const m = /^(?:Key|Digit)(\w)$/.exec(e.code);
+    if (m) vgsPick(m[1]);
+  }
+  $('vgs').addEventListener('click', e => { const d = e.target.closest('[data-k]'); if (d) vgsPick(d.dataset.k); });
 
   // where a straight line from `from` along `dir` meets land or a wall, for tracers
   function traceLocal(from, dir, dist) {
@@ -884,7 +951,8 @@
       }
       const an = animFor(q, dt);
       const sf = shieldFlash.get(p.id);
-      Models.player(renderer, q, an, { flagTeam: flagOf.has(p.id) ? flagOf.get(p.id) : null, time, flash: 0, fireGlow: p.firing ? 1 : 0 });
+      const hf = hitFlash.get(p.id);
+      Models.player(renderer, q, an, { flagTeam: flagOf.has(p.id) ? flagOf.get(p.id) : null, time, flash: hf ? Math.max(0, 1 - (now() - hf) / 0.22) : 0, fireGlow: p.firing ? 1 : 0 });
       // jets
       if (q.jetting) {
         const rr = JF.rightDir(q.yaw), back = [Math.sin(q.yaw) * 0.35, 0, Math.cos(q.yaw) * 0.35];
@@ -892,10 +960,11 @@
         for (const side of [-1, 1]) {
           const x = q.pos[0] + rr[0] * side * 0.15 * s + back[0], y = q.pos[1] + 0.9 * s, z = q.pos[2] + rr[2] * side * 0.15 * s + back[2];
           const v = [p.vel[0] * 0.5, -14, p.vel[2] * 0.5];
-          puff(x, y, z, { life: 0.18, s0: 0.35, s1: 0.1, c: [0.9, 1.4, 3.0], v, kind: 0 });
+          const jc = TEAMS[q.team].rgb;
+          puff(x, y, z, { life: 0.18, s0: 0.35, s1: 0.1, c: [0.5 + jc[0] * 2.4, 0.5 + jc[1] * 2.4, 0.5 + jc[2] * 2.4], v, kind: 0 });
           if (Math.random() < 0.3) puff(x, y - 0.5, z, { life: 0.8, s0: 0.3, s1: 1.2, c: [0.6, 0.62, 0.65], v: [v[0] * 0.3, -4, v[2] * 0.3], kind: 1, blend: 1, a: 0.3, drag: 2 });
         }
-        if (lights.length < 4) lights.push({ x: q.pos[0], y: q.pos[1] + 0.5, z: q.pos[2], r: 7, c: [0.5, 0.8, 1.6] });
+        if (lights.length < 4) lights.push({ x: q.pos[0], y: q.pos[1] + 0.5, z: q.pos[2], r: 7, c: TEAMS[q.team].rgb.map(v => 0.3 + v * 1.3) });
       }
       // skiing kicks up the ground
       if (q.skiing && q.ground) {
@@ -1163,11 +1232,27 @@
       if (!p.alive || p.id === myId) continue;
       const pos = [p.pos[0], p.pos[1] + ARMORS[p.armor].h + 0.5, p.pos[2]];
       const d = dist(pos);
-      if (p.team === myTeam) { if (d < 500) list.push({ pos, cls: 'mk mate', color: TEAMS[p.team].color, text: nameOf(p.id) + (p.hasFlag ? ' ⚑' : '') }); }
-      else {
+      // a small arrow over everyone you can see, in their team colour; names for friends, and for enemies under the crosshair
+      if (p.team === myTeam) { if (d < 500) list.push({ pos, cls: 'mk mate', color: TEAMS[p.team].color, text: nameOf(p.id) + (p.hasFlag ? ' ⚑' : ''), tri: true }); }
+      else if (d < 400 && !w.blocked(camPos, [p.pos[0], p.pos[1] + 1, p.pos[2]])) {
         const sp = renderer.project(pos);
-        if (sp && Math.hypot(sp.x - W / 2, sp.y - H / 2) < 80 && d < 300 && !w.blocked(camPos, [p.pos[0], p.pos[1] + 1, p.pos[2]])) list.push({ pos, cls: 'mk foe', text: nameOf(p.id) + ' ' + Math.round(d) + 'm' });
+        const aimed = sp && Math.hypot(sp.x - W / 2, sp.y - H / 2) < 80;
+        list.push({ pos, cls: 'mk foe', color: TEAMS[p.team].color, text: aimed ? nameOf(p.id) + ' ' + Math.round(d) + 'm' : '', tri: true });
       }
+    }
+    // base things near the crosshair or that I just hit: name and health
+    for (const o of w.objects) {
+      const so = view.objects[o.id]; if (!so) continue;
+      const top = [o.c[0], o.b[4] + 0.9, o.c[2]];
+      const d = dist(top);
+      if (d > 160) continue;
+      const mine = myObjHit.get(o.id), recent = mine && now() - mine < 2.5;
+      const sp = renderer.project(top);
+      if (!sp) continue;
+      if (!recent && Math.hypot(sp.x - W / 2, sp.y - H / 2) > 70) continue;
+      if (!recent && w.blocked(camPos, [o.c[0], o.c[1], o.c[2]])) continue;
+      const pct = Math.round(so.hpF * 100);
+      list.push({ pos: top, cls: 'mk obj', color: o.team === myTeam ? TEAMS[o.team].color : '#ff8a6a', text: JF.OBJ[o.kind].name + (so.up ? ' ' + pct + '%' : ' destroyed'), bar: so.hpF });
     }
     // our generator when it is down
     for (const o of w.objects) {
@@ -1195,7 +1280,7 @@
       el.className = m.cls;
       el.style.left = x.toFixed(0) + 'px'; el.style.top = y.toFixed(0) + 'px';
       el.style.color = m.color || '';
-      const html = (m.cls.includes('flag') || m.cls === 'mk' ? '<div class="ic"></div><br>' : '') + esc(m.text);
+      const html = (m.tri ? '<div class="tri"></div>' : '') + (m.cls.includes('flag') || m.cls === 'mk' ? '<div class="ic"></div><br>' : '') + esc(m.text) + (m.bar != null ? '<div class="hb"><i style="width:' + Math.round(m.bar * 100) + '%"></i></div>' : '');
       if (el._h !== html) { el._h = html; el.innerHTML = html; }
     });
   }

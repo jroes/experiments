@@ -6,7 +6,7 @@
  * Out: { t: 'send', peer, bytes, reliable } · { t: 'kick', peer } · { t: 'state', settings, listing, players }
  */
 /* global importScripts, JFNet */
-importScripts('sim.js', 'bots.js', 'net.js');
+importScripts('sim.js', 'bots.js', 'vgs.js', 'net.js');
 
 let host = null, last = 0, stateT = 0;
 

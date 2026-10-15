@@ -81,7 +81,11 @@
   function player(r, p, anim, opts) {
     const sh = SHAPE[p.armor] || SHAPE.light, s = sh.s, b = sh.b;
     const team = JF.TEAMS[p.team].rgb;
-    const tc = [team[0] * 0.85, team[1] * 0.85, team[2] * 0.85];
+    // the whole suit is painted in the team colour so you can tell sides apart at a distance:
+    // bright chest and helmet, tinted limbs, glowing shoulder lights and jets in the team colour
+    const tc = [team[0], team[1], team[2]];
+    const mix = (a, t, k) => [a[0] + (t[0] - a[0]) * k, a[1] + (t[1] - a[1]) * k, a[2] + (t[2] - a[2]) * k];
+    const dk = mix(DARK, team, 0.4), md = mix(MID, team, 0.6);
     const root_ = base(p.pos[0], p.pos[1], p.pos[2], p.yaw, 0);
     const ground = p.ground && !p.jetting;
     const run = ground && !p.skiing ? Math.min(1, anim.speed / 7) : 0;
@@ -89,41 +93,47 @@
     const crouch = p.skiing ? 0.18 : 0;
     const hipY = (0.95 - crouch) * s;
     const air = !p.ground;
-    const put = (kind, m, col, mat) => r.putM(kind, m, col, mat);
-    const glowV = opts && opts.flash ? 1.2 : 0;
+    // a hit makes the whole suit flash
+    const fl = opts && opts.flash ? Math.min(1, opts.flash) : 0;
+    const put = fl > 0
+      ? (kind, m, col, mat) => r.putM(kind, m, [col[0] + (1 - col[0]) * fl * 0.7, col[1] + (0.75 - col[1]) * fl * 0.7, col[2] + (0.6 - col[2]) * fl * 0.7], [(mat ? mat[0] : 0) + fl * 1.8, mat ? mat[1] : 0, mat ? mat[2] : 0, mat ? mat[3] : 0.3])
+      : (kind, m, col, mat) => r.putM(kind, m, col, mat);
+    const glowV = 0;
     // legs
     for (const side of [-1, 1]) {
       let rx = air ? 0.35 + side * 0.08 : p.skiing ? (side > 0 ? -0.5 : 0.2) : sw * side;
       const leg = child(root_, side * 0.14 * b, hipY, 0, rx, 0);
-      put('box', partM(leg, 0, 0, 0, 0, 0, 0, -0.27 * s, 0, 0.2 * b, 0.55 * s, 0.24 * b), DARK, [0, 1, 0, 0.4]);
+      put('box', partM(leg, 0, 0, 0, 0, 0, 0, -0.27 * s, 0, 0.2 * b, 0.55 * s, 0.24 * b), dk, [0, 1, 0, 0.4]);
       const knee = child(leg, 0, -0.5 * s, 0, p.skiing ? 0.7 : air ? 0.5 : Math.max(0, -sw * side) * 0.9, 0);
-      put('box', partM(knee, 0, 0, 0, 0, 0, 0, -0.22 * s, 0, 0.18 * b, 0.45 * s, 0.22 * b), MID, [0, 0, 0, 0.5]);
+      put('box', partM(knee, 0, 0, 0, 0, 0, 0, -0.22 * s, 0, 0.18 * b, 0.45 * s, 0.22 * b), md, [0, 0, 0, 0.5]);
       put('box', partM(knee, 0, -0.45 * s, -0.04, 0, 0, 0, 0, 0, 0.2 * b, 0.1, 0.32 * b), DARK);
     }
     // body
     const lean = p.skiing ? 0.35 : air ? 0.12 : run * 0.15;
     const torso = child(root_, 0, hipY, 0, -lean, 0);
     put('box', partM(torso, 0, 0, 0, 0, 0, 0, 0.08 * s, 0, 0.42 * b, 0.22 * s, 0.28 * b), DARK); // belt
-    put('box', partM(torso, 0, 0.2 * s, 0, 0, 0, 0, 0.25 * s, 0, 0.56 * b, 0.5 * s, 0.34 * b), tc, [glowV, 1, 0, 0.6]); // chest
+    put('box', partM(torso, 0, 0.2 * s, 0, 0, 0, 0, 0.25 * s, 0, 0.56 * b, 0.5 * s, 0.34 * b), tc, [0.25 + glowV, 1, 0, 0.6]); // chest
     put('box', partM(torso, 0, 0.32 * s, -0.17 * b, 0, 0, 0, 0, 0, 0.3 * b, 0.18 * s, 0.04), [team[0], team[1], team[2]], [1.4, 0, 0, 0.3]); // chest light
     // pack
     const packCol = p.pack === 'shield' ? [0.3, 0.5, 1] : p.pack === 'repair' ? [0.3, 1, 0.4] : p.pack === 'energy' ? [1, 0.85, 0.3] : p.pack === 'ammo' ? [0.8, 0.6, 0.3] : MID;
-    put('box', partM(torso, 0, 0.32 * s, 0.24 * b, 0, 0, 0, 0, 0, 0.44 * b, 0.48 * s, 0.18 * b), MID, [0, 0, 0, 0.5]);
+    put('box', partM(torso, 0, 0.32 * s, 0.24 * b, 0, 0, 0, 0, 0, 0.44 * b, 0.48 * s, 0.18 * b), md, [0, 0, 0, 0.5]);
     put('box', partM(torso, 0, 0.45 * s, 0.34 * b, 0, 0, 0, 0, 0, 0.2 * b, 0.12 * s, 0.03), packCol, [0.8, 0, 0, 0.2]);
     for (const side of [-1, 1]) {
-      put('cyl', partM(torso, side * 0.14 * b, 0.12 * s, 0.3 * b, 0, 0, 0, 0, 0, 0.12 * b, 0.14 * s, 0.12 * b), p.jetting ? [0.6, 0.85, 1] : DARK, [p.jetting ? 3 : 0, 0, 0, 0.5]);
+      put('cyl', partM(torso, side * 0.14 * b, 0.12 * s, 0.3 * b, 0, 0, 0, 0, 0, 0.12 * b, 0.14 * s, 0.12 * b), p.jetting ? mix([1, 1, 1], team, 0.6) : DARK, [p.jetting ? 3 : 0, 0, 0, 0.5]);
     }
     if (p.armor === 'heavy') for (const side of [-1, 1]) put('box', partM(torso, side * 0.36 * b, 0.48 * s, 0, 0, side * 0.2, 0, 0, 0, 0.26 * b, 0.12, 0.36 * b), tc, [0, 0, 0, 0.6]);
+    // shoulder lights
+    for (const side of [-1, 1]) put('box', partM(torso, side * 0.3 * b, 0.52 * s, 0, 0, 0, 0, 0, 0, 0.14 * b, 0.06, 0.3 * b), tc, [2.2, 0, 0, 0.2]);
     // head turns with the aim
     const head = child(torso, 0, 0.6 * s, 0, -p.pitch * 0.5 + lean, 0);
-    put('box', partM(head, 0, 0, 0, 0, 0, 0, 0.14 * s, 0, 0.26 * b, 0.28 * s, 0.3 * b), MID, [0, 0, 0, 0.7]);
+    put('box', partM(head, 0, 0, 0, 0, 0, 0, 0.14 * s, 0, 0.26 * b, 0.28 * s, 0.3 * b), md, [0, 0, 0, 0.7]);
     put('box', partM(head, 0, 0.16 * s, -0.14 * b, 0, 0, 0, 0, 0, 0.22 * b, 0.07 * s, 0.04), [team[0] * 0.6 + 0.4, team[1] * 0.6 + 0.4, team[2] * 0.6 + 0.4], [2.2, 0, 0, 0.9]);
     put('box', partM(head, 0, 0.3 * s, 0.02, 0, 0, 0, 0, 0, 0.18 * b, 0.05, 0.2 * b), tc);
     // arms: both forward holding the gun, pitched with the aim
     const shoulder = child(torso, 0, 0.42 * s, 0, lean + p.pitch * 0.9, 0);
     for (const side of [-1, 1]) {
       const arm = child(shoulder, side * 0.34 * b, 0, 0, side > 0 ? -1.35 : -1.2, side * 0.12);
-      put('box', partM(arm, 0, 0, 0, 0, 0, 0, -0.25 * s, 0, 0.15 * b, 0.5 * s, 0.17 * b), DARK, [0, 0, 0, 0.4]);
+      put('box', partM(arm, 0, 0, 0, 0, 0, 0, -0.25 * s, 0, 0.15 * b, 0.5 * s, 0.17 * b), dk, [0, 0, 0, 0.4]);
     }
     const hand = child(shoulder, 0.18 * b, -0.02, -0.48 * s, 0, 0);
     if (p.weapon) weapon(r, hand, p.weapon, team, opts && opts.fireGlow);
@@ -170,17 +180,21 @@
       r.put('cyl', cx, b[1] + sy / 2, cz, t * (dead ? 0 : 2), 0, sx * 0.55, sy - 0.8, sz * 0.55, coreCol, [dead ? 0 : 1.5 + pulse, 0, 0, 0.8]);
       for (let i = 0; i < 3; i++) r.put('cyl', cx, b[1] + 0.9 + i * 0.9 + (dead ? 0 : Math.sin(t * 2 + i) * 0.1), cz, 0, 0, sx * 0.75, 0.12, sz * 0.75, METAL, [0, 0, 0, 0.9]);
     } else if (o.kind === 'station') {
+      // an alcove against the wall: a glowing pad to stand on, a back panel with a screen, two posts and a lit canopy
+      const c = dead ? [0.6, 0.12, 0.05] : live ? team : [0.25, 0.25, 0.25];
+      const w = o.wall || 1, zw = w > 0 ? b[5] : b[2], glow = live ? 1 + pulse * 0.8 : 0.15;
+      const H = 3.0;
+      r.put('box', cx, b[1] + 0.05, cz, 0, 0, sx + 0.3, 0.1, sz + 0.3, DARK, [0, 0, 0, 0.4]);
       r.put('box', cx, b[1] + sy / 2, cz, 0, 0, sx, sy, sz, MID, [0, 1, 0, 0.5]);
-      const c = dead ? [0.5, 0.1, 0.05] : live ? team : [0.25, 0.25, 0.25];
-      r.put('box', cx, b[4] + 0.01, cz, 0, 0, sx * 0.8, 0.02, sz * 0.8, c, [live ? 1.2 + pulse * 0.8 : 0.2, 0, 0, 0.2]);
-      // a post with a screen at the wall side
-      const wall = o.c[2] > 0 ? 1 : -1;
-      const pz = Math.abs(b[2] - o.c[2]) < 2 ? 0 : 0;
-      void pz;
-      const nearWallZ = Math.abs(b[5] - (b[5] + b[2]) / 2) && (b[5] > o.c[2] ? b[5] : b[2]);
-      void nearWallZ; void wall;
-      r.put('box', cx, b[1] + 1.4, (b[2] + b[5]) / 2, 0, 0, sx * 0.9, 2.5, 0.06, DARK);
-      r.put('box', cx, b[1] + 1.8, (b[2] + b[5]) / 2, 0, 0, sx * 0.7, 0.9, 0.08, c, [live ? 1 : 0.1, 0, 0, 0.3]);
+      r.put('cyl', cx, b[4] + 0.015, cz - w * 0.15, 0, 0, Math.min(sx, sz) * 0.8, 0.02, Math.min(sx, sz) * 0.8, c, [glow, 0, 0, 0.2]);
+      r.put('cyl', cx, b[4] + 0.02, cz - w * 0.15, 0, 0, Math.min(sx, sz) * 0.5, 0.02, Math.min(sx, sz) * 0.5, DARK, [0, 0, 0, 0.3]);
+      // back panel and screen
+      r.put('box', cx, b[1] + H / 2, zw - w * 0.1, 0, 0, sx, H, 0.2, DARK, [0, 1, 0, 0.5]);
+      r.put('box', cx, b[1] + 1.9, zw - w * 0.22, 0, 0, sx * 0.55, 0.75, 0.05, c, [live ? 1.2 : 0.1, 0, 0, 0.3]);
+      // posts and canopy
+      for (const x of [b[0] + 0.12, b[3] - 0.12]) r.put('box', x, b[1] + H / 2, zw - w * 0.35, 0, 0, 0.24, H, 0.5, MID, [0, 0, 0, 0.6]);
+      r.put('box', cx, b[1] + H, zw - w * 0.6, 0, 0, sx + 0.1, 0.22, 1.2, MID, [0, 1, 0, 0.6]);
+      r.put('box', cx, b[1] + H - 0.13, zw - w * 0.75, 0, 0, sx * 0.8, 0.03, 0.18, c, [glow * 1.5, 0, 0, 0.2]);
     } else if (o.kind === 'turret') {
       r.put('box', cx, b[1] + 0.35, cz, 0, 0, sx, 0.7, sz, DARK, [0, 0, 0, 0.5]);
       const yaw = so ? so.yaw : 0, pitch = so ? so.pitch : 0;
