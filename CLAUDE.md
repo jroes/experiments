@@ -136,7 +136,13 @@ host's copy is hidden. The host decides every hit.
   by slot. A test plays every map and wants kills and a flag taken. Skill scales how they fight, not how they move: how far they notice you, reaction time,
   aim wander, how well they lead, aiming at the feet, pauses between shots. A duel test against a dodging dummy keeps Easy and Normal well under Brutal.
 - The menu opens on the **server list** (refreshed every 5 s from the relay's room list); "Start a server" hosts a listed game by default, "Practice offline"
-  runs one with no network. Quick chat (V, then letters; V G S is "Shazbot!") sends a key from `vgs.js`, never text: the host looks it up, so it cannot be used to say anything else.
+  runs one with no network. **Fixed servers**: the relay always lists eight named slots (`JF_FIXED`, see its README). Picking an empty one makes your
+  browser its host with the slot's map and bots (`playFixed`: claim, or join if the relay says `taken`); when that host leaves, the players still in it
+  claim it again, so the game carries on (a fresh match). There is no server-side game: nobody in it means nothing runs.
+- **Maps** are data in `MAPS`: noise settings, a `look`, `props` (towers, arches, ruins, spires, placed in point-symmetric pairs as their own collision
+  groups; `grp` on a solid, `baseBounds[grp]`), and optional `shape` (`lakes`, `canyon`, carved into the noise), `lava` (fraction of low ground that
+  burns) and `weather`. Water and lava levels are worked out from the terrain, the same in every browser; water slows and floats you inside `movePlayer`
+  and shots stop at its surface. Quick chat (V, then letters; V G S is "Shazbot!") sends a key from `vgs.js`, never text: the host looks it up, so it cannot be used to say anything else.
   It is read out loud with the browser's speech voices (a setting).
 - The renderer is raw WebGL2 like the HD-2D one: the land is one mesh with the physics' own triangles, everything solid is an instanced box, sphere or cylinder,
   a sun shadow map around the camera, particles and beams as instanced quads. `?relay=ws://127.0.0.1:8135/jetfall` points a page at a local server;

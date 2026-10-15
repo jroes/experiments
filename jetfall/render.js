@@ -150,7 +150,7 @@
   const TERRAIN_FS = `#version 300 es
   precision highp float;
   ${COMMON}
-  uniform vec3 uLow, uMid, uHigh, uRock, uSnow; uniform float uSnowLine, uHmin, uHmax, uLava;
+  uniform vec3 uLow, uMid, uHigh, uRock, uSnow; uniform float uSnowLine, uHmin, uHmax, uLava, uLavaH;
   in vec3 vPos; in vec3 vNor; in float vShade; out vec4 o;
   void main() {
     vec3 n = normalize(vNor);
@@ -162,7 +162,7 @@
     float patchy = fbm(vPos.xz * 0.0016 + 7.3);
     vec3 col = mix(uLow, uMid, smoothstep(0.15, 0.45, hh + (mid - 0.5) * 0.2));
     col = mix(col, col * vec3(1.18, 1.06, 0.78), smoothstep(0.45, 0.7, patchy));
-    col = mix(col, col * vec3(0.8, 0.9, 0.85), smoothstep(0.5, 0.3, patchy) * 0.6);
+    col = mix(col, col * vec3(0.8, 0.9, 0.85), (1.0 - smoothstep(0.3, 0.5, patchy)) * 0.6);
     col = mix(col, uHigh, smoothstep(0.5, 0.8, hh));
     float slope = 1.0 - n.y;
     float rock = smoothstep(0.28, 0.45, slope + (mid - 0.5) * 0.15);
@@ -177,13 +177,16 @@
     // lava in the low ground (Ashfall)
     vec3 emit = vec3(0.0);
     if (uLava > 0.5) {
-      float lv = smoothstep(0.1, 0.02, h + (big - 0.5) * 0.08) * (1.0 - rock);
+      // exactly where it burns: below the map's lava level (sim.js works out the same number)
+      float lv = 1.0 - smoothstep(uLavaH - 0.3, uLavaH + 0.6, vPos.y);
       float flow = fbm(vPos.xz * 0.03 + vec2(uTime * 0.02, uTime * 0.013));
-      vec3 lc = mix(vec3(1.0, 0.25, 0.02), vec3(1.0, 0.75, 0.2), flow) * (1.2 + 0.8 * flow);
-      col = mix(col, vec3(0.05), lv);
-      emit = lc * lv * 1.6;
-      float crack = smoothstep(0.48, 0.5, fbm(vPos.xz * 0.12)) * smoothstep(0.52, 0.5, fbm(vPos.xz * 0.12));
-      emit += vec3(1.0, 0.35, 0.05) * crack * 0.6 * smoothstep(0.35, 0.1, h);
+      vec3 lc = mix(vec3(0.85, 0.16, 0.02), vec3(1.0, 0.5, 0.08), flow) * (0.55 + 0.6 * flow);
+      // a dark crust drifts over it
+      float crust = smoothstep(0.5, 0.68, fbm(vPos.xz * 0.045 + vec2(uTime * 0.008, -uTime * 0.006)));
+      col = mix(col, vec3(0.04, 0.03, 0.03), lv);
+      emit = lc * lv * (1.0 - 0.85 * crust);
+      float crack = smoothstep(0.48, 0.5, fbm(vPos.xz * 0.12)) * (1.0 - smoothstep(0.5, 0.52, fbm(vPos.xz * 0.12)));
+      emit += vec3(1.0, 0.35, 0.05) * crack * 0.18 * (1.0 - smoothstep(uLavaH + 2.0, uLavaH + 25.0, vPos.y));
     }
     float sun = max(dot(n, uSunDir), 0.0) * vShade * shadowAt(vPos, n);
     vec3 amb = mix(uAmb * 0.55, uAmb, n.y * 0.5 + 0.5) * (0.7 + 0.3 * vShade);
@@ -226,7 +229,7 @@
       col *= 1.0 - 0.35 * seam;
       col *= 0.92 + 0.12 * noise(uv * 1.7) ;
       // a glowing stripe along the top of walls in team colour
-      if (vMat.z > 0.0) { float stripe = smoothstep(0.08, 0.0, abs(fract(vLocal.y / 3.0) - 0.82)) * (1.0 - an.y); glow += stripe * vMat.z; }
+      if (vMat.z > 0.0) { float stripe = (1.0 - smoothstep(0.0, 0.08, abs(fract(vLocal.y / 3.0) - 0.82))) * (1.0 - an.y); glow += stripe * vMat.z; }
     }
     float sh = shadowAt(vPos, n);
     float sun = max(dot(n, uSunDir), 0.0) * sh;
@@ -276,6 +279,29 @@
     o = vec4(tone(c), 1.0);
   }`;
 
+  // water: one big flat sheet at the water level, rippled with noise, reflecting the sky, see-through near the shore
+  const WATER_VS = `#version 300 es
+  layout(location=0) in vec2 aP; uniform mat4 uVP; uniform float uH; out vec3 vPos;
+  void main() { vPos = vec3(aP.x, uH, aP.y); gl_Position = uVP * vec4(vPos, 1.0); }`;
+  const WATER_FS = `#version 300 es
+  precision highp float;
+  ${COMMON}
+  uniform vec3 uWater; in vec3 vPos; out vec4 o;
+  void main() {
+    vec2 p = vPos.xz * 0.08;
+    float e = 0.15;
+    float h0 = fbm(p + vec2(uTime * 0.15, uTime * 0.1)), hx = fbm(p + vec2(e, 0.0) + vec2(uTime * 0.15, uTime * 0.1)), hz = fbm(p + vec2(0.0, e) + vec2(uTime * 0.15, uTime * 0.1));
+    vec3 n = normalize(vec3((h0 - hx) * 1.2, 1.0, (h0 - hz) * 1.2));
+    vec3 v = normalize(uCam - vPos);
+    vec3 r = reflect(-v, n);
+    vec3 sky = mix(uSkyHor, uSkyTop, pow(max(r.y, 0.0), 0.6));
+    float fres = 0.08 + 0.92 * pow(1.0 - max(dot(n, v), 0.0), 4.0);
+    vec3 c = mix(uWater * (uAmb + uSunCol * 0.4), sky, fres);
+    c += uSunCol * pow(max(dot(r, uSunDir), 0.0), 120.0) * 2.0;
+    c = fogMix(c, vPos);
+    o = vec4(tone(c), 0.72 + 0.25 * fres);
+  }`;
+
   // particles: camera-facing quads; kind 0 = soft glow, 1 = smoke puff, 2 = hard spark
   const PART_VS = `#version 300 es
   layout(location=0) in vec2 aQ;
@@ -300,11 +326,11 @@
     if (vK.x < 0.5) { a = pow(1.0 - d, 2.2); }
     else if (vK.x < 1.5) {
       float n = noise(vQ * 2.5 + vK.z * 7.0) * 0.6 + noise(vQ * 5.0 - vK.z * 3.0) * 0.4;
-      a = smoothstep(1.0, 0.3, d + (n - 0.5) * 0.6);
+      a = 1.0 - smoothstep(0.3, 1.0, d + (n - 0.5) * 0.6);
       float lit = 0.6 + 0.4 * clamp(dot(normalize(vec3(vQ, 0.6)), normalize(vec3(0.3, 0.8, 0.5))), 0.0, 1.0);
       c *= lit * (uAmb + uSunCol * 0.6);
       c = fogMix(c, vPos);
-    } else { a = smoothstep(1.0, 0.0, d); }
+    } else { a = 1.0 - smoothstep(0.0, 1.0, d); }
     o = vec4(tone(c) * a * vCol.a, a * vCol.a * vK.w);
   }`;
   // beams: a segment drawn as a quad that faces the camera
@@ -414,6 +440,13 @@
       this.progSky = compile(gl, SKY_VS, SKY_FS);
       this.progP = compile(gl, PART_VS, PART_FS);
       this.progB = compile(gl, BEAM_VS, BEAM_FS);
+      this.progW = compile(gl, WATER_VS, WATER_FS);
+      this.waterVao = gl.createVertexArray(); gl.bindVertexArray(this.waterVao);
+      const wb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, wb);
+      const L = -3000, Hh = SIZE + 3000;
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([L, L, L, Hh, Hh, Hh, L, L, Hh, Hh, Hh, L]), gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+      gl.bindVertexArray(null);
       // meshes
       this.meshes = {};
       for (const [k, g] of Object.entries({ box: boxGeo(), sphere: sphereGeo(8), cyl: cylGeo(14) })) this.meshes[k] = this.makeMesh(g);
@@ -562,6 +595,13 @@
       for (const s of world.solids) {
         if (s.obj) continue;
         const b = s.b;
+        if (s.team < 0) {
+          // out in the field: weathered stone in the map's rock colour, metal decks
+          const rock = mixc(look.rockCol || look.rock, [0.5, 0.5, 0.5], 0.35);
+          if (s.mat === 'deck') list.push({ b, col: [0.4, 0.41, 0.44], mat: [0, 1.5, 0, 0.5] });
+          else list.push({ b, col: mixc(rock, look.mid, 0.15), mat: [0, 3, 0, 0.1] });
+          continue;
+        }
         const team = JF.TEAMS[s.team].rgb;
         let col = [0.5, 0.52, 0.55], panel = 2, stripe = 0, spec = 0.4;
         if (s.mat === 'roof') { col = [0.36, 0.38, 0.42]; }
@@ -628,6 +668,8 @@
         const x = JF.AREA_MIN - 150 + rng() * (JF.AREA_MAX - JF.AREA_MIN + 300), z = JF.AREA_MIN - 150 + rng() * (JF.AREA_MAX - JF.AREA_MIN + 300);
         // keep clear of the bases
         if (world.bases.some(b => Math.hypot(b.o.x - x, b.o.z - z) < 70)) continue;
+        if (t.waterH != null && t.height(x, z) < t.waterH + 1) continue;
+        if (t.lavaH != null && t.height(x, z) < t.lavaH + 1) continue;
         const nr = t.normal(x, z);
         const steep = 1 - nr[1];
         if (rng() > 0.25 + steep * 3) continue; // more on slopes
@@ -760,7 +802,8 @@
       gl.uniform3fv(T.u.uLow, look.low); gl.uniform3fv(T.u.uMid, look.mid); gl.uniform3fv(T.u.uHigh, look.high);
       gl.uniform3fv(T.u.uRock, look.rock); gl.uniform3fv(T.u.uSnow, look.snow);
       gl.uniform1f(T.u.uSnowLine, look.snowLine); gl.uniform1f(T.u.uHmin, this.hmin); gl.uniform1f(T.u.uHmax, this.hmax);
-      gl.uniform1f(T.u.uLava, look.lava ? 1 : 0);
+      gl.uniform1f(T.u.uLava, this.world.terrain.lavaH != null ? 1 : 0);
+      gl.uniform1f(T.u.uLavaH, this.world.terrain.lavaH || 0);
       gl.bindVertexArray(this.terrain.vao); gl.drawElements(gl.TRIANGLES, this.terrain.count, gl.UNSIGNED_INT, 0);
       gl.bindVertexArray(this.ring.vao); gl.drawElements(gl.TRIANGLES, this.ring.count, gl.UNSIGNED_INT, 0);
 
@@ -777,6 +820,17 @@
       gl.uniform1f(S.u.uClouds, look.clouds);
       gl.disable(gl.CULL_FACE);
       gl.bindVertexArray(this.triVao); gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+      // ----- water -----
+      if (this.world.terrain.waterH != null) {
+        const Wp = this.progW;
+        gl.useProgram(Wp.p); setCommon(Wp);
+        gl.uniformMatrix4fv(Wp.u.uVP, false, vp); gl.uniform1f(Wp.u.uH, this.world.terrain.waterH);
+        gl.uniform3fv(Wp.u.uWater, look.water || [0.1, 0.2, 0.25]);
+        gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false); gl.disable(gl.CULL_FACE);
+        gl.bindVertexArray(this.waterVao); gl.drawArrays(gl.TRIANGLES, 0, 6);
+        gl.depthMask(true); gl.disable(gl.BLEND);
+      }
 
       // ----- see-through things (shields) -----
       if (scene.glass && scene.glass.length) {

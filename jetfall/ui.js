@@ -90,10 +90,10 @@
     let link;
     try {
       link = Link.connect();
-      const settings = { map: opts.map, bots: opts.bots, skill: opts.skill, caps: opts.caps, minutes: opts.minutes };
-      const r = await link.host(opts.name, { public: opts.public, map: opts.map, v: Net.PROTO, n: 1 });
+      const settings = { map: opts.map, bots: opts.bots, skill: opts.skill, caps: opts.caps, minutes: opts.minutes, rotate: opts.rotate !== false };
+      const r = await link.host(opts.name, { public: opts.public, map: opts.map, v: Net.PROTO, n: 1 }, opts.room);
       S = startLocal(settings, { room: r.room });
-      S.link = link; S.room = r.room; S.public = opts.public; S.roomName = opts.name;
+      S.link = link; S.room = r.room; S.public = opts.public; S.roomName = opts.name; S.fixed = !!opts.room;
       link.on('data', (id, bytes) => S && S.host && S.host.receive(id, bytes));
       link.on('left', id => S && S.host && S.host.leave(id));
       link.on('closed', () => { if (S && S.link === link) toast('Lost the connection to the game server. Friends can no longer join, but you can keep playing.'); });
@@ -105,11 +105,27 @@
       history.replaceState(null, '', '#' + r.room);
     } catch (e) {
       if (link) link.close();
+      if (opts.room && e.why === 'taken') return 'taken';
       setMenuMsg(e.message || String(e));
     }
   }
 
-  async function join(code) {
+  // The always-there servers: the relay keeps their names and codes. Picking an empty one makes this browser its host
+  // (with the slot's map and bots); if someone got there first, we join them instead.
+  const fixedSlots = new Map(); // code -> { name, info } from the last server list
+  function slotSettings(code) {
+    const sl = fixedSlots.get(code) || { name: code, info: {} }, i = sl.info || {};
+    const int = (v, lo, hi, d) => (Number.isInteger(v) ? Math.max(lo, Math.min(hi, v)) : d);
+    return { name: JF.cleanName(sl.name), map: JF.has(JF.MAPS, i.map) ? i.map : 'highland', bots: int(i.bots, 0, 8, 3), skill: typeof i.skill === 'number' && i.skill >= 0 && i.skill <= 1 ? i.skill : 0.5,
+      caps: 5, minutes: 20, public: true, rotate: i.rotate === true, room: code };
+  }
+  async function playFixed(code) {
+    setMenuMsg('Starting ' + (fixedSlots.has(code) ? fixedSlots.get(code).name : code) + '…');
+    const r = await hostOnline(slotSettings(code));
+    if (r === 'taken') return join(code, true);
+  }
+
+  async function join(code, noClaim) {
     if (!renderer) return;
     code = String(code || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
     if (code.length !== 6) { setMenuMsg('A game code is 6 letters and numbers.'); return; }
@@ -119,10 +135,15 @@
     try {
       link = Link.connect();
       const r = await link.join(code, prefs.name || 'player');
-      const s = { isHost: false, online: true, link, room: r.room };
+      const s = { isHost: false, online: true, link, room: r.room, fixed: fixedSlots.has(r.room) };
       s.client = mkClient((bytes, reliable) => link.send(0, bytes, reliable));
       link.on('data', (from, bytes) => { if (from === 0) s.client.receive(bytes); });
-      link.on('closed', why => { if (S === s) leave(why === 'kicked' ? 'The host removed you from the game.' : why === 'host-left' ? 'The host left, so the game ended.' : 'Lost the connection to the game.'); });
+      link.on('closed', why => {
+        if (S !== s) return;
+        // on an always-there server the game goes on: someone still here picks it back up (the first to claim hosts, the rest join)
+        if (why === 'host-left' && s.fixed) { leave('The host left. Picking the game back up…'); setTimeout(() => { if (!S) playFixed(s.room); }, 200 + Math.random() * 1200); return; }
+        leave(why === 'kicked' ? 'The host removed you from the game.' : why === 'host-left' ? 'The host left, so the game ended.' : 'Lost the connection to the game.');
+      });
       S = s;
       s.client.hello();
       // the welcome must come back over the relay or WebRTC
@@ -142,6 +163,7 @@
     } catch (e) {
       if (link) link.close();
       S = null;
+      if (e.why === 'idle' && !noClaim) return playFixed(code);
       setMenuMsg(e.message || String(e));
     }
   }
@@ -213,12 +235,16 @@
     let link;
     try {
       link = Link.connect();
-      const rooms = (await link.list()).filter(r => r && r.info && typeof r.info === 'object' && r.info.v === Net.PROTO);
-      const people = r => (Number.isInteger(r.info.n) && r.info.n > 0 ? Math.min(r.info.n, 64) : (r.n | 0) + 1);
-      rooms.sort((a, b) => people(b) - people(a) || String(a.name).localeCompare(String(b.name)));
+      const all = (await link.list()).filter(r => r && r.info && typeof r.info === 'object' && typeof r.room === 'string');
+      for (const r of all) if (r.fixed === true) fixedSlots.set(r.room, { name: String(r.name || r.room), info: r.info });
+      const idle = r => r.fixed === true && r.info.idle === true;
+      const rooms = all.filter(r => idle(r) || r.info.v === Net.PROTO);
+      const people = r => (idle(r) ? 0 : Number.isInteger(r.info.n) && r.info.n > 0 ? Math.min(r.info.n, 64) : (r.n | 0) + 1);
+      rooms.sort((a, b) => people(b) - people(a) || (b.fixed === true) - (a.fixed === true));
       box.innerHTML = '';
       roomsShown = true;
-      $('roomsNote').textContent = rooms.length ? rooms.length + (rooms.length === 1 ? ' up' : ' up') : '';
+      const live = rooms.filter(r => !idle(r)).length;
+      $('roomsNote').textContent = live ? live + ' with people' : '';
       if (!rooms.length) box.innerHTML = '<span class="dim">No servers up right now. Start one: your browser runs it and bots play until people join. Or practice offline.</span>';
       for (const r of rooms) {
         const div = document.createElement('div'); div.className = 'room';
@@ -226,9 +252,9 @@
         const n = people(r), bots = Number.isInteger(r.info.bots) ? Math.max(0, Math.min(r.info.bots, 64)) : 0;
         const sc = Array.isArray(r.info.score) ? (r.info.score[0] | 0) + ':' + (r.info.score[1] | 0) : '';
         const cell = (cls, text) => { const c = document.createElement('span'); c.className = cls; c.textContent = text; return c; };
-        const btn = document.createElement('button'); btn.textContent = 'Join'; btn.className = 'primary';
-        div.append(cell('nm', String(r.name || 'server').slice(0, 24)), cell('mp', map + (sc ? ' ' + sc : '')), cell('pl', n + (bots ? ' + ' + bots + ' bots' : '')), btn);
-        div.onclick = () => { if (needName()) join(r.room); };
+        const btn = document.createElement('button'); btn.textContent = idle(r) ? 'Play' : 'Join'; btn.className = 'primary';
+        div.append(cell('nm', String(r.name || 'server').slice(0, 24)), cell('mp', map + (sc && !idle(r) ? ' ' + sc : '')), cell('pl', idle(r) ? (bots ? bots + ' bots a side' : 'empty') : n + (bots ? ' + ' + bots + ' bots' : '')), btn);
+        div.onclick = () => { if (!needName()) return; if (idle(r)) playFixed(r.room); else join(r.room); };
         box.appendChild(div);
       }
     } catch (e) {
@@ -699,7 +725,7 @@
           hitFlash.set(e.id, now());
           const at = pAt(e.id);
           if (at && e.id !== myId) sparks(at, e.d);
-          if (e.by === myId) { hitT = now(); hitKill = false; Audio.play('hit'); }
+          if (e.by === myId) { hitT = now(); hitKill = false; Audio.play('hit', null, 0, e.d); myPlayerHit.set(e.id, now()); }
           if (e.id === myId) {
             hurtFlash = Math.min(0.6, hurtFlash + e.d / 60);
             const from = pAt(e.by);
@@ -717,7 +743,7 @@
         }
         case 'shield': { const at = pAt(e.id); if (at) { Audio.play('shield', at); shieldFlash.set(e.id, now()); } break; }
         case 'kill': {
-          const wname = e.w === 'fall' ? 'fell' : e.w === 'tbolt' ? 'turret' : e.w === 'suicide' ? 'gave up' : e.w === 'team' ? 'switched team' : e.w === 'stuck' ? 'got stuck' : JF.has(JF.PROJ, e.w) ? JF.PROJ[e.w].name : e.w === 'laser-head' ? 'Laser Rifle (head)' : String(e.w);
+          const wname = e.w === 'fall' ? 'fell' : e.w === 'lava' ? 'burned in the lava' : e.w === 'tbolt' ? 'turret' : e.w === 'suicide' ? 'gave up' : e.w === 'team' ? 'switched team' : e.w === 'stuck' ? 'got stuck' : JF.has(JF.PROJ, e.w) ? JF.PROJ[e.w].name : e.w === 'laser-head' ? 'Laser Rifle (head)' : String(e.w);
           if (e.by >= 0) addFeed(teamSpan(e.by, nameOf(e.by)) + ' <span class="dim">[' + esc(wname) + ']</span> ' + teamSpan(e.id, nameOf(e.id)));
           else addFeed(teamSpan(e.id, nameOf(e.id)) + ' <span class="dim">' + esc(wname === 'turret' ? 'was shot by a turret' : wname) + '</span>');
           deathBurst(e.x, e.y, e.z, Math.max(0, teamOf(e.id)));
@@ -781,7 +807,7 @@
       }
     }
   }
-  const shieldFlash = new Map(), hitFlash = new Map(), objHit = new Map(), myObjHit = new Map();
+  const shieldFlash = new Map(), hitFlash = new Map(), objHit = new Map(), myObjHit = new Map(), myPlayerHit = new Map();
 
   // little bright bits flying off whatever got hit, more for a harder hit
   function sparks(at, dmg) {
@@ -899,7 +925,42 @@
     a.speed = a.speed * 0.8 + (dt > 0 ? d / dt : 0) * 0.2;
     a.phase += d * 1.6;
     a.last = p.pos.slice();
+    // a splash going into the water
+    const wh = client().world.terrain.waterH;
+    if (wh != null) {
+      const under = p.pos[1] < wh;
+      if (under && !a.under && a.seen) {
+        for (let i = 0; i < 14; i++) puff(p.pos[0], wh + 0.2, p.pos[2], { life: rnd(0.5, 1), s0: 0.4, s1: 1.6, c: [0.85, 0.9, 0.95], kind: 1, blend: 1, a: 0.6, v: [rnd(-4, 4), rnd(4, 10), rnd(-4, 4)], g: 14, drag: 1 });
+        Audio.play('splash', [p.pos[0], wh, p.pos[2]]);
+      }
+      if (under && a.speed > 3 && Math.random() < 0.3) puff(p.pos[0], wh + 0.1, p.pos[2], { life: 0.8, s0: 0.3, s1: 1.2, c: [0.8, 0.85, 0.9], kind: 1, blend: 1, a: 0.35, v: [0, 1, 0] });
+      a.under = under;
+    }
+    a.seen = true;
     return a;
+  }
+
+  // weather around the camera: rain, snow, ash or dust, from the map's look
+  let weatherPts = null;
+  function weather(eye, dt, time) {
+    const kind = client().world.def.weather;
+    if (!kind || prefs.quality === 'low') return;
+    const n = kind === 'rain' ? 500 : kind === 'snow' ? 450 : kind === 'ash' ? 300 : 120, R = 45;
+    if (!weatherPts || weatherPts.kind !== kind) {
+      weatherPts = { kind, p: [] };
+      for (let i = 0; i < n; i++) weatherPts.p.push([eye[0] + rnd(-R, R), eye[1] + rnd(-R, R), eye[2] + rnd(-R, R), Math.random()]);
+    }
+    const fall = kind === 'rain' ? 26 : kind === 'snow' ? 2.2 : kind === 'ash' ? 1.4 : 0.4;
+    for (const q of weatherPts.p) {
+      q[1] -= fall * dt * (0.8 + q[3] * 0.4);
+      q[0] += Math.sin(time * 0.5 + q[3] * 9) * dt * (kind === 'dust' ? 3 : 0.8) + (kind === 'dust' ? 4 * dt : 0);
+      // keep the cloud of drops centred on the camera
+      for (let k = 0; k < 3; k++) { if (q[k] < eye[k] - R) q[k] += 2 * R; else if (q[k] > eye[k] + R) q[k] -= 2 * R; }
+      if (kind === 'rain') beams.beam(q[0], q[1], q[2], 0.012, q[0] + 0.3, q[1] + 1.2, q[2], 0.012, 0.35, 0.4, 0.45, 0.5);
+      else if (kind === 'snow') parts.part(q[0], q[1], q[2], 0.07, 1.6, 1.65, 1.7, 0.8, 0);
+      else if (kind === 'ash') parts.part(q[0], q[1], q[2], 0.06, q[3] < 0.15 ? 3 : 0.25, q[3] < 0.15 ? 0.9 : 0.22, q[3] < 0.15 ? 0.2 : 0.22, 0.7, 0);
+      else parts.part(q[0], q[1], q[2], 1.2, 0.75, 0.6, 0.45, 0.06, 1, 0, q[3] * 9, 1);
+    }
   }
 
   function buildScene(view, dt) {
@@ -992,6 +1053,7 @@
         if (tgt) beams.beam(q.pos[0], q.pos[1] + 1.4, q.pos[2], 0.08, tgt[0], tgt[1], tgt[2], 0.2, 0.4, 2.2, 0.8, 0.8 + 0.2 * Math.sin(time * 20));
       }
     }
+    weather(eye, dt, time);
     // dropped and home flags
     view.flags.forEach((f, i) => {
       if (f.state === 'carried') return;
@@ -1233,11 +1295,12 @@
       const pos = [p.pos[0], p.pos[1] + ARMORS[p.armor].h + 0.5, p.pos[2]];
       const d = dist(pos);
       // a small arrow over everyone you can see, in their team colour; names for friends, and for enemies under the crosshair
-      if (p.team === myTeam) { if (d < 500) list.push({ pos, cls: 'mk mate', color: TEAMS[p.team].color, text: nameOf(p.id) + (p.hasFlag ? ' ⚑' : ''), tri: true }); }
+      if (p.team === myTeam) { if (d < 500) list.push({ pos, cls: 'mk mate', color: TEAMS[p.team].color, text: nameOf(p.id) + (p.hasFlag ? ' ⚑' : ''), tri: true, bar: d < 120 && p.hpF < 0.99 ? p.hpF : null }); }
       else if (d < 400 && !w.blocked(camPos, [p.pos[0], p.pos[1] + 1, p.pos[2]])) {
         const sp = renderer.project(pos);
         const aimed = sp && Math.hypot(sp.x - W / 2, sp.y - H / 2) < 80;
-        list.push({ pos, cls: 'mk foe', color: TEAMS[p.team].color, text: aimed ? nameOf(p.id) + ' ' + Math.round(d) + 'm' : '', tri: true });
+        const hitRecently = myPlayerHit.has(p.id) && now() - myPlayerHit.get(p.id) < 3;
+        list.push({ pos, cls: 'mk foe', color: TEAMS[p.team].color, text: aimed || hitRecently ? nameOf(p.id) + ' ' + Math.round(d) + 'm' : '', tri: true, bar: aimed || hitRecently ? p.hpF : null });
       }
     }
     // base things near the crosshair or that I just hit: name and health
@@ -1280,7 +1343,7 @@
       el.className = m.cls;
       el.style.left = x.toFixed(0) + 'px'; el.style.top = y.toFixed(0) + 'px';
       el.style.color = m.color || '';
-      const html = (m.tri ? '<div class="tri"></div>' : '') + (m.cls.includes('flag') || m.cls === 'mk' ? '<div class="ic"></div><br>' : '') + esc(m.text) + (m.bar != null ? '<div class="hb"><i style="width:' + Math.round(m.bar * 100) + '%"></i></div>' : '');
+      const html = (m.tri ? '<div class="tri"></div>' : '') + (m.cls.includes('flag') || m.cls === 'mk' ? '<div class="ic"></div><br>' : '') + esc(m.text) + (m.bar != null ? '<div class="hb"><i style="width:' + Math.round(m.bar * 100) + '%;background:hsl(' + Math.round(m.bar * 120) + ',85%,52%)"></i></div>' : '');
       if (el._h !== html) { el._h = html; el.innerHTML = html; }
     });
   }
