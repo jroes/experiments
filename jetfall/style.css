@@ -34,9 +34,23 @@ a { color: var(--accent); }
 .join input { flex: 1; min-width: 0; text-transform: uppercase; letter-spacing: 3px; }
 .msg { min-height: 20px; margin: 10px 0 0; color: var(--warn); }
 #menu h3 { margin: 18px 0 6px; font-size: 14px; color: var(--dim); display: flex; gap: 10px; align-items: center; }
-.rooms { display: flex; flex-direction: column; gap: 6px; max-height: 200px; overflow-y: auto; }
-.room { display: flex; gap: 10px; align-items: center; justify-content: space-between; border: 1px solid var(--line); border-radius: 4px; padding: 6px 10px; }
-.room .info { color: var(--dim); font-size: 12px; }
+.rooms { display: flex; flex-direction: column; gap: 4px; max-height: 260px; min-height: 60px; overflow-y: auto; }
+.srv-head, .room { display: grid; grid-template-columns: 1fr 9em 7.5em 4.5em; gap: 8px; align-items: center; }
+.srv-head { font-size: 11px; color: var(--dim); padding: 0 10px; margin-bottom: 2px; }
+.room { border: 1px solid var(--line); border-radius: 4px; padding: 5px 10px; cursor: pointer; background: rgba(16, 27, 48, 0.6); }
+.room:hover { border-color: var(--accent); }
+.room .nm { font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.room .mp, .room .pl { color: var(--dim); font-size: 12px; }
+.room button { padding: 3px 8px; }
+#menu .go { flex-direction: row; margin-top: 12px; }
+#menu .go > button { flex: 1; }
+#menu .join { margin-top: 8px; }
+@media (max-width: 520px) {
+  .srv-head { display: none; }
+  .room { grid-template-columns: 1fr 4.5em; }
+  .room .mp, .room .pl { grid-column: 1; font-size: 11px; }
+  .room button { grid-column: 2; grid-row: 1 / span 3; }
+}
 .links { margin-top: 16px; color: var(--dim); }
 
 dialog { background: var(--panel); color: var(--text); border: 1px solid var(--accent); border-radius: 8px;
@@ -183,3 +197,16 @@ body.touch #chatlog { bottom: 250px; }
   body.touch #chatlog { bottom: auto; top: calc(140px + env(safe-area-inset-top)); }
   dialog { padding: 12px; } dialog h2 { margin-bottom: 6px; } .opt { padding: 5px 8px; flex-basis: 150px; }
 }
+/* quick chat menu */
+#vgs { left: calc(14px + env(safe-area-inset-left)); top: 18%; background: rgba(5, 10, 20, 0.75); border: 1px solid rgba(94, 224, 176, 0.5); border-radius: 6px;
+  padding: 8px 12px; font-size: 13px; pointer-events: auto; min-width: 200px; }
+#vgs b { display: block; color: var(--accent); margin-bottom: 4px; }
+#vgs div { padding: 2px 0; cursor: pointer; font-weight: normal; }
+#vgs i { display: inline-block; min-width: 22px; font-style: normal; color: #ffe08a; font-weight: bold; }
+@media (pointer: coarse) { #vgs div { padding: 6px 0; } }
+/* health of base things */
+.mk.obj { font-weight: normal; }
+.mk .hb { width: 60px; height: 4px; margin: 2px auto 0; background: rgba(0, 0, 0, 0.6); border-radius: 2px; overflow: hidden; }
+.mk .hb i { display: block; height: 100%; background: currentColor; }
+/* team arrow over players */
+.mk .tri { width: 0; height: 0; margin: 0 auto 1px; border-left: 6px solid transparent; border-right: 6px solid transparent; border-top: 8px solid currentColor; filter: drop-shadow(0 0 2px #000); }

@@ -22,7 +22,7 @@ key/value store. Live at https://jroes.github.io/experiments/. Written for whoev
 | `hollowmere/`, `gullrock/`, `starsweeper/` | Three adventures. Each is `game.js` (plain data: rooms, items, handlers) plus a page; the engine is in `shared/` |
 | `shared/` | `store.js` (KV client), `config.js` (`KV_URL`), `qrcode.js` (vendored, MIT), p2p and lobby code. `adventure.js` (engine, no DOM), `adventure-art.js` (EGA pixel helpers), `hd2d.js`, `hd2d-gl.js`, `hd2d-post.js`, `hd2d-worker.js` (HD-2D pictures, below), `adventure-ui.js`, `arcade.css` (look shared by Tank Wars and the adventures) |
 | `j/` | Invite landing page: OpenGraph tags for link previews, then hands `#<code>` to the game |
-| `jetfall/` | 3D jetpack capture the flag (Tribes-like). `sim.js` (rules and movement, no DOM), `bots.js`, `net.js` (packets, host, client prediction), `host-worker.js`, `link.js` (relay + WebRTC), `render.js` (WebGL2), `models.js`, `audio.js`, `ui.js` |
+| `jetfall/` | 3D jetpack capture the flag (Tribes-like). `sim.js` (rules and movement, no DOM), `bots.js`, `vgs.js` (quick chat lines), `net.js` (packets, host, client prediction), `host-worker.js`, `link.js` (relay + WebRTC), `render.js` (WebGL2), `models.js`, `audio.js`, `ui.js` |
 | `elf-punch/` | Rust server: `/kv` store (`src/store.rs`), the lab for server-authoritative games (`src/lab/`), the Jetfall relay (`src/relay.rs`), the original elf toy (`src/elf.rs`). See its README |
 | `warptraders/universe/` | Client for the shared-universe Warp Traders (talks to `/lab/warptraders`) |
 | `tests/` | `node --test` suites. `fake-kv.js` is an in-memory stand-in for the server |
@@ -135,6 +135,9 @@ host's copy is hidden. The host decides every hit.
   routes through the bunker doors, steers by the velocity it wants (jets to turn at speed) and leads its shots with `leadAim`. Teams get the same mix of jobs
   by slot. A test plays every map and wants kills and a flag taken. Skill scales how they fight, not how they move: how far they notice you, reaction time,
   aim wander, how well they lead, aiming at the feet, pauses between shots. A duel test against a dodging dummy keeps Easy and Normal well under Brutal.
+- The menu opens on the **server list** (refreshed every 5 s from the relay's room list); "Start a server" hosts a listed game by default, "Practice offline"
+  runs one with no network. Quick chat (V, then letters; V G S is "Shazbot!") sends a key from `vgs.js`, never text: the host looks it up, so it cannot be used to say anything else.
+  It is read out loud with the browser's speech voices (a setting).
 - The renderer is raw WebGL2 like the HD-2D one: the land is one mesh with the physics' own triangles, everything solid is an instanced box, sphere or cylinder,
   a sun shadow map around the camera, particles and beams as instanced quads. `?relay=ws://127.0.0.1:8135/jetfall` points a page at a local server;
   `JFGame.cam = { follow: id }` in the console follows a player (handy for screenshots). `tools/jetfall-og.js` makes the preview picture.

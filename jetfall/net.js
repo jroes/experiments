@@ -12,6 +12,7 @@
   'use strict';
   const JF = root.JF || require('./sim.js');
   const Bots = root.JFBots || require('./bots.js');
+  const VGS = root.JFVGS || require('./vgs.js');
   const { B, TICK, ARMORS, ARMOR_KEYS, WEAPONS, WEAPON_KEYS, PACK_KEYS, PROJ, PROJ_BY_CODE, clamp, has } = JF;
 
   const PROTO = 1;
@@ -358,9 +359,18 @@
       if (m.t === 'loadout') { const lo = JF.cleanLoadout(m.loadout); if (lo) p.loadout = lo; }
       else if (m.t === 'team') { if ((m.team === 0 || m.team === 1) && m.team !== p.team) { this.dropBotFor(m.team); this.world.setTeam(p.id, m.team); this.fillBots(); this.broadcastRoster(); } }
       else if (m.t === 'chat') {
+        const last = this.chatT.has(peerId) ? this.chatT.get(peerId) : -Infinity;
+        if (this.world.time - last < 0.6) return;
+        // quick chat: only lines from the list, by key
+        if (m.vgs != null) {
+          const ln = VGS.line(m.vgs);
+          if (!ln) return;
+          this.chatT.set(peerId, this.world.time);
+          this.world.ev({ k: 'chat', id: p.id, name: p.name, text: ln.text, team: ln.team ? p.team : null, vgs: m.vgs });
+          return;
+        }
         const text = String(m.text == null ? '' : m.text).replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 140);
-        const last = this.chatT.get(peerId) || 0;
-        if (!text || this.world.time - last < 0.6) return;
+        if (!text) return;
         this.chatT.set(peerId, this.world.time);
         this.world.ev({ k: 'chat', id: p.id, name: p.name, text, team: m.team ? p.team : null });
       } else if (m.t === 'kill') { if (p.alive) this.world.kill(p, null, 'suicide'); }

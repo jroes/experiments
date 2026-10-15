@@ -36,9 +36,9 @@
     blaster: { name: 'Blaster',          kind: 'proj', code: 1, speed: 160, grav: 0,   dmg: 13,  r: 0,   knock: 2,  cd: 0.32, ammo: 0,   energy: 6, inherit: 0.4, life: 2.5, blurb: 'Uses energy, never ammo. Weak but always there.' },
     chain:   { name: 'Chaingun',         kind: 'proj', code: 2, speed: 380, grav: 0,   dmg: 5,   r: 0,   knock: 1,  cd: 0.085, ammo: 200, spin: 0.35, spread: 0.022, inherit: 0.5, life: 1.0, quiet: true, blurb: 'Spins up, then a stream of bullets. Good up close and on flag runners.' },
     disc:    { name: 'Disc Launcher',    kind: 'proj', code: 3, speed: 68,  grav: 0,   dmg: 48,  r: 7.5, knock: 26, cd: 1.15, ammo: 15,  inherit: 0.5, life: 6, blurb: 'Slow disc, big blast, big shove. Aim at the feet, or under yourself to fly.' },
-    gl:      { name: 'Grenade Launcher', kind: 'proj', code: 4, speed: 52,  grav: 1,   dmg: 42,  r: 8,   knock: 20, cd: 0.85, ammo: 12,  inherit: 0.8, life: 2.2, bounce: 0.45, fuse: true, blurb: 'Lobs grenades that bounce, then blow after two seconds. They go off on contact with a player.' },
+    gl:      { name: 'Grenade Launcher', kind: 'proj', code: 4, speed: 52,  grav: 1,   dmg: 42,  r: 8,   knock: 20, cd: 0.85, ammo: 12,  inherit: 1, life: 2.2, bounce: 0.45, fuse: true, blurb: 'Lobs grenades that bounce, then blow after two seconds. They go off on contact with a player.' },
     plasma:  { name: 'Plasma Rifle',     kind: 'proj', code: 5, speed: 62,  grav: 0,   dmg: 40,  r: 3.5, knock: 6,  cd: 0.6, ammo: 30,  inherit: 0.5, life: 5, blurb: 'Hot bolt, small splash, hits hard.' },
-    mortar:  { name: 'Mortar',           kind: 'proj', code: 6, speed: 48,  grav: 1,   dmg: 110, r: 18,  knock: 34, cd: 2.0, ammo: 10,  inherit: 0.8, life: 8, arm: 0.25, blurb: 'Heavy armor only. Long arc, huge blast. Wrecks generators.' },
+    mortar:  { name: 'Mortar',           kind: 'proj', code: 6, speed: 48,  grav: 1,   dmg: 110, r: 18,  knock: 34, cd: 2.0, ammo: 10,  inherit: 1, life: 8, arm: 0.25, blurb: 'Heavy armor only. Long arc, huge blast. Wrecks generators.' },
     laser:   { name: 'Laser Rifle',      kind: 'hitscan', code: 7, range: 450, dmg: 18, perEnergy: 0.85, minEnergy: 25, cd: 1.4, ammo: 0, blurb: 'Light armor only. Instant hit, burns all your energy: the more you have, the harder it hits. Head shots count double.' },
     elf:     { name: 'ELF Projector',    kind: 'beam', code: 8, range: 42, drain: 55, dmg: 7, ammo: 0, cd: 0, blurb: 'Hold on someone to drain their energy and hurt them a little. Grounds jetters.' },
   };
@@ -47,7 +47,7 @@
   // projectiles that are not a carried weapon
   const EXTRA_PROJ = {
     hgren:  { name: 'Hand grenade', kind: 'proj', code: 9,  speed: 30, grav: 1, dmg: 45, r: 9, knock: 22, inherit: 1, life: 2.0, bounce: 0.4, fuse: true },
-    tbolt:  { name: 'Turret',       kind: 'proj', code: 10, speed: 75, grav: 0, dmg: 22, r: 3.5, knock: 8, inherit: 0, life: 4 },
+    tbolt:  { name: 'Turret',       kind: 'proj', code: 10, speed: 58, grav: 0, dmg: 20, r: 3.5, knock: 8, inherit: 0, life: 4 },
   };
   const PROJ = Object.assign({}, WEAPONS, EXTRA_PROJ);
   const PROJ_BY_CODE = {};
@@ -71,7 +71,7 @@
   const OBJ = {
     gen:     { name: 'Generator', hp: 700 },
     station: { name: 'Inventory station', hp: 320 },
-    turret:  { name: 'Turret', hp: 300, range: 140, cd: 1.6 },
+    turret:  { name: 'Turret', hp: 180, range: 110, cd: 2.2, turn: 1.3, lead: 0.85, spread: 0.02 },
     sensor:  { name: 'Sensor', hp: 260 },
   };
   const ONLINE_AT = 0.6; // a destroyed thing comes back when repaired to this fraction
@@ -376,6 +376,8 @@
           const b = placeBox(t.b, o);
           const obj = { id: this.objects.length, kind: t.kind, team, b, hp: OBJ[t.kind].hp, max: OBJ[t.kind].hp, up: true, yaw: o.face > 0 ? -Math.PI / 2 : Math.PI / 2, pitch: 0, cd: 0, target: -1, repairT: 0 };
           obj.c = [(b[0] + b[3]) / 2, (b[1] + b[4]) / 2, (b[2] + b[5]) / 2];
+          // which way (world z) the wall behind a station is, for drawing its frame
+          if (t.kind === 'station') obj.wall = Math.sign((t.b[2] + t.b[5]) / 2) * o.face;
           this.objects.push(obj);
           this.solids.push({ b, mat: t.kind, team, obj });
           for (let i = 0; i < 3; i++) { bb[i] = Math.min(bb[i], b[i]); bb[i + 3] = Math.max(bb[i + 3], b[i + 3]); }
@@ -682,9 +684,13 @@
       if (q.spawnProt > 0 && by && by.id !== q.id) dmg *= 0.25;
       // shove
       if (knock && dir) {
-        const l = len3(dir[0], dir[1], dir[2]) || 1, k = knock / ARMORS[q.armor].mass;
-        q.vel[0] += dir[0] / l * k; q.vel[1] += dir[1] / l * k; q.vel[2] += dir[2] / l * k;
-        q.ground = false; q.kick = 0.2;
+        // a blast always lifts you a little, and you stay off your feet for a moment, so ground friction does not eat the shove
+        let l = len3(dir[0], dir[1], dir[2]) || 1;
+        let dx = dir[0] / l, dy = dir[1] / l, dz = dir[2] / l;
+        if (knock > 4 && dy < 0.35) { dy = 0.35; l = len3(dx, dy, dz); dx /= l; dy /= l; dz /= l; }
+        const k = knock / ARMORS[q.armor].mass;
+        q.vel[0] += dx * k; q.vel[1] += dy * k; q.vel[2] += dz * k;
+        if (knock > 4) { q.ground = false; q.kick = 0.4; }
       }
       if (q.shieldOn && q.energy > 0) {
         const absorb = Math.min(dmg, q.energy * 1.4);
@@ -782,6 +788,7 @@
       if (o.team === team || dmg <= 0) return;
       const was = o.hp;
       o.hp = Math.max(0, o.hp - dmg);
+      if (was > 0) this.ev({ k: 'ohit', id: o.id, by: by ? by.id : -1, d: Math.round(dmg) });
       if (was > 0 && o.hp <= 0 && o.up) {
         o.up = false;
         if (by) by.score += o.kind === 'gen' ? 3 : 1;
@@ -893,14 +900,24 @@
         }
         if (!best) continue;
         o.target = best.id;
-        const W = PROJ.tbolt;
-        const aim = leadAim(head, [best.pos[0], best.pos[1] + 1, best.pos[2]], best.vel, W.speed, 0);
-        o.yaw = Math.atan2(-aim[0], -aim[2]);
-        o.pitch = Math.asin(clamp(aim[1], -1, 1));
-        if (o.cd <= 0) {
-          o.cd = OBJ.turret.cd;
-          const muzzle = [head[0] + aim[0] * 1.2, head[1] + aim[1] * 1.2, head[2] + aim[2] * 1.2];
-          this.proj.push({ id: this.nextProj++ & 0xffff, kind: 'tbolt', owner: -1 - o.id, team: o.team, pos: muzzle, vel: [aim[0] * W.speed, aim[1] * W.speed, aim[2] * W.speed], age: 0, shot: 0, prev: muzzle.slice() });
+        // turrets turn slowly, lead only part of the way, and scatter a little: move and you can beat them
+        const T = OBJ.turret, W = PROJ.tbolt;
+        const v = best.vel;
+        const aim = leadAim(head, [best.pos[0], best.pos[1] + 1, best.pos[2]], [v[0] * T.lead, v[1] * T.lead, v[2] * T.lead], W.speed, 0);
+        const wantYaw = Math.atan2(-aim[0], -aim[2]), wantPitch = Math.asin(clamp(aim[1], -1, 1));
+        let dyaw = (wantYaw - o.yaw) % (Math.PI * 2);
+        if (dyaw > Math.PI) dyaw -= Math.PI * 2;
+        if (dyaw < -Math.PI) dyaw += Math.PI * 2;
+        const step = T.turn * dt;
+        o.yaw += clamp(dyaw, -step, step);
+        o.pitch += clamp(wantPitch - o.pitch, -step, step);
+        if (o.cd <= 0 && Math.abs(dyaw) < 0.08 && Math.abs(wantPitch - o.pitch) < 0.08) {
+          o.cd = T.cd;
+          const sy = o.yaw + (this.rng() - 0.5) * 2 * T.spread, sp = o.pitch + (this.rng() - 0.5) * 2 * T.spread;
+          const cp = Math.cos(sp);
+          const dir = [-Math.sin(sy) * cp, Math.sin(sp), -Math.cos(sy) * cp];
+          const muzzle = [head[0] + dir[0] * 1.2, head[1] + dir[1] * 1.2, head[2] + dir[2] * 1.2];
+          this.proj.push({ id: this.nextProj++ & 0xffff, kind: 'tbolt', owner: -1 - o.id, team: o.team, pos: muzzle, vel: [dir[0] * W.speed, dir[1] * W.speed, dir[2] * W.speed], age: 0, shot: 0, prev: muzzle.slice() });
           this.ev({ k: 'tfire', id: o.id });
         }
       }

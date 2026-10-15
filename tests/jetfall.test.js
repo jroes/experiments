@@ -433,3 +433,66 @@ test('bot skill matters: easy bots barely hurt a dodging player, brutal ones do'
   assert.ok(easy * 3 < brutal, 'easy ' + easy + ' brutal ' + brutal);
   assert.ok(normal < brutal * 0.7, 'normal ' + normal + ' brutal ' + brutal);
 });
+
+test('quick chat: only lines from the list go out, team lines only to the team', () => {
+  const VGS = require('../jetfall/vgs.js');
+  assert.deepEqual(VGS.line('GS'), { text: 'Shazbot!', team: false });
+  for (const bad of ['', 'G', 'GSX', 'Gs', 'ZZ', '__', 'Gc', 'G_', null, 5, { toString: () => 'GS' }, 'constructor', 'Gconstructor']) assert.equal(VGS.line(bad), null, String(bad));
+  const sent = [];
+  const h = new Net.Host({ send: (peer, bytes) => sent.push({ peer, bytes }), settings: { map: 'highland', bots: 0 } });
+  h.receive(1, Net.encodeCtrl({ t: 'hello', v: Net.PROTO, name: 'a', team: 0 }));
+  h.receive(2, Net.encodeCtrl({ t: 'hello', v: Net.PROTO, name: 'b', team: 1 }));
+  const chats = () => h.world.events.filter(e => e.k === 'chat');
+  h.receive(1, Net.encodeCtrl({ t: 'chat', vgs: 'GS' }));
+  for (let i = 0; i < 60; i++) h.tickOnce();
+  h.receive(1, Net.encodeCtrl({ t: 'chat', vgs: 'XX', text: 'made up' }));
+  for (let i = 0; i < 60; i++) h.tickOnce();
+  h.receive(1, Net.encodeCtrl({ t: 'chat', vgs: 'FG' }));
+  assert.deepEqual(chats().map(e => [e.text, e.team, e.vgs]), [['Shazbot!', null, 'GS'], ['I have the enemy flag!', 0, 'FG']]);
+  // the team line does not reach the other team's snapshot
+  const pa = h.peers.get(1).pid, pb = h.peers.get(2).pid;
+  const evs = pid => { const r = new Net.Reader(Net.encodeSnap(h.world, pid, 0, 0)); r.u8(); return Net.decodeSnap(r).events.filter(e => e.k === 'chat').map(e => e.text); };
+  assert.deepEqual(evs(pa), ['Shazbot!', 'I have the enemy flag!']);
+  assert.deepEqual(evs(pb), ['Shazbot!']);
+});
+
+test('a disc hit lifts you off your feet and you keep flying for a moment', () => {
+  const w = new JF.World({ map: 'dunes' });
+  const a = spawned(w, 1, { team: 0 }), b = spawned(w, 2, { team: 1 });
+  const x = 1024, z = 1024;
+  b.pos = [x, w.terrain.height(x, z), z]; b.vel = [0, 0, 0]; b.ground = true; b.spawnProt = 0;
+  // a blast level with the chest, from the side: it still lifts
+  w.splash([x + 1, b.pos[1] + 1.2, z], JF.WEAPONS.disc, { owner: a.id, team: 0, kind: 'disc' }, b);
+  assert.ok(b.vel[1] > 5, 'lifted ' + b.vel[1]);
+  const x0 = b.pos[0];
+  for (let i = 0; i < 30; i++) w.applyInput(b, idle());
+  assert.ok(Math.abs(b.pos[0] - x0) > 6, 'moved ' + (b.pos[0] - x0));
+});
+
+test('grenades keep all of your speed when you fire on the move', () => {
+  const w = new JF.World({ map: 'dunes' });
+  const a = spawned(w, 1, { team: 0 });
+  JF.equip(a, { armor: 'light', weapons: ['gl'], pack: 'none' }); a.wi = 0;
+  a.pos = [1024, 400, 1024]; a.vel = [60, 0, 0]; a.fireCd = 0; a.switchT = 0;
+  w.applyInput(a, idle({ b: B.FIRE, yaw: Math.PI / 2 })); // fire straight back while flying forward
+  const g = w.proj.find(p => p.kind === 'gl');
+  assert.ok(g, 'fired');
+  assert.ok(Math.abs(g.vel[0] - (60 - JF.WEAPONS.gl.speed)) < 1, 'vx ' + g.vel[0]);
+});
+
+test('turrets: four discs take one down, and they cannot snap round to a target behind them', () => {
+  const w = new JF.World({ map: 'highland' });
+  const a = spawned(w, 1, { team: 0 });
+  const t = w.objects.find(o => o.kind === 'turret' && o.team === 1);
+  for (let i = 0; i < 4; i++) w.splash(t.c.slice(), JF.WEAPONS.disc, { owner: a.id, team: 0, kind: 'disc' }, null);
+  assert.equal(t.up, false);
+  // a fresh world: a target appears on the side the turret is not facing, and it takes a while to come round
+  const w2 = new JF.World({ map: 'highland' });
+  const b = spawned(w2, 1, { team: 0 });
+  const t2 = w2.objects.find(o => o.kind === 'turret' && o.team === 1);
+  const back = [t2.c[0] + Math.sin(t2.yaw) * 30, t2.b[4] + 6, t2.c[2] + Math.cos(t2.yaw) * 30]; // aimDir(yaw) is (-sin, 0, -cos): this is behind
+  b.pos = back; b.vel = [0, 0, 0];
+  let firstShot = -1;
+  for (let i = 0; i < 300 && firstShot < 0; i++) { w2.step(); b.pos = back.slice(); b.vel = [0, 0, 0]; b.hp = 70; if (w2.events.some(e => e.k === 'tfire' && e.id === t2.id)) firstShot = i; }
+  assert.ok(firstShot > 60, 'turret fired after ' + firstShot + ' ticks');
+});
