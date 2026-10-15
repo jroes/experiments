@@ -22,7 +22,8 @@ key/value store. Live at https://jroes.github.io/experiments/. Written for whoev
 | `hollowmere/`, `gullrock/`, `starsweeper/` | Three adventures. Each is `game.js` (plain data: rooms, items, handlers) plus a page; the engine is in `shared/` |
 | `shared/` | `store.js` (KV client), `config.js` (`KV_URL`), `qrcode.js` (vendored, MIT), p2p and lobby code. `adventure.js` (engine, no DOM), `adventure-art.js` (EGA pixel helpers), `hd2d.js`, `hd2d-gl.js`, `hd2d-post.js`, `hd2d-worker.js` (HD-2D pictures, below), `adventure-ui.js`, `arcade.css` (look shared by Tank Wars and the adventures) |
 | `j/` | Invite landing page: OpenGraph tags for link previews, then hands `#<code>` to the game |
-| `elf-punch/` | Rust server: `/kv` store (`src/store.rs`), the lab for server-authoritative games (`src/lab/`), the original elf toy (`src/elf.rs`). See its README |
+| `jetfall/` | 3D jetpack capture the flag (Tribes-like). `sim.js` (rules and movement, no DOM), `bots.js`, `net.js` (packets, host, client prediction), `host-worker.js`, `link.js` (relay + WebRTC), `render.js` (WebGL2), `models.js`, `audio.js`, `ui.js` |
+| `elf-punch/` | Rust server: `/kv` store (`src/store.rs`), the lab for server-authoritative games (`src/lab/`), the Jetfall relay (`src/relay.rs`), the original elf toy (`src/elf.rs`). See its README |
 | `warptraders/universe/` | Client for the shared-universe Warp Traders (talks to `/lab/warptraders`) |
 | `tests/` | `node --test` suites. `fake-kv.js` is an in-memory stand-in for the server |
 | `verification/` | TLA+ models checked with TLC (`run-tlc.sh`) |
@@ -113,6 +114,30 @@ Seats are 1-based in keys and invites and 0-based in the game. If a change would
   keep the same pace at any frame rate. The HD background is only redrawn when something it shows changes (`HD2D.backKey`: room, points, inventory, drops, flags; not the move count).
 - Phone: the verb buttons plus the inventory do everything the keyboard does. Tapping a thing looks at it; pick Use or Give, then tap what you carry, then the target.
 
+## Jetfall
+
+A real-time 3D game, so neither lockstep nor the lab fits. **One player's browser is the server.** The host's game runs in a Web Worker
+(`host-worker.js`) on its own clock, so a slow frame or a hidden tab does not slow the game for everyone. Every browser, the host's included
+(over a loopback), is a `Client`: it sends inputs 60 times a second (each packet repeats the last few, so a lost one costs nothing), moves its own
+player at once with the same `movePlayer` the host runs (prediction), and redoes the unacknowledged inputs when a snapshot (20 a second) says where
+the host put it. Other players are drawn about 115 ms in the past, between two snapshots. My own shots fly locally from the moment I click, and the
+host's copy is hidden. The host decides every hit.
+- **Keep movement in `movePlayer`.** Anything that changes how a player moves must live there and read only the player and the world's geometry,
+  or prediction drifts. Inputs are quantized before use (`Net.quantize`) so both sides run the same numbers; a test checks they end in the same place.
+- **Everything from a peer is untrusted**: decoders throw on short or odd packets and the host drops them; names through `cleanName`, loadouts through
+  `cleanLoadout`, chat is trimmed and rate limited, inputs are capped at about one per tick (no speed hacks by flooding). Only peer 0 (the host's own page)
+  can change settings. Friends-only trust still applies: the host could change anything.
+- **Connections** (`link.js`): everyone talks to `/jetfall` on elf-punch (rooms, the open games list, WebRTC offers and answers). Game packets go over two
+  WebRTC data channels per guest (unreliable for snapshots and inputs, reliable for the rest) once they open, and through the relay until then or if they
+  never do. Snapshots and inputs are binary (`Writer`/`Reader` in `net.js`); rare messages are JSON. Bump `PROTO` when a packet changes; a mismatched
+  guest is refused with "refresh".
+- **Bots** play through the same inputs as a person. `bots.js` picks a goal (grab, run home, chase the carrier, defend, raid the generator, restock),
+  routes through the bunker doors, steers by the velocity it wants (jets to turn at speed) and leads its shots with `leadAim`. Teams get the same mix of jobs
+  by slot. A test plays every map and wants kills and a flag taken.
+- The renderer is raw WebGL2 like the HD-2D one: the land is one mesh with the physics' own triangles, everything solid is an instanced box, sphere or cylinder,
+  a sun shadow map around the camera, particles and beams as instanced quads. `?relay=ws://127.0.0.1:8135/jetfall` points a page at a local server;
+  `JFGame.cam = { follow: id }` in the console follows a player (handy for screenshots). `tools/jetfall-og.js` makes the preview picture.
+
 **Two ways to host a game.** Browsers hold the rules (lockstep, `/kv`, Sector Dominion) when friends are playing and cheating does not matter. The server holds
 them (`/lab`, `elf-punch/src/lab/`) when players share one world or the score has to be real. A lab game is one `Game` impl (copy `clicker.rs`); the lab handles players, tokens, saving
 and limits. The client is only a screen: never decide anything in it. Lab games keep time-based state lazy (timestamps, brought up to date on access) so the machine can sleep.
@@ -136,6 +161,8 @@ export PORT=8135 WORLD_FILE=/tmp/w.json KV_DIR=/tmp/kv KV_IP_REQ_PER_MIN=1000000
 elf-punch/target/release/elf-punch &
 KV_URL=http://127.0.0.1:8135 node --test tests/lockstep.test.mjs tests/roster.test.mjs tests/tankwars-online.test.mjs
 ```
+
+Jetfall online in a browser: two Playwright browsers (not two contexts in one: a background page gets no frames) on `jetfall/?relay=ws://127.0.0.1:8135/jetfall`, one hosting, one joining by code. Under SwiftShader expect about 10 fps; time the JS, not the GPU.
 
 **Verification approach.** TLA+ for protocol and roster questions (races, who may do what, derived views that can disagree). Property and fuzz tests on
 the real JavaScript for arithmetic, hostile input and invariants. A model that "must fail" for a known-bad design (`must_fail` in `run-tlc.sh`)

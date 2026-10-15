@@ -157,7 +157,7 @@
     float h = clamp((vPos.y - uHmin) / (uHmax - uHmin), 0.0, 1.0);
     float big = fbm(vPos.xz * 0.004);
     float mid = fbm(vPos.xz * 0.05);
-    float fine = noise(vPos.xz * 0.9) * 0.5 + noise(vPos.xz * 3.1) * 0.5;
+    float fine = mix(noise(vPos.xz * 0.9) * 0.5 + noise(vPos.xz * 3.1) * 0.5, 0.5, smoothstep(60.0, 400.0, length(vPos - uCam)));
     float hh = h + (big - 0.5) * 0.25;
     float patchy = fbm(vPos.xz * 0.0016 + 7.3);
     vec3 col = mix(uLow, uMid, smoothstep(0.15, 0.45, hh + (mid - 0.5) * 0.2));
@@ -167,7 +167,8 @@
     float slope = 1.0 - n.y;
     float rock = smoothstep(0.28, 0.45, slope + (mid - 0.5) * 0.15);
     // rock strata
-    float strata = 0.85 + 0.15 * sin(vPos.y * 0.9 + fbm(vPos.xz * 0.02) * 6.0);
+    float camD = length(vPos - uCam);
+    float strata = 1.0 - 0.15 * (1.0 - smoothstep(120.0, 500.0, camD)) * (0.5 + 0.5 * sin(vPos.y * 0.9 + fbm(vPos.xz * 0.02) * 6.0));
     col = mix(col, uRock * strata, rock);
     float snow = smoothstep(uSnowLine - 0.06, uSnowLine + 0.06, hh + (mid - 0.5) * 0.15) * (1.0 - smoothstep(0.35, 0.55, slope));
     col = mix(col, uSnow, snow);
@@ -631,7 +632,7 @@
         const steep = 1 - nr[1];
         if (rng() > 0.25 + steep * 3) continue; // more on slopes
         const s = (1.0 + rng() * rng() * 4.5) * (steep > 0.2 ? 1.5 : 1);
-        const y = t.height(x, z) - s * 0.25;
+        const y = t.height(x, z) - s * 0.4;
         trs(data, k * INST_FLOATS, x, y, z, rng() * 6.28, (rng() - 0.5) * 0.6, s * (1 + rng()), s * (0.6 + rng() * 0.5), s * (1 + rng()), (rng() - 0.5) * 0.4);
         const shade = 0.8 + rng() * 0.35;
         const c = look.rockCol || look.rock;

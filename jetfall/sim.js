@@ -431,6 +431,7 @@
       p.pitch = 0;
       p.spawnYaw = p.yaw;
       equip(p, SPAWN_KIT);
+      p.wi = Math.max(0, p.weapons.indexOf('disc')); // start with the disc in hand
       p.lastHitBy = -1;
       p.spawnProt = 2;
       this.ev({ k: 'spawn', id: p.id });

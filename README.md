@@ -4,6 +4,7 @@ Games and toys. Mostly browser-only static files with no build step; [elf-punch/
 
 - [sectordominion/](sectordominion/): space empire 4X.
 - [warptraders/](warptraders/): space trading.
+- [jetfall/](jetfall/): 3D capture the flag with jetpacks and skiing, in the spirit of the old Tribes games. Bots, and online play with friends.
 - [tankwars/](tankwars/): artillery duels. Five kinds of land, wind, shields, a shop between rounds, computer players, and online play with friends.
 - [hollowmere/](hollowmere/), [gullrock/](gullrock/) and [starsweeper/](starsweeper/): three small adventures in the style of the old Sierra games, drawn as lit pixel art. Walk, type commands, try not to die.
 - [shared/](shared/): the client for the shared key/value store, serverless peer-to-peer play (WebRTC, used by Warp Traders' race), and the adventure engine.

@@ -809,7 +809,9 @@
     if (me && alive) Audio.update(me.jetting, Math.hypot(me.vel[0], me.vel[1], me.vel[2]), me.energy / ARMORS[me.armor].energy);
     else Audio.update(false, 0, 0);
     fpsN++; fpsT += dt; if (fpsT > 0.5) { fpsShow = Math.round(fpsN / fpsT); fpsN = 0; fpsT = 0; }
+    frameMs = frameMs * 0.95 + (performance.now() - t) * 0.05;
   }
+  let frameMs = 0;
 
   // the menu shows the last map, slowly turning
   let idleYaw = 0;
@@ -861,7 +863,10 @@
       eye = [at[0] + Math.sin(yaw + k) * 14, at[1] + 7, at[2] + Math.cos(yaw + k) * 14];
       camYaw = yaw + k; camPitch = -0.4;
     }
-    if (debugCam) { eye = debugCam.pos; camYaw = debugCam.yaw; camPitch = debugCam.pitch; firstPerson = false; }
+    if (debugCam && debugCam.follow != null) {
+      const fp = view.players.find(p => p.id === debugCam.follow);
+      if (fp) { const f = JF.aimDir(fp.yaw + (debugCam.turn || 0), -0.15); const d = debugCam.dist || 5; eye = [fp.pos[0] - f[0] * d, fp.pos[1] + 2.2 - f[1] * d, fp.pos[2] - f[2] * d]; camYaw = fp.yaw + (debugCam.turn || 0); camPitch = -0.15; firstPerson = false; }
+    } else if (debugCam) { eye = debugCam.pos; camYaw = debugCam.yaw; camPitch = debugCam.pitch; firstPerson = false; }
     // shake
     if (shake > 0.01) { camYaw += (Math.random() - 0.5) * shake * 0.04; camPitch += (Math.random() - 0.5) * shake * 0.04; shake *= Math.exp(-dt * 6); }
     camPos = eye;
@@ -1300,5 +1305,5 @@
     if (prefs.name) join(hash); else { setMenuMsg('Pick a name, then press Join to play in game ' + hash + '.'); $('name').focus(); }
   }
   // for tests and debugging
-  window.JFGame = { get session() { return S; }, prefs, renderer, playBots, join, leave, hostOnline, get yaw() { return yaw; }, set yaw(v) { yaw = v; }, get pitch() { return pitch; }, set pitch(v) { pitch = v; }, keys, mouse, set cam(v) { debugCam = v; }, get cam() { return debugCam; } };
+  window.JFGame = { get session() { return S; }, prefs, renderer, playBots, join, leave, hostOnline, get yaw() { return yaw; }, set yaw(v) { yaw = v; }, get pitch() { return pitch; }, set pitch(v) { pitch = v; }, keys, mouse, get frameMs() { return frameMs; }, set cam(v) { debugCam = v; }, get cam() { return debugCam; } };
 })();

@@ -161,3 +161,25 @@ body.touch #chatlog { bottom: 250px; }
   #center { font-size: 18px; }
   .sc { grid-template-columns: 1fr; }
 }
+/* phones held sideways: short screens need a tighter HUD */
+@media (max-height: 520px) {
+  #top { font-size: 12px; gap: 8px; } .tscore { padding: 2px 8px; } .tscore b { font-size: 18px; } .tname { display: none; } #clock { font-size: 13px; }
+  #radar { width: 96px; height: 96px; }
+  #feed { right: calc(112px + env(safe-area-inset-right)); font-size: 10px; }
+  #roomtag, #fps { font-size: 10px; }
+  #bars { width: 150px; } .bar { margin-top: 3px; font-size: 9px; } .bar span { width: 40px; } .bar div { height: 8px; } .bar b { font-size: 10px; }
+  #speed { font-size: 10px; } #speed b { font-size: 13px; }
+  #weapons { font-size: 10px; gap: 2px; }
+  #weapons div:not(.on):not(.pk) { display: none; }
+  #center { font-size: 16px; top: 18%; } #sub { font-size: 12px; top: calc(18% + 24px); }
+  #chatlog { font-size: 10px; }
+  #tbtns { grid-template-columns: repeat(3, 54px); gap: 6px; }
+  #tbtns button { height: 40px; font-size: 10px; } #tbtns button.big { height: 54px; }
+  #stick { width: 110px; height: 110px; } #stick i { left: 32px; top: 32px; width: 44px; height: 44px; }
+  #tmenu { top: calc(40px + env(safe-area-inset-top)); }
+  .mk { font-size: 9px; }
+  body.touch #bars { bottom: auto; top: calc(60px + env(safe-area-inset-top)); }
+  body.touch #weapons { bottom: auto; top: calc(122px + env(safe-area-inset-top)); }
+  body.touch #chatlog { bottom: auto; top: calc(140px + env(safe-area-inset-top)); }
+  dialog { padding: 12px; } dialog h2 { margin-bottom: 6px; } .opt { padding: 5px 8px; flex-basis: 150px; }
+}
