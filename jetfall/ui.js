@@ -799,7 +799,8 @@
         case 'team': addFeed(teamSpan(e.id, nameOf(e.id)) + ' <span class="dim">switched to ' + TEAMS[e.team].name + '</span>'); break;
         case 'chat':
           addChat((e.team != null ? '<span class="dim">[team]</span> ' : '') + teamSpan(e.id, e.name) + ': ' + (e.vgs ? '<b>' + esc(e.text) + '</b>' : esc(e.text)));
-          if (e.vgs && prefs.speak) speak(e.text, e.id); else Audio.play('chat');
+          if (e.vgs && prefs.speak) { if (e.id !== myId) speak(e.text, e.id); } // mine was said when I picked it
+          else Audio.play('chat');
           break;
         case 'over':
           Audio.play(e.winner === myTeam ? 'win' : e.winner < 0 ? 'ret' : 'lose');
@@ -816,13 +817,28 @@
     for (let i = 0; i < n; i++) puff(at[0], at[1], at[2], { life: rnd(0.25, 0.5), s0: 0.08, s1: 0.02, c: [3, 2.2, 1.2], v: [rnd(-7, 7), rnd(1, 9), rnd(-7, 7)], g: 20, kind: 2 });
   }
 
-  // quick chat read out loud, a different voice pitch for each player
+  // quick chat read out loud, a different voice pitch for each player.
+  // Chrome quirks: speak() right after cancel() is often dropped, an utterance nothing holds on to can be thrown away
+  // before it plays, and the queue can get stuck paused. So: hold the utterance, resume, and speak a moment after a cancel.
+  let voice = null, utter = null, speakT = 0;
+  function pickVoice() {
+    try {
+      const vs = window.speechSynthesis ? speechSynthesis.getVoices() : [];
+      voice = vs.find(v => /^en[-_]US/i.test(v.lang) && v.localService) || vs.find(v => /^en/i.test(v.lang)) || null;
+    } catch (e) { voice = null; }
+  }
+  if (window.speechSynthesis) { pickVoice(); try { speechSynthesis.addEventListener('voiceschanged', pickVoice); } catch (e) { /* old browsers */ } }
   function speak(text, id) {
     try {
-      if (!window.speechSynthesis) return;
+      if (!window.speechSynthesis || !Audio.settings.sfx) return;
       const u = new SpeechSynthesisUtterance(text);
-      u.pitch = 0.6 + ((id * 37) % 9) / 10; u.rate = 1.1; u.volume = Audio.settings.sfx ? Audio.settings.volume : 0;
-      speechSynthesis.cancel(); speechSynthesis.speak(u);
+      if (voice) u.voice = voice;
+      u.lang = voice ? voice.lang : 'en-US';
+      u.pitch = 0.6 + ((id * 37) % 9) / 10; u.rate = 1.1; u.volume = Math.min(1, Audio.settings.volume * 1.6);
+      utter = u;
+      const go = () => { speechSynthesis.resume(); speechSynthesis.speak(u); };
+      clearTimeout(speakT);
+      if (speechSynthesis.speaking || speechSynthesis.pending) { speechSynthesis.cancel(); speakT = setTimeout(go, 60); } else go();
     } catch (e) { /* no voices: the text is in the chat anyway */ }
   }
 
@@ -843,7 +859,11 @@
     const T = window.JFVGS.TREE;
     if (k === 'Escape' || k === 'V' && vgsPath === '') return closeVgs();
     if (vgsPath === '') { if (JF.has(T, k)) { vgsPath = k; drawVgs(); } return; }
-    if (JF.has(T[vgsPath].lines, k)) { if (S) S.client.ctrl({ t: 'chat', vgs: vgsPath + k }); closeVgs(); }
+    if (JF.has(T[vgsPath].lines, k)) {
+      // say it now, inside the key press: some browsers only let a page speak in answer to one
+      if (S) { S.client.ctrl({ t: 'chat', vgs: vgsPath + k }); if (prefs.speak) speak(T[vgsPath].lines[k], S.client.me ? S.client.me.id : 0); }
+      closeVgs();
+    }
   }
   function vgsKey(e) {
     e.preventDefault();

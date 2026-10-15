@@ -34,7 +34,7 @@
   // dmg is damage at the centre, r the splash radius (0 = direct hit only), knock the shove at the centre for light armor (m/s).
   const WEAPONS = {
     blaster: { name: 'Blaster',          kind: 'proj', code: 1, speed: 160, grav: 0,   dmg: 13,  r: 0,   knock: 2,  cd: 0.32, ammo: 0,   energy: 6, inherit: 0.4, life: 2.5, blurb: 'Uses energy, never ammo. Weak but always there.' },
-    chain:   { name: 'Chaingun',         kind: 'proj', code: 2, speed: 380, grav: 0,   dmg: 5,   r: 0,   knock: 1,  cd: 0.085, ammo: 200, spin: 0.35, spread: 0.022, inherit: 0.5, life: 1.0, quiet: true, blurb: 'Spins up, then a stream of bullets. Good up close and on flag runners.' },
+    chain:   { name: 'Chaingun',         kind: 'proj', code: 2, speed: 380, grav: 0,   dmg: 9,   r: 0,   knock: 1,  cd: 0.085, ammo: 200, spin: 0.3, spread: 0.016, inherit: 0.5, life: 1.0, quiet: true, blurb: 'Spins up, then a stream of bullets. Good up close and on flag runners.' },
     disc:    { name: 'Disc Launcher',    kind: 'proj', code: 3, speed: 68,  grav: 0,   dmg: 48,  r: 7.5, knock: 26, cd: 1.15, ammo: 15,  inherit: 0.5, life: 6, blurb: 'Slow disc, big blast, big shove. Aim at the feet, or under yourself to fly.' },
     gl:      { name: 'Grenade Launcher', kind: 'proj', code: 4, speed: 52,  grav: 1,   dmg: 42,  r: 8,   knock: 20, cd: 0.85, ammo: 12,  inherit: 1, life: 2.2, bounce: 0.45, fuse: true, blurb: 'Lobs grenades that bounce, then blow after two seconds. They go off on contact with a player.' },
     plasma:  { name: 'Plasma Rifle',     kind: 'proj', code: 5, speed: 62,  grav: 0,   dmg: 40,  r: 3.5, knock: 6,  cd: 0.6, ammo: 30,  inherit: 0.5, life: 5, blurb: 'Hot bolt, small splash, hits hard.' },
