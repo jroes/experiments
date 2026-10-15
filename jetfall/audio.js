@@ -44,10 +44,7 @@
       this.verb.connect(verbLp); verbLp.connect(verbGain); verbGain.connect(this.out);
       // loops: own jets (hiss plus a low rumble), wind
       this.jet = this.loop(700, 0.9, 'bandpass');
-      const rum = ctx.createOscillator(), rumF = ctx.createBiquadFilter(), rumG = ctx.createGain();
-      rum.type = 'sawtooth'; rum.frequency.value = 52; rumF.type = 'lowpass'; rumF.frequency.value = 160; rumG.gain.value = 0;
-      rum.connect(rumF); rumF.connect(rumG); rumG.connect(this.out); rum.start();
-      this.rumble = { o: rum, g: rumG };
+      this.rumble = this.loop(180, 0.7, 'lowpass'); // low noise, no pitch: a tone here buzzes
       this.wind = this.loop(500, 0.5, 'lowpass');
     },
     set(s) { Object.assign(this.settings, s); save(this.settings); if (this.out) this.out.gain.value = this.settings.sfx ? this.settings.volume * GAIN : 0; },
@@ -61,10 +58,9 @@
     update(jetting, speed, energyF) {
       if (!this.ctx) return;
       const t = this.ctx.currentTime;
-      this.jet.g.gain.setTargetAtTime(jetting ? 0.2 : 0, t, jetting ? 0.03 : 0.08);
+      this.jet.g.gain.setTargetAtTime(jetting ? 0.22 : 0, t, jetting ? 0.03 : 0.08);
       this.jet.f.frequency.setTargetAtTime(500 + 500 * (energyF || 0), t, 0.1);
-      this.rumble.g.gain.setTargetAtTime(jetting ? 0.16 : 0, t, jetting ? 0.04 : 0.1);
-      this.rumble.o.frequency.setTargetAtTime(44 + 20 * (energyF || 0), t, 0.1);
+      this.rumble.g.gain.setTargetAtTime(jetting ? 0.3 : 0, t, jetting ? 0.05 : 0.1);
       const w = Math.min(1, Math.max(0, (speed - 12) / 80));
       this.wind.g.gain.setTargetAtTime(w * w * 0.35, t, 0.2);
       this.wind.f.frequency.setTargetAtTime(300 + w * 1500, t, 0.2);

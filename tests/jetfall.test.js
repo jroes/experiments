@@ -249,6 +249,18 @@ test('capture the flag: take, drop, return, capture, and the match ends at the c
   assert.ok(w.over && w.over.winner === 0);
 });
 
+test('the flag is picked up when you skim over its top or fly past it fast, and not from well above', () => {
+  for (const [lift, gap, want] of [[0.5, 0, true], [3.2, 0, true], [3.2, 12, true], [3.2, 26, true], [6, 0, false], [2, 1e3, false]]) {
+    const w = new JF.World({ map: 'highland' });
+    const a = spawned(w, 1, { team: 0 });
+    const h = w.flags[1].home;
+    // one tick on one side, the next on the other (gap 0: just hang there; gap 1e3: a teleport, which is not a flight past)
+    a.pos = [h[0] - gap / 2, h[1] + lift, h[2] + 1]; a.vel = [0, 0, 0]; w.step();
+    a.pos = [h[0] + gap / 2, h[1] + lift, h[2] + 1]; w.step();
+    assert.equal(a.flag === 1, want, 'feet ' + lift + ' m up, moved ' + gap + ' m');
+  }
+});
+
 test('a dropped flag goes home by itself after a while, and you cannot capture while yours is away', () => {
   const w = new JF.World({ map: 'dunes' });
   const a = spawned(w, 1, { team: 0 }), b = spawned(w, 2, { team: 1 });
@@ -539,4 +551,31 @@ test('new map features: water slows and floats you, shots stop at its surface, l
     for (let i = 0; i < 20; i++) { r.vel[1] = Math.max(r.vel[1], 0); m.applyInput(r, idle({ b: B.JET })); }
     assert.ok(r.pos[0] < tall.b[0] + 0.01 || r.pos[1] > tall.b[4] - 0.1 || r.pos[2] < tall.b[2] || r.pos[2] > tall.b[5], map + ': went through a ' + tall.mat);
   }
+});
+
+test('a disc fired into the ground hurts and shoves whoever is next to it, and lets you disc-jump', () => {
+  // the first version checked the blast's line of sight from the exact impact point, which sits in the ground,
+  // so every ground blast was "blocked": no damage, no shove, no disc jumping
+  const w = new JF.World({ map: 'dunes' });
+  const a = spawned(w, 1, { team: 0 }), b = spawned(w, 2, { team: 1 });
+  const o = w.bases[0].o;
+  const x = o.x + 90 * o.face, z = o.z;
+  b.pos = [x, w.terrain.height(x, z), z]; b.vel = [0, 0, 0]; b.spawnProt = 0;
+  a.pos = [x - 40 * o.face, w.terrain.height(x - 40 * o.face, z) + 6, z]; a.vel = [0, 0, 0];
+  a.wi = a.weapons.indexOf('disc'); a.fireCd = 0; a.switchT = 0;
+  const tx = x - 2 * o.face, e = JF.eye(a);
+  const dx = tx - e[0], dy = w.terrain.height(tx, z) - e[1], dz = z - e[2];
+  const yaw = Math.atan2(-dx, -dz), pitch = Math.atan2(dy, Math.hypot(dx, dz));
+  let lift = 0;
+  for (let i = 0; i < 90; i++) { w.step(); w.applyInput(a, idle({ b: i === 0 ? B.FIRE : 0, yaw, pitch })); a.vel = [0, 0, 0]; lift = Math.max(lift, b.vel[1]); }
+  assert.ok(b.hp < ARMORS.light.hp - 15, 'hurt: ' + b.hp);
+  assert.ok(lift > 4, 'shoved up: ' + lift);
+  // disc jump: fire straight down while standing
+  b.pos = [x + 30 * o.face, w.terrain.height(x + 30 * o.face, z), z]; b.vel = [0, 0, 0]; b.hp = ARMORS.light.hp; b.ground = true;
+  b.wi = b.weapons.indexOf('disc'); b.fireCd = 0; b.switchT = 0; b.ammo.disc = 15;
+  const y0 = b.pos[1];
+  let top = y0;
+  for (let i = 0; i < 60; i++) { w.step(); w.applyInput(b, idle({ b: i === 0 ? B.FIRE : 0, pitch: -1.5 })); top = Math.max(top, b.pos[1]); }
+  assert.ok(top > y0 + 2, 'disc jump height ' + (top - y0));
+  assert.ok(b.hp < ARMORS.light.hp, 'it costs some health');
 });
