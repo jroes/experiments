@@ -39,8 +39,7 @@
   }
   function applyQuality() {
     if (!renderer) return;
-    renderer.scale = prefs.quality === 'low' ? 0.6 : prefs.quality === 'mid' ? 0.85 : 1;
-    renderer.shadowsOn = prefs.quality !== 'low';
+    renderer.setQuality(prefs.quality);
   }
   applyQuality();
 
@@ -1360,7 +1359,7 @@
     }
     renderer.frame({
       cam: { pos: eye, yaw: camYaw, pitch: camPitch, fov: vfov() },
-      time, lights, parts, beams, glass, viewModel: vm,
+      time, lights, parts, beams, glass, viewModel: vm, hurt: hurtFlash,
     });
   }
 
@@ -1479,7 +1478,8 @@
     }
     setHtml('dmgdir', dh);
     hurtFlash *= Math.exp(-dt * 3);
-    $('view').style.filter = hurtFlash > 0.02 ? 'saturate(' + (1 + hurtFlash) + ') brightness(' + (1 + hurtFlash * 0.3) + ') hue-rotate(-' + (hurtFlash * 20).toFixed(0) + 'deg)' : '';
+    // the post pass draws the hurt flash itself; the low setting has no post pass, so a CSS filter stands in
+    $('view').style.filter = hurtFlash > 0.02 && !renderer.post ? 'saturate(' + (1 + hurtFlash) + ') brightness(' + (1 + hurtFlash * 0.3) + ') hue-rotate(-' + (hurtFlash * 20).toFixed(0) + 'deg)' : '';
     // center
     const cm = centerMsg;
     const on = now() < cm.until;
@@ -1706,5 +1706,5 @@
     if (prefs.name) join(hash); else { setMenuMsg('Pick a name, then press Join to play in game ' + hash + '.'); $('name').focus(); }
   }
   // for tests and debugging
-  window.JFGame = { get session() { return S; }, prefs, renderer, playBots, join, leave, hostOnline, get yaw() { return yaw; }, set yaw(v) { yaw = v; }, get pitch() { return pitch; }, set pitch(v) { pitch = v; }, keys, mouse, get frameMs() { return frameMs; }, set cam(v) { debugCam = v; }, get cam() { return debugCam; }, get replay() { return replay; }, get attract() { return attract; } };
+  window.JFGame = { get session() { return S; }, prefs, renderer, playBots, join, leave, hostOnline, get yaw() { return yaw; }, set yaw(v) { yaw = v; }, get pitch() { return pitch; }, set pitch(v) { pitch = v; }, keys, mouse, get frameMs() { return frameMs; }, set cam(v) { debugCam = v; }, get cam() { return debugCam; }, get hurt() { return hurtFlash; }, set hurt(v) { hurtFlash = v; }, get replay() { return replay; }, get attract() { return attract; } };
 })();

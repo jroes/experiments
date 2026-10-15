@@ -134,6 +134,7 @@
         skyTop: [0.22, 0.42, 0.75], skyHorizon: [0.72, 0.82, 0.92], sun: [0.55, 0.45, 0.35], sunColor: [1.1, 1.0, 0.86], ambient: [0.36, 0.43, 0.55],
         fog: [0.66, 0.75, 0.86], fogDist: 1700, clouds: 0.55,
         low: [0.27, 0.42, 0.16], mid: [0.36, 0.48, 0.2], high: [0.5, 0.48, 0.42], rock: [0.42, 0.4, 0.37], snow: [0.93, 0.95, 0.98], snowLine: 0.8,
+        grass: 1, grade: { exposure: 1.05, sat: 1.12, contrast: 1.08, gain: [1.04, 1.0, 0.95] },
       },
     },
     dunes: {
@@ -144,6 +145,8 @@
         skyTop: [0.38, 0.45, 0.62], skyHorizon: [0.98, 0.72, 0.45], sun: [-0.4, 0.38, 0.55], sunColor: [1.0, 0.82, 0.6], ambient: [0.55, 0.45, 0.4],
         fog: [0.92, 0.7, 0.5], fogDist: 1400, clouds: 0.2, rocks: 250,
         low: [0.72, 0.52, 0.32], mid: [0.8, 0.6, 0.38], high: [0.68, 0.48, 0.32], rock: [0.55, 0.38, 0.27], snow: [0.85, 0.7, 0.5], snowLine: 2,
+        grass: 0.12, grassCol: [0.62, 0.5, 0.28], grassCol2: [0.72, 0.62, 0.35],
+        grade: { exposure: 1.05, sat: 1.1, contrast: 1.06, gain: [1.08, 0.97, 0.86], lift: [0.015, 0, -0.01], vignette: 0.38 },
       },
     },
     frost: {
@@ -154,6 +157,7 @@
         skyTop: [0.5, 0.58, 0.68], skyHorizon: [0.8, 0.84, 0.88], sun: [0.2, 0.42, -0.6], sunColor: [0.95, 0.96, 1.0], ambient: [0.55, 0.6, 0.7],
         fog: [0.78, 0.82, 0.87], fogDist: 950, clouds: 0.8, rocks: 700, rockCol: [0.5, 0.52, 0.56],
         low: [0.82, 0.86, 0.9], mid: [0.88, 0.9, 0.94], high: [0.95, 0.96, 0.98], rock: [0.38, 0.4, 0.45], snow: [0.97, 0.98, 1.0], snowLine: 0.3,
+        grass: 0, grade: { sat: 0.95, contrast: 0.98, gain: [0.95, 0.99, 1.08], lift: [0.02, 0.03, 0.05], bloom: 0.8, vignette: 0.26 },
       },
     },
     ashfall: {
@@ -165,6 +169,8 @@
         fog: [0.35, 0.16, 0.12], fogDist: 1250, clouds: 0.4, rocks: 1300,
         low: [0.16, 0.14, 0.14], mid: [0.22, 0.19, 0.18], high: [0.3, 0.27, 0.25], rock: [0.12, 0.11, 0.11], snow: [0.5, 0.45, 0.42], snowLine: 0.9,
         lava: true,
+        grass: 0.06, grassCol: [0.22, 0.18, 0.14], grassCol2: [0.3, 0.24, 0.16],
+        grade: { exposure: 1.3, sat: 1.1, contrast: 1.12, gain: [1.1, 0.92, 0.85], bloom: 1.25, stars: 0.8, vignette: 0.4 },
       },
     },
     lakes: {
@@ -176,6 +182,7 @@
         fog: [0.58, 0.64, 0.7], fogDist: 1100, clouds: 0.9,
         low: [0.24, 0.36, 0.2], mid: [0.3, 0.42, 0.22], high: [0.42, 0.44, 0.4], rock: [0.36, 0.37, 0.38], snow: [0.9, 0.92, 0.95], snowLine: 0.85,
         water: [0.12, 0.24, 0.3],
+        grass: 0.9, grade: { exposure: 1.05, sat: 0.96, contrast: 1.04, gain: [0.94, 1.0, 1.06], wet: 0.5, bloom: 0.9 },
       },
     },
     canyon: {
@@ -186,6 +193,8 @@
         skyTop: [0.28, 0.45, 0.72], skyHorizon: [0.86, 0.8, 0.7], sun: [0.3, 0.55, 0.45], sunColor: [1.1, 0.95, 0.8], ambient: [0.45, 0.42, 0.42],
         fog: [0.82, 0.76, 0.66], fogDist: 1500, clouds: 0.3, rocks: 1100,
         low: [0.62, 0.38, 0.24], mid: [0.7, 0.48, 0.3], high: [0.78, 0.6, 0.42], rock: [0.58, 0.32, 0.2], snow: [0.85, 0.7, 0.55], snowLine: 2,
+        grass: 0.3, grassCol: [0.55, 0.45, 0.22], grassCol2: [0.68, 0.58, 0.3],
+        grade: { exposure: 1.05, sat: 1.12, contrast: 1.08, gain: [1.08, 0.98, 0.9] },
       },
     },
   };

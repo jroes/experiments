@@ -3,11 +3,17 @@
  *
  *  - land: one mesh from the heightfield (the same triangles the physics uses), a coarse ring of hills around it,
  *    colours by height and slope with noise worked out in the shader, the sun's shadow from the hills baked per vertex
- *  - everything solid (bunkers, armor, turrets, flags, discs) is an instanced box, sphere or cylinder: one draw each
- *  - a sun shadow map around the camera for those
+ *    and in a small texture (so people and smoke standing in a hill's shadow are in it too)
+ *  - everything solid (bunkers, armor, turrets, flags, discs) is an instanced box, sphere or cylinder: one draw each,
+ *    lit with a GGX specular, sky reflections, worn edges and grime worked out from the box's own shape
+ *  - two sun shadow maps around the camera (a sharp one close by, a wide one further out), filtered with rotated taps
  *  - particles and beams: instanced quads, additive or blended
- *  - sky: one full-screen triangle with sun and clouds
- *  - up to 8 point lights from explosions and bolts
+ *  - sky: one full-screen triangle with the sun, two cloud layers lit from the sun's side, stars when it is dark
+ *  - water: a sheet that knows how deep it is (from the heightfield texture), so there is foam and a clear shallow edge
+ *  - up to 12 point lights from explosions, bolts, flags and the lights inside the bunkers
+ *  - on mid and high quality the scene is drawn in HDR to a texture and finished in a post pass: bloom, light shafts
+ *    from the sun, heat haze over lava, chromatic fringe, filmic tone mapping with a colour grade per map, vignette
+ *    and grain. High adds 4x MSAA; mid uses FXAA instead. Low draws straight to the canvas like the first version.
  *
  * Browser only. The scene is described fresh every frame by the page (ui.js) through `frame()`.
  */
@@ -15,7 +21,7 @@
   'use strict';
   const JF = root.JF;
   const { N, CELL, SIZE } = JF;
-  const MAX_LIGHTS = 8;
+  const MAX_LIGHTS = 12;
 
   // ---------- small matrix kit (column major) ----------
   const M4 = {
@@ -96,31 +102,53 @@
   }
 
   // ---------- shaders ----------
+  // Shared by everything that is lit. Colours stay linear and unclipped (HDR) until the post pass; on the low
+  // path (no post) `outc` tone-maps in place. The alpha written to the HDR target is a mask for the post pass:
+  // 1 = sky (light shafts come from there), 0 < a < 0.6 = heat haze over lava, 0 = everything else.
   const COMMON = `
-  uniform vec3 uSunDir, uSunCol, uAmb, uSkyTop, uSkyHor, uFogCol, uCam;
-  uniform float uFogDist, uTime;
+  uniform vec3 uSunDir, uSunCol, uAmb, uSkyTop, uSkyHor, uFogCol, uCam, uGround;
+  uniform float uFogDist, uTime, uHDR, uWet;
   uniform vec4 uLightPos[${MAX_LIGHTS}];
   uniform vec3 uLightCol[${MAX_LIGHTS}];
   uniform int uNumLights;
-  uniform highp sampler2DShadow uShadow;
-  uniform mat4 uShadowMat;
-  uniform float uShadowOn;
+  uniform highp sampler2DShadow uShadowN, uShadowF;
+  uniform mat4 uShadowMatN, uShadowMatF;
+  uniform float uShadowOn, uNearOn, uClouds;
+  uniform sampler2D uHF;
+  const float PI = 3.14159265;
   float hash(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
   float noise(vec2 p) { vec2 i = floor(p), f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
     return mix(mix(hash(i), hash(i + vec2(1, 0)), u.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), u.x), u.y); }
   float fbm(vec2 p) { float s = 0.0, a = 0.5; for (int i = 0; i < 4; i++) { s += a * noise(p); p *= 2.07; a *= 0.5; } return s; }
+  float hash3(vec3 p) { p = fract(p * 0.3183099 + vec3(0.1, 0.2, 0.3)); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+  float noise3(vec3 p) { vec3 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(mix(hash3(i), hash3(i + vec3(1, 0, 0)), f.x), mix(hash3(i + vec3(0, 1, 0)), hash3(i + vec3(1, 1, 0)), f.x), f.y),
+               mix(mix(hash3(i + vec3(0, 0, 1)), hash3(i + vec3(1, 0, 1)), f.x), mix(hash3(i + vec3(0, 1, 1)), hash3(i + vec3(1, 1, 1)), f.x), f.y), f.z); }
+  float lum(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+  // the heightfield texture: x = ground height, y = how much sun reaches the ground there, z = 1 where something is built on it
+  vec2 hfAt(vec2 xz) { return texture(uHF, (xz / ${CELL}.0 + 0.5) / ${N + 1}.0).xy; }
+  // things near the ground share the hills' shade; 30 m up they are in full sun
+  float groundShade(vec3 wp) { vec2 h = hfAt(wp.xz); return mix(h.y, 1.0, smoothstep(0.0, 30.0, wp.y - h.x)); }
+  const vec2 POIS[8] = vec2[8](vec2(-0.707, 0.707), vec2(0.0, -0.875), vec2(0.53, 0.53), vec2(-0.625, 0.0), vec2(0.354, -0.354), vec2(0.0, 0.375), vec2(-0.177, -0.177), vec2(0.125, 0.0));
+  float pcf(highp sampler2DShadow sm, vec3 c, float rad, float bias, float ang) {
+    float ca = cos(ang), sa = sin(ang), s = 0.0;
+    for (int i = 0; i < 8; i++) { vec2 o = POIS[i]; o = vec2(o.x * ca - o.y * sa, o.x * sa + o.y * ca) * rad; s += texture(sm, vec3(c.xy + o, c.z - bias)); }
+    return s * 0.125;
+  }
   float shadowAt(vec3 wp, vec3 n) {
     if (uShadowOn < 0.5) return 1.0;
-    vec4 sp = uShadowMat * vec4(wp + n * 0.15, 1.0);
-    vec3 c = sp.xyz * 0.5 + 0.5;
-    if (c.x < 0.0 || c.x > 1.0 || c.y < 0.0 || c.y > 1.0 || c.z > 1.0) return 1.0;
-    float s = 0.0; float d = 1.0 / 2048.0;
-    s += texture(uShadow, vec3(c.xy + vec2(-d, -d), c.z - 0.0015));
-    s += texture(uShadow, vec3(c.xy + vec2(d, -d), c.z - 0.0015));
-    s += texture(uShadow, vec3(c.xy + vec2(-d, d), c.z - 0.0015));
-    s += texture(uShadow, vec3(c.xy + vec2(d, d), c.z - 0.0015));
-    float edge = smoothstep(0.85, 1.0, max(abs(c.x - 0.5), abs(c.y - 0.5)) * 2.0);
-    return mix(s * 0.25, 1.0, edge);
+    vec3 wpo = wp + n * 0.1;
+    float ang = hash(gl_FragCoord.xy) * 6.2832;
+    float far = 1.0;
+    vec4 sf = uShadowMatF * vec4(wpo, 1.0); vec3 cf = sf.xyz * 0.5 + 0.5;
+    float mf = max(abs(cf.x - 0.5), abs(cf.y - 0.5)) * 2.0;
+    if (mf < 1.0 && cf.z < 1.0) far = mix(pcf(uShadowF, cf, 1.3 / 2048.0, 0.001, ang), 1.0, smoothstep(0.86, 1.0, mf));
+    if (uNearOn > 0.5) {
+      vec4 sn = uShadowMatN * vec4(wpo, 1.0); vec3 cn = sn.xyz * 0.5 + 0.5;
+      float mn = max(abs(cn.x - 0.5), abs(cn.y - 0.5)) * 2.0;
+      if (mn < 1.0 && cn.z < 1.0 && cn.z > 0.0) return mix(pcf(uShadowN, cn, 2.0 / 2048.0, 0.0005, ang), far, smoothstep(0.8, 1.0, mn));
+    }
+    return far;
   }
   vec3 pointLights(vec3 wp, vec3 n) {
     vec3 s = vec3(0.0);
@@ -129,18 +157,30 @@
       vec3 d = uLightPos[i].xyz - wp; float l = length(d); float r = uLightPos[i].w;
       if (l < r) { float k = 1.0 - l / r; s += uLightCol[i] * k * k * (0.35 + 0.65 * max(dot(n, d / max(l, 0.001)), 0.0)); }
     }
-    return s;
+    // a blast right next to you is bright, not a wall of colour
+    return s / (1.0 + 0.35 * lum(s));
+  }
+  // the clouds' shadows drift over the land
+  float cloudAt(vec2 xz) { return 1.0 - 0.4 * uClouds * smoothstep(0.52, 0.72, fbm(xz * 0.0022 + vec2(uTime * 0.012, uTime * 0.006))); }
+  // light from the sky above and the ground below
+  vec3 hemi(vec3 n) {
+    vec3 up = mix(uAmb, uSkyTop * 1.15, 0.3);
+    vec3 dn = uAmb * 0.45 * mix(vec3(1.0), uGround * 2.0, 0.18);
+    return mix(dn, up, n.y * 0.5 + 0.5);
   }
   vec3 fogMix(vec3 c, vec3 wp) {
     vec3 d = wp - uCam; float dist = length(d);
     float f = 1.0 - exp(-pow(dist / uFogDist, 1.6));
     // thicker low down
     f = clamp(f * (1.0 + 0.4 * exp(-max(wp.y, 0.0) / 120.0)), 0.0, 1.0);
+    // far things lose their colour before they lose their shape
+    c = mix(c, vec3(lum(c)), f * 0.35);
     float sun = pow(max(dot(normalize(d), uSunDir), 0.0), 8.0);
     vec3 fc = mix(uFogCol, uSunCol, sun * 0.35);
     return mix(c, fc, f);
   }
   vec3 tone(vec3 c) { c = max(c, 0.0); return c * (2.51 * c + 0.03) / (c * (2.43 * c + 0.59) + 0.14); }
+  vec3 outc(vec3 c) { return uHDR > 0.5 ? c : tone(c); }
   `;
 
   const TERRAIN_VS = `#version 300 es
@@ -153,46 +193,70 @@
   uniform vec3 uLow, uMid, uHigh, uRock, uSnow; uniform float uSnowLine, uHmin, uHmax, uLava, uLavaH;
   in vec3 vPos; in vec3 vNor; in float vShade; out vec4 o;
   void main() {
-    vec3 n = normalize(vNor);
+    vec3 gn = normalize(vNor);
+    float camD = length(vPos - uCam);
+    float near = 1.0 - smoothstep(12.0, 90.0, camD);
     float h = clamp((vPos.y - uHmin) / (uHmax - uHmin), 0.0, 1.0);
     float big = fbm(vPos.xz * 0.004);
     float mid = fbm(vPos.xz * 0.05);
-    float fine = mix(noise(vPos.xz * 0.9) * 0.5 + noise(vPos.xz * 3.1) * 0.5, 0.5, smoothstep(60.0, 400.0, length(vPos - uCam)));
+    float fine = mix(noise(vPos.xz * 0.9) * 0.5 + noise(vPos.xz * 3.1) * 0.5, 0.5, smoothstep(60.0, 400.0, camD));
     float hh = h + (big - 0.5) * 0.25;
     float patchy = fbm(vPos.xz * 0.0016 + 7.3);
+    float slope = 1.0 - gn.y;
+    float rock = smoothstep(0.28, 0.45, slope + (mid - 0.5) * 0.15);
+    // small bumps close up: rock is craggy, soil is soft. Only the lighting sees them.
+    vec3 n = gn;
+    if (near > 0.001) {
+      vec2 p = vPos.xz * (1.6 + rock * 1.2); float e = 0.12;
+      float b0 = noise(p) * 0.5 + noise(p * 3.1) * 0.5;
+      float bx = noise(p + vec2(e, 0.0)) * 0.5 + noise(p * 3.1 + vec2(e * 3.1, 0.0)) * 0.5;
+      float bz = noise(p + vec2(0.0, e)) * 0.5 + noise(p * 3.1 + vec2(0.0, e * 3.1)) * 0.5;
+      n = normalize(gn + vec3(b0 - bx, 0.0, b0 - bz) * (0.45 + rock * 2.5) * near);
+    }
     vec3 col = mix(uLow, uMid, smoothstep(0.15, 0.45, hh + (mid - 0.5) * 0.2));
     col = mix(col, col * vec3(1.18, 1.06, 0.78), smoothstep(0.45, 0.7, patchy));
     col = mix(col, col * vec3(0.8, 0.9, 0.85), (1.0 - smoothstep(0.3, 0.5, patchy)) * 0.6);
     col = mix(col, uHigh, smoothstep(0.5, 0.8, hh));
-    float slope = 1.0 - n.y;
-    float rock = smoothstep(0.28, 0.45, slope + (mid - 0.5) * 0.15);
-    // rock strata
-    float camD = length(vPos - uCam);
-    float strata = 1.0 - 0.15 * (1.0 - smoothstep(120.0, 500.0, camD)) * (0.5 + 0.5 * sin(vPos.y * 0.9 + fbm(vPos.xz * 0.02) * 6.0));
-    col = mix(col, uRock * strata, rock);
+    // worn ground and bare soil in the hollows
+    float hollow = 1.0 - smoothstep(0.78, 0.95, vShade);
+    col = mix(col, mix(col, uRock, 0.4) * 0.92, hollow * 0.25);
+    // rock strata, and moss in the cracks of the lower rock
+    float strata = 1.0 - 0.18 * (1.0 - smoothstep(120.0, 500.0, camD)) * (0.5 + 0.5 * sin(vPos.y * 0.9 + fbm(vPos.xz * 0.02) * 6.0));
+    vec3 rc = uRock * strata;
+    rc = mix(rc, rc * vec3(0.8, 1.0, 0.75), smoothstep(0.55, 0.75, mid) * (1.0 - smoothstep(0.3, 0.6, hh)) * 0.5);
+    col = mix(col, rc, rock);
     float snow = smoothstep(uSnowLine - 0.06, uSnowLine + 0.06, hh + (mid - 0.5) * 0.15) * (1.0 - smoothstep(0.35, 0.55, slope));
     col = mix(col, uSnow, snow);
     col *= 0.78 + 0.34 * fine * (1.0 - snow * 0.6) + 0.3 * (mid - 0.5);
     col *= 1.0 - slope * 0.35;
     // lava in the low ground (Ashfall)
     vec3 emit = vec3(0.0);
+    float heat = 0.0;
     if (uLava > 0.5) {
       // exactly where it burns: below the map's lava level (sim.js works out the same number)
       float lv = 1.0 - smoothstep(uLavaH - 0.3, uLavaH + 0.6, vPos.y);
       float flow = fbm(vPos.xz * 0.03 + vec2(uTime * 0.02, uTime * 0.013));
-      vec3 lc = mix(vec3(0.85, 0.16, 0.02), vec3(1.0, 0.5, 0.08), flow) * (0.55 + 0.6 * flow);
+      vec3 lc = mix(vec3(0.85, 0.12, 0.02), vec3(1.0, 0.55, 0.1), flow) * (0.35 + 0.9 * flow * flow);
       // a dark crust drifts over it
       float crust = smoothstep(0.5, 0.68, fbm(vPos.xz * 0.045 + vec2(uTime * 0.008, -uTime * 0.006)));
       col = mix(col, vec3(0.04, 0.03, 0.03), lv);
-      emit = lc * lv * (1.0 - 0.85 * crust);
+      emit = lc * lv * (1.0 - 0.9 * crust) * 1.3;
       float crack = smoothstep(0.48, 0.5, fbm(vPos.xz * 0.12)) * (1.0 - smoothstep(0.5, 0.52, fbm(vPos.xz * 0.12)));
-      emit += vec3(1.0, 0.35, 0.05) * crack * 0.18 * (1.0 - smoothstep(uLavaH + 2.0, uLavaH + 25.0, vPos.y));
+      emit += vec3(1.0, 0.35, 0.05) * crack * 0.22 * (1.0 - smoothstep(uLavaH + 2.0, uLavaH + 25.0, vPos.y));
+      heat = lv * 0.5 * (1.0 - smoothstep(20.0, 160.0, camD));
     }
-    float sun = max(dot(n, uSunDir), 0.0) * vShade * shadowAt(vPos, n);
-    vec3 amb = mix(uAmb * 0.55, uAmb, n.y * 0.5 + 0.5) * (0.7 + 0.3 * vShade);
-    vec3 lit = col * (uSunCol * sun * 1.15 + amb + pointLights(vPos, n)) + emit;
+    float sh = shadowAt(vPos, gn) * cloudAt(vPos.xz);
+    float sun = max(dot(n, uSunDir), 0.0) * vShade * sh;
+    vec3 v = normalize(uCam - vPos);
+    vec3 hv = normalize(v + uSunDir);
+    // wet ground and snow catch the sun
+    float gloss = uWet * (1.0 - rock * 0.5) + snow * 0.25 + rock * 0.08;
+    float spec = pow(max(dot(n, hv), 0.0), mix(12.0, 60.0, gloss)) * gloss * 0.6 * sun;
+    float glint = pow(noise(vPos.xz * 23.0 + v.xz * 2.0), 14.0) * 6.0 * snow * near * sun;
+    vec3 amb = hemi(n) * (0.7 + 0.3 * vShade);
+    vec3 lit = col * (uSunCol * sun * 1.15 + amb + pointLights(vPos, n)) + uSunCol * (spec + glint) + emit;
     lit = fogMix(lit, vPos);
-    o = vec4(tone(lit), 1.0);
+    o = vec4(outc(lit), heat);
   }`;
 
   // instanced meshes: boxes, spheres, cylinders
@@ -201,7 +265,7 @@
   layout(location=2) in vec4 aM0; layout(location=3) in vec4 aM1; layout(location=4) in vec4 aM2; layout(location=5) in vec4 aM3;
   layout(location=6) in vec4 aCol; layout(location=7) in vec4 aMat;
   uniform mat4 uVP;
-  out vec3 vPos; out vec3 vNor; out vec3 vLocal; out vec3 vLocalN; out vec4 vCol; out vec4 vMat;
+  out vec3 vPos; out vec3 vNor; out vec3 vLocal; out vec3 vLocalN; out vec3 vHalf; out vec4 vCol; out vec4 vMat; out vec3 vT; out vec3 vB;
   void main() {
     mat4 m = mat4(aM0, aM1, aM2, aM3);
     vec4 wp = m * vec4(aPos, 1.0);
@@ -209,38 +273,156 @@
     mat3 nm = transpose(inverse(mat3(m)));
     vNor = normalize(nm * aNor);
     vec3 sc = vec3(length(aM0.xyz), length(aM1.xyz), length(aM2.xyz));
-    vLocal = aPos * sc; vLocalN = aNor; vCol = aCol; vMat = aMat;
+    vLocal = aPos * sc; vLocalN = aNor; vHalf = sc * 0.5; vCol = aCol; vMat = aMat;
+    // the face's own axes in the world, for the bumps (same pick as the fragment shader's uv)
+    vec3 an = abs(aNor);
+    vec3 lt = an.x > 0.5 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    vec3 lb = an.y > 0.5 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+    vT = normalize(mat3(m) * lt); vB = normalize(mat3(m) * lb);
     gl_Position = uVP * wp;
   }`;
+  // material: x = glow, y = kind, z = extra, w = gloss (0 dull .. 1 polished metal)
+  //   y > 0   metal panels that many metres across (z: 1 = team stripe along the top, 2 = hazard stripes)
+  //   y = 0   plain
+  //   y = -1  stone blocks (field ruins, towers, cover)
+  //   y = -2  rock (the boulders; bumps from 3D noise in the world, so they stay put)
+  //   y = -3  cloth (flags)
+  //   y = -4  fine armour plating (seams, no bolts)
   const MESH_FS = `#version 300 es
   precision highp float;
   ${COMMON}
-  in vec3 vPos; in vec3 vNor; in vec3 vLocal; in vec3 vLocalN; in vec4 vCol; in vec4 vMat; out vec4 o;
+  uniform float uBox, uGlass;
+  in vec3 vPos; in vec3 vNor; in vec3 vLocal; in vec3 vLocalN; in vec3 vHalf; in vec4 vCol; in vec4 vMat; in vec3 vT; in vec3 vB; out vec4 o;
   void main() {
     vec3 n = normalize(vNor);
     vec3 col = vCol.rgb;
     float glow = vMat.x;
-    // panels: seams every few metres on the face, picked by the face's own normal
-    if (vMat.y > 0.0) {
-      vec3 an = abs(vLocalN);
-      vec2 uv = an.x > 0.5 ? vLocal.zy : an.y > 0.5 ? vLocal.xz : vLocal.xy;
-      vec2 g = abs(fract(uv / vMat.y + 0.5) - 0.5) * vMat.y;
-      float seam = 1.0 - smoothstep(0.03, 0.07, min(g.x, g.y));
+    float gloss = clamp(vMat.w, 0.0, 1.0);
+    float kind = vMat.y;
+    vec3 an = abs(vLocalN);
+    vec2 uv = an.x > 0.5 ? vLocal.zy : an.y > 0.5 ? vLocal.xz : vLocal.xy;
+    float camD = length(vPos - uCam);
+    float near = 1.0 - smoothstep(15.0, 110.0, camD);
+    vec2 bump = vec2(0.0);
+    float wall = 1.0 - an.y;
+    if (kind > 0.0 || kind < -3.5) {
+      // metal panels: seams every few metres on the face, picked by the face's own normal
+      float ps = kind > 0.0 ? kind : 0.3;
+      vec2 cell = floor(uv / ps + 0.5);
+      col *= 0.94 + 0.12 * hash(cell + 0.37);
+      vec2 fr = fract(uv / ps + 0.5) - 0.5;
+      vec2 g = abs(fr) * ps;
+      float gm = min(g.x, g.y);
+      float sw = clamp(ps * 0.03, 0.008, 0.06);
+      float seam = 1.0 - smoothstep(sw * 0.6, sw * 1.6, gm);
       col *= 1.0 - 0.35 * seam;
-      col *= 0.92 + 0.12 * noise(uv * 1.7) ;
-      // a glowing stripe along the top of walls in team colour
-      if (vMat.z > 0.0) { float stripe = (1.0 - smoothstep(0.0, 0.08, abs(fract(vLocal.y / 3.0) - 0.82))) * (1.0 - an.y); glow += stripe * vMat.z; }
+      // the plate's edge rounds down into the seam
+      float bev = 1.0 - smoothstep(sw, clamp(ps * 0.06, 0.012, 0.1), gm);
+      bump += (g.x < g.y ? vec2(-sign(fr.x), 0.0) : vec2(0.0, -sign(fr.y))) * bev * (kind > 0.0 ? 0.5 * min(1.0, ps) : 0.12);
+      col *= 0.92 + 0.12 * noise(uv * 1.7);
+      if (kind >= 0.5) {
+        // bolts at the panel corners, standing proud
+        vec2 bq = g - vec2(0.12);
+        float bl = length(bq);
+        float bolt = 1.0 - smoothstep(0.025, 0.05, bl);
+        col *= 1.0 - 0.25 * bolt; gloss = max(gloss, bolt * 0.7);
+        bump += (bq / max(bl, 0.001)) * bolt * (1.0 - smoothstep(0.0, 0.04, bl)) * 0.6 * sign(fr.x) * sign(fr.y) * vec2(sign(fr.x), sign(fr.y));
+        // scratches
+        float scr = smoothstep(0.76, 0.81, noise(vec2(uv.x * 5.0 + uv.y * 0.4, uv.y * 40.0))) * smoothstep(0.5, 0.7, noise(uv * 0.9 + 4.0)) * near;
+        col = mix(col, col * 1.25 + 0.05, scr * 0.5); gloss = min(1.0, gloss + scr * 0.2);
+      }
+      // grime at the foot of walls, and streaks running down them
+      if (an.y < 0.5) {
+        float foot = 1.0 - smoothstep(0.0, 1.8, vLocal.y + vHalf.y);
+        col *= 1.0 - 0.3 * foot * (0.6 + 0.4 * noise(uv * 3.0));
+        float st = noise(vec2(uv.x * 5.0, uv.y * 0.25));
+        col *= 1.0 - 0.14 * smoothstep(0.55, 0.8, st);
+      }
+      // a glowing stripe along the top of walls in team colour, or black and yellow hazard stripes
+      if (vMat.z > 1.5) { float hz = fract((uv.x + uv.y) * 1.5); col = mix(col, mix(vec3(0.9, 0.7, 0.1), vec3(0.07, 0.07, 0.08), step(0.5, hz)) * (0.85 + 0.3 * noise(uv * 4.0)), 0.9 * wall); gloss = min(gloss, 0.35); }
+      else if (vMat.z > 0.0) { float stripe = (1.0 - smoothstep(0.0, 0.08, abs(fract(vLocal.y / 3.0) - 0.82))) * wall; glow += stripe * vMat.z; }
+    } else if (kind < -0.5 && kind > -1.5) {
+      // stone blocks in courses, mortar between, chipped and cracked, the ground's colour creeping up the low parts
+      vec2 bs = vec2(1.3, 0.62);
+      vec2 bu = vec2(uv.x + mod(floor(uv.y / bs.y), 2.0) * 0.65, uv.y);
+      vec2 bc = floor(bu / bs + 0.5);
+      vec2 fr = fract(bu / bs + 0.5) - 0.5;
+      vec2 g = abs(fr) * bs;
+      float gm = min(g.x, g.y);
+      float mortar = 1.0 - smoothstep(0.025, 0.06, gm + noise(uv * 9.0) * 0.03);
+      col *= 0.86 + 0.28 * hash(bc + 3.1);
+      col *= 1.0 - 0.32 * mortar;
+      float bev = 1.0 - smoothstep(0.02, 0.09, gm);
+      bump += (g.x < g.y ? vec2(-sign(fr.x), 0.0) : vec2(0.0, -sign(fr.y))) * bev * 0.6;
+      // grain and cracks
+      float grain = noise(uv * 7.0) * 0.6 + noise(uv * 23.0) * 0.4;
+      col *= 0.88 + 0.24 * grain;
+      bump += (vec2(noise(uv * 7.0 + vec2(0.07, 0.0)), noise(uv * 7.0 + vec2(0.0, 0.07))) - noise(uv * 7.0)) * 3.0 * near;
+      // chips: a few dark pits
+      float chip = smoothstep(0.78, 0.86, noise(uv * 11.0 + 3.0)) * near;
+      col *= 1.0 - 0.35 * chip;
+      // moss and dirt in the mortar, on the tops and low down
+      float foot = 1.0 - smoothstep(0.0, 2.5, vLocal.y + vHalf.y);
+      float moss = smoothstep(0.45, 0.7, noise(uv * 0.9 + 5.0)) * (0.5 * an.y + 0.5 * foot + 0.5 * mortar);
+      col = mix(col, uGround * 0.85, clamp(moss, 0.0, 1.0) * 0.55);
+      gloss = min(gloss, 0.15);
+    } else if (kind < -1.5 && kind > -2.5) {
+      // a boulder: craggy from 3D noise, banded, lichen on top
+      vec3 p = vPos * 1.3;
+      float e = 0.08;
+      float n0 = noise3(p) * 0.6 + noise3(p * 2.9) * 0.4;
+      vec3 gr = vec3(noise3(p + vec3(e, 0.0, 0.0)) * 0.6 + noise3((p + vec3(e, 0.0, 0.0)) * 2.9) * 0.4 - n0,
+                     noise3(p + vec3(0.0, e, 0.0)) * 0.6 + noise3((p + vec3(0.0, e, 0.0)) * 2.9) * 0.4 - n0,
+                     noise3(p + vec3(0.0, 0.0, e)) * 0.6 + noise3((p + vec3(0.0, 0.0, e)) * 2.9) * 0.4 - n0);
+      n = normalize(n - gr * 9.0 * (0.4 + 0.6 * near));
+      col *= 0.8 + 0.4 * n0;
+      col *= 0.85 + 0.3 * noise(vec2(vPos.y * 2.2, vPos.x * 0.3 + vPos.z * 0.3));
+      float lich = smoothstep(0.55, 0.72, noise3(vPos * 0.9 + 9.0)) * max(n.y, 0.0);
+      col = mix(col, uGround * 0.9, lich * 0.6);
+      gloss = min(gloss, 0.2);
+    } else if (kind < -2.5 && kind > -3.5) {
+      // cloth: a weave, folds that move, no shine
+      vec2 cu = vec2(vPos.x + vPos.z, vPos.y);
+      col *= 0.9 + 0.14 * noise(cu * 60.0);
+      col *= 0.82 + 0.3 * noise(cu * vec2(2.5, 1.2) + vec2(uTime * 1.5, 0.0));
+      gloss = 0.04;
     }
-    float sh = shadowAt(vPos, n);
-    float sun = max(dot(n, uSunDir), 0.0) * sh;
+    if (dot(bump, bump) > 0.0) n = normalize(n + (vT * bump.x + vB * bump.y) * (0.3 + 0.7 * near));
+    // worn edges on boxes: a thin bright chamfer where the paint has gone
+    if (uBox > 0.5 && !(kind < -2.5 && kind > -3.5)) {
+      vec3 ed = vHalf - abs(vLocal);
+      float ew = clamp(min(vHalf.x, min(vHalf.y, vHalf.z)) * 0.12, 0.012, 0.05);
+      float e = an.x > 0.5 ? min(ed.y, ed.z) : an.y > 0.5 ? min(ed.x, ed.z) : min(ed.x, ed.y);
+      float edge = 1.0 - smoothstep(0.0, ew, e);
+      if (kind < -0.5 && kind > -1.5) { edge *= smoothstep(0.3, 0.6, noise(uv * 5.0)); col = mix(col, col * 1.15, edge); }
+      else { col = mix(col, col * 1.3 + 0.05, edge * 0.7); gloss = max(gloss, edge * 0.65); }
+    }
+    float sh = shadowAt(vPos, n) * groundShade(vPos) * cloudAt(vPos.xz);
     vec3 v = normalize(uCam - vPos);
+    float ndl = max(dot(n, uSunDir), 0.0), ndv = max(dot(n, v), 0.001);
     vec3 hv = normalize(v + uSunDir);
-    float spec = pow(max(dot(n, hv), 0.0), 40.0) * vMat.w * sh;
-    vec3 amb = mix(uAmb * 0.5, uAmb, n.y * 0.5 + 0.5);
-    float rim = pow(1.0 - max(dot(n, v), 0.0), 3.0) * 0.25;
-    vec3 lit = col * (uSunCol * sun + amb + pointLights(vPos, n)) + uSunCol * spec + amb * rim * col + col * glow;
+    float ndh = max(dot(n, hv), 0.0), vdh = max(dot(v, hv), 0.0);
+    float metal = smoothstep(0.7, 0.95, gloss);
+    float rough = clamp(1.0 - gloss * 0.9, 0.08, 1.0);
+    float a2 = rough * rough; a2 *= a2;
+    vec3 F0 = mix(vec3(0.04), col, metal);
+    float dd = ndh * ndh * (a2 - 1.0) + 1.0;
+    float D = a2 / (PI * dd * dd);
+    float k = (rough + 1.0) * (rough + 1.0) / 8.0;
+    float G = (ndl / (ndl * (1.0 - k) + k)) * (ndv / (ndv * (1.0 - k) + k));
+    vec3 F = F0 + (1.0 - F0) * pow(1.0 - vdh, 5.0);
+    vec3 spec = D * G * F / max(4.0 * ndl * ndv, 0.001) * ndl * sh * uSunCol;
+    spec = min(spec, vec3(4.0));
+    vec3 diff = col * (1.0 - metal * 0.7);
+    vec3 amb = hemi(n);
+    vec3 r = reflect(-v, n);
+    vec3 skyR = mix(uSkyHor, uSkyTop, clamp(r.y, 0.0, 1.0)) * mix(0.5, 1.0, groundShade(vPos));
+    vec3 Fa = F0 + (1.0 - F0) * pow(1.0 - ndv, 5.0) * (1.0 - rough);
+    vec3 ambSpec = skyR * Fa * (0.3 + 0.7 * metal) * (0.6 + 0.4 * n.y);
+    float rim = pow(1.0 - ndv, 3.0) * 0.3;
+    vec3 lit = diff * (uSunCol * ndl * sh + amb + pointLights(vPos, n)) + spec + ambSpec + amb * rim + col * glow;
     lit = fogMix(lit, vPos);
-    o = vec4(tone(lit), vCol.a);
+    o = vec4(outc(lit), vCol.a * uGlass);
   }`;
   const SHADOW_VS = `#version 300 es
   layout(location=0) in vec3 aPos;
@@ -256,30 +438,55 @@
   const SKY_FS = `#version 300 es
   precision highp float;
   ${COMMON}
-  uniform mat4 uInvVP; uniform float uClouds;
+  uniform mat4 uInvVP; uniform float uStars;
   in vec2 vP; out vec4 o;
+  float cloud(vec2 p) { return fbm(p * 1.3) * 0.65 + fbm(p * 4.0) * 0.35; }
   void main() {
     vec4 a = uInvVP * vec4(vP, 1.0, 1.0);
     vec3 d = normalize(a.xyz / a.w - uCam);
     float up = max(d.y, 0.0);
-    vec3 c = mix(uSkyHor, uSkyTop, pow(up, 0.55));
-    float s = max(dot(d, uSunDir), 0.0);
-    c += uSunCol * (pow(s, 900.0) * 6.0 + pow(s, 30.0) * 0.35 + pow(s, 4.0) * 0.15);
-    // clouds on a high plane
+    float s = dot(d, uSunDir), sp = max(s, 0.0);
+    // the sky: deep overhead, pale at the horizon, warmer around the sun
+    vec3 c = mix(uSkyHor, uSkyTop, pow(up, 0.5));
+    c = mix(c, mix(uSkyHor, uSunCol, 0.5), pow(sp, 3.0) * 0.25 * (1.0 - up));
+    // stars, for dark skies
+    if (uStars > 0.0 && d.y > 0.0) {
+      vec2 sq = d.xz / (d.y + 0.35) * 90.0;
+      float st = hash(floor(sq));
+      vec2 fq = fract(sq) - 0.5;
+      float tw = 0.7 + 0.3 * sin(uTime * 3.0 + st * 40.0);
+      c += vec3(0.9, 0.95, 1.0) * smoothstep(0.985, 1.0, st) * (1.0 - smoothstep(0.0, 0.3, length(fq))) * tw * uStars * smoothstep(0.0, 0.3, d.y);
+    }
+    // the sun: a disc with a halo and a long soft glow
+    c += uSunCol * (smoothstep(0.99935, 0.99975, s) * 30.0 + pow(sp, 900.0) * 6.0 + pow(sp, 40.0) * 0.5 + pow(sp, 6.0) * 0.18);
+    // clouds on a high plane, lit from the sun's side, and thin cirrus above them
     if (d.y > 0.01) {
       vec2 p = d.xz / d.y * 0.6 + vec2(uTime * 0.004, uTime * 0.002);
-      float cl = fbm(p * 1.3) * 0.65 + fbm(p * 4.0) * 0.35;
-      cl = smoothstep(1.0 - uClouds * 0.75, 1.05 - uClouds * 0.3, cl);
+      float cl = cloud(p);
+      float lo = 1.0 - uClouds * 0.75, hi = 1.05 - uClouds * 0.3;
+      float cov = smoothstep(lo, hi, cl);
+      // density a little toward the sun: thinner there means a lit edge
+      vec2 toSun = normalize(uSunDir.xz + vec2(1e-4)) * 0.05;
+      float cl2 = smoothstep(lo, hi, cloud(p + toSun));
+      float edge = clamp((cov - cl2) * 2.5, -1.0, 1.0);
       float fade = smoothstep(0.01, 0.2, d.y);
-      vec3 cc = mix(uFogCol * 1.05, vec3(1.0), 0.4) * (0.8 + 0.4 * s);
-      c = mix(c, cc, cl * fade * 0.85);
+      vec3 shade = mix(uFogCol * 0.85, uSkyTop, 0.3) * 0.9;
+      vec3 lit = mix(vec3(1.0), uSunCol, 0.5) * (0.95 + 0.5 * pow(sp, 4.0));
+      vec3 cc = mix(shade, lit, 0.45 + 0.55 * edge);
+      // thick parts darker underneath
+      cc *= 1.0 - 0.35 * smoothstep(0.3, 1.0, cov) * (1.0 - 0.5 * edge);
+      c = mix(c, cc, cov * fade * 0.92);
+      vec2 q = d.xz / d.y * 0.25 + vec2(uTime * 0.0015, 0.0);
+      float cirrus = smoothstep(0.55, 0.8, fbm(vec2(q.x * 0.8, q.y * 3.0) + 3.1)) * 0.35 * (1.0 - cov);
+      c = mix(c, lit * 0.95, cirrus * fade * (0.3 + 0.7 * uClouds));
     }
     // the horizon melts into the fog
     c = mix(uFogCol, c, smoothstep(-0.05, 0.12, d.y));
-    o = vec4(tone(c), 1.0);
+    o = vec4(outc(c), 1.0);
   }`;
 
-  // water: one big flat sheet at the water level, rippled with noise, reflecting the sky, see-through near the shore
+  // water: one big flat sheet at the water level, rippled with noise, reflecting the sky; it reads the ground height
+  // under it from the heightfield so the shallows go clear and the shore gets foam
   const WATER_VS = `#version 300 es
   layout(location=0) in vec2 aP; uniform mat4 uVP; uniform float uH; out vec3 vPos;
   void main() { vPos = vec3(aP.x, uH, aP.y); gl_Position = uVP * vec4(vPos, 1.0); }`;
@@ -288,18 +495,35 @@
   ${COMMON}
   uniform vec3 uWater; in vec3 vPos; out vec4 o;
   void main() {
+    float camD = length(vPos - uCam);
     vec2 p = vPos.xz * 0.08;
     float e = 0.15;
-    float h0 = fbm(p + vec2(uTime * 0.15, uTime * 0.1)), hx = fbm(p + vec2(e, 0.0) + vec2(uTime * 0.15, uTime * 0.1)), hz = fbm(p + vec2(0.0, e) + vec2(uTime * 0.15, uTime * 0.1));
-    vec3 n = normalize(vec3((h0 - hx) * 1.2, 1.0, (h0 - hz) * 1.2));
+    vec2 t1 = vec2(uTime * 0.15, uTime * 0.1), t2 = vec2(-uTime * 0.07, uTime * 0.12);
+    float h0 = fbm(p + t1) + 0.5 * fbm(p * 2.3 + t2);
+    float hx = fbm(p + vec2(e, 0.0) + t1) + 0.5 * fbm((p + vec2(e, 0.0)) * 2.3 + t2);
+    float hz = fbm(p + vec2(0.0, e) + t1) + 0.5 * fbm((p + vec2(0.0, e)) * 2.3 + t2);
+    float ripple = mix(1.4, 0.3, smoothstep(40.0, 400.0, camD));
+    vec3 n = normalize(vec3((h0 - hx) * ripple, 1.0, (h0 - hz) * ripple));
     vec3 v = normalize(uCam - vPos);
     vec3 r = reflect(-v, n);
+    float depth = max(vPos.y - hfAt(vPos.xz).x, 0.0);
     vec3 sky = mix(uSkyHor, uSkyTop, pow(max(r.y, 0.0), 0.6));
-    float fres = 0.08 + 0.92 * pow(1.0 - max(dot(n, v), 0.0), 4.0);
-    vec3 c = mix(uWater * (uAmb + uSunCol * 0.4), sky, fres);
-    c += uSunCol * pow(max(dot(r, uSunDir), 0.0), 120.0) * 2.0;
+    float fres = 0.04 + 0.96 * pow(1.0 - max(dot(n, v), 0.0), 5.0);
+    vec3 shallow = mix(uWater, uGround, 0.35) * 1.4, deep = uWater * 0.7;
+    vec3 body = mix(shallow, deep, smoothstep(0.0, 9.0, depth)) * (hemi(vec3(0.0, 1.0, 0.0)) + uSunCol * 0.5 * groundShade(vPos));
+    vec3 c = mix(body, sky, fres);
+    // the sun on the ripples
+    vec3 hv = normalize(v + uSunDir);
+    c += uSunCol * pow(max(dot(n, hv), 0.0), 180.0) * 3.0 * groundShade(vPos);
+    c += uSunCol * pow(max(dot(r, uSunDir), 0.0), 24.0) * 0.15;
+    // foam at the shore, drifting
+    float foamN = noise(vPos.xz * 1.4 + vec2(uTime * 0.3, 0.0)) * 0.6 + noise(vPos.xz * 4.0 - vec2(0.0, uTime * 0.5)) * 0.4;
+    float foam = (1.0 - smoothstep(0.0, 1.4, depth)) * smoothstep(0.35, 0.7, foamN + 0.25 * sin(uTime * 1.5 + depth * 4.0));
+    c = mix(c, vec3(0.95) * (uAmb + uSunCol * 0.6), foam * 0.8);
     c = fogMix(c, vPos);
-    o = vec4(tone(c), 0.72 + 0.25 * fres);
+    float alpha = clamp(0.25 + depth * 0.35, 0.0, 0.93);
+    alpha = mix(alpha, 0.95, foam * 0.8);
+    o = vec4(outc(c), max(alpha, fres * 0.9));
   }`;
 
   // particles: camera-facing quads; kind 0 = soft glow, 1 = smoke puff, 2 = hard spark
@@ -327,11 +551,17 @@
     else if (vK.x < 1.5) {
       float n = noise(vQ * 2.5 + vK.z * 7.0) * 0.6 + noise(vQ * 5.0 - vK.z * 3.0) * 0.4;
       a = 1.0 - smoothstep(0.3, 1.0, d + (n - 0.5) * 0.6);
-      float lit = 0.6 + 0.4 * clamp(dot(normalize(vec3(vQ, 0.6)), normalize(vec3(0.3, 0.8, 0.5))), 0.0, 1.0);
-      c *= lit * (uAmb + uSunCol * 0.6);
+      // a puffy sphere lit from the sun's side
+      vec3 pn = normalize(vec3(vQ, sqrt(max(0.0, 1.0 - d * d)) + 0.4));
+      vec3 ls = normalize(vec3(0.4, 0.8, 0.6));
+      float lit = 0.55 + 0.45 * clamp(dot(pn, ls), 0.0, 1.0);
+      float sh = groundShade(vPos);
+      c *= lit * (hemi(vec3(0.0, 1.0, 0.0)) + uSunCol * 0.75 * sh) + c * 0.1 * pointLights(vPos, vec3(0.0, 1.0, 0.0));
       c = fogMix(c, vPos);
     } else { a = 1.0 - smoothstep(0.0, 1.0, d); }
-    o = vec4(tone(c) * a * vCol.a, a * vCol.a * vK.w);
+    // glows add up: in HDR a soft knee keeps a burst next to the camera from washing the whole screen out
+    if (uHDR > 0.5 && vK.w < 0.5) c = c / (1.0 + 0.3 * lum(c));
+    o = vec4(outc(c) * a * vCol.a, a * vCol.a * vK.w);
   }`;
   // beams: a segment drawn as a quad that faces the camera
   const BEAM_VS = `#version 300 es
@@ -352,6 +582,195 @@
   precision highp float;
   in vec2 vQ; in vec4 vCol; out vec4 o;
   void main() { float a = pow(1.0 - abs(vQ.y), 1.6) * vCol.a; o = vec4(vCol.rgb * a, 0.0); }`;
+
+  // grass: tufts on a grid that follows the camera. Each instance is one grid cell; the vertex shader decides where the
+  // tuft stands (jittered by a hash of the cell), reads the ground from the heightfield, and hides it on rock, snow,
+  // water or lava. Two crossed quads per tuft, swaying; the blades are cut out in the fragment shader.
+  const GRASS_VS = `#version 300 es
+  layout(location=0) in vec2 aCell;
+  uniform mat4 uVP; uniform vec3 uCam; uniform float uTime, uCell, uRadius, uDensity, uSnowLine, uHmin, uHmax, uLowH;
+  uniform sampler2D uHF;
+  out vec2 vUv; out vec3 vPos; out vec3 vN; out float vSeed;
+  float hash(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
+  void main() {
+    vec2 origin = floor(uCam.xz / uCell) * uCell;
+    vec2 cxz = origin + aCell * uCell;
+    float h1 = hash(cxz * 0.37), h2 = hash(cxz * 0.37 + 7.1), h3 = hash(cxz * 0.37 + 3.3);
+    vec2 xz = cxz + (vec2(h1, h2) - 0.5) * uCell;
+    vec2 uv = (xz / ${CELL}.0 + 0.5) / ${N + 1}.0;
+    float tx = 0.5 / ${N + 1}.0;
+    vec3 hf = texture(uHF, uv).xyz;
+    float h = hf.x;
+    float hx = texture(uHF, uv + vec2(tx, 0.0)).x, hz = texture(uHF, uv + vec2(0.0, tx)).x;
+    vec3 n = normalize(vec3((h - hx) / 4.0, 1.0, (h - hz) / 4.0));
+    float hh = clamp((h - uHmin) / (uHmax - uHmin), 0.0, 1.0);
+    float d = length(xz - uCam.xz);
+    float fade = 1.0 - smoothstep(uRadius * 0.6, uRadius, d);
+    float show = step(h3, uDensity) * step(1.0 - n.y, 0.32) * step(hh, uSnowLine - 0.08) * step(uLowH + 0.6, h) * step(0.001, fade) * step(hf.z, 0.25);
+    int vid = gl_VertexID;
+    int q = vid / 6, c = vid - q * 6;
+    float cx = (c == 1 || c == 2 || c == 4) ? 1.0 : 0.0;
+    float cy = (c == 2 || c == 4 || c == 5) ? 1.0 : 0.0;
+    float ang = h1 * 6.283 + float(q) * 1.5708;
+    vec2 dir = vec2(cos(ang), sin(ang));
+    float w = 0.6 + h2 * 0.5;
+    float ht = (0.4 + h3 * 0.5) * mix(0.5, 1.0, fade);
+    vec3 p = vec3(xz.x, h - 0.12, xz.y) + vec3(dir.x, 0.0, dir.y) * (cx - 0.5) * w;
+    float sway = sin(uTime * 1.7 + xz.x * 0.35 + xz.y * 0.2) * 0.12 + sin(uTime * 3.1 + xz.y * 0.9 + h1 * 3.0) * 0.05;
+    p += vec3(sway * cy, ht * cy, sway * 0.5 * cy);
+    vUv = vec2(cx * 2.0 - 1.0, cy); vPos = p; vN = n; vSeed = h1;
+    gl_Position = show > 0.5 ? uVP * vec4(p, 1.0) : vec4(2.0, 2.0, 2.0, 1.0);
+  }`;
+  const GRASS_FS = `#version 300 es
+  precision highp float;
+  ${COMMON}
+  uniform vec3 uGrassCol, uGrassCol2;
+  in vec2 vUv; in vec3 vPos; in vec3 vN; in float vSeed; out vec4 o;
+  void main() {
+    // three blades across the quad, each leaning its own way, tapering to the tip
+    float lean = (fract(vSeed * 17.0) - 0.5) * vUv.y * vUv.y * 0.9;
+    float bx = fract(vUv.x * 1.5 + vSeed * 3.0 + lean) * 2.0 - 1.0;
+    float taper = (1.0 - vUv.y * 0.88) * 0.42;
+    if (abs(bx) > taper) discard;
+    vec3 col = mix(uGrassCol, uGrassCol2, fract(vSeed * 5.3)) * (0.5 + 0.55 * vUv.y);
+    col *= 0.85 + 0.3 * noise(vPos.xz * 0.3);
+    float sh = shadowAt(vPos, vN) * groundShade(vPos) * cloudAt(vPos.xz);
+    float sun = (0.5 + 0.5 * max(dot(vN, uSunDir), 0.0)) * sh;
+    vec3 lit = col * (uSunCol * sun * 1.1 + hemi(vN) * (0.6 + 0.4 * vUv.y) + pointLights(vPos, vN));
+    lit = fogMix(lit, vPos);
+    o = vec4(outc(lit), 0.0);
+  }`;
+
+  // ---------- post passes (mid and high quality) ----------
+  const POST_VS = `#version 300 es
+  layout(location=0) in vec2 aP; out vec2 vUv;
+  void main() { vUv = aP * 0.5 + 0.5; gl_Position = vec4(aP, 0.0, 1.0); }`;
+  const POST_COMMON = `
+  precision highp float;
+  uniform sampler2D uTex; uniform vec2 uTexel;
+  in vec2 vUv; out vec4 o;
+  float lum(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+  float hash(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
+  float noise(vec2 p) { vec2 i = floor(p), f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash(i), hash(i + vec2(1, 0)), u.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), u.x), u.y); }
+  vec3 box4(sampler2D t, vec2 uv, vec2 px) {
+    return (texture(t, uv + px * vec2(-1.0, -1.0)).rgb + texture(t, uv + px * vec2(1.0, -1.0)).rgb + texture(t, uv + px * vec2(-1.0, 1.0)).rgb + texture(t, uv + px * vec2(1.0, 1.0)).rgb) * 0.25;
+  }`;
+  // what is bright enough to bloom, taken down to half size
+  const BRIGHT_FS = `#version 300 es
+  ${POST_COMMON}
+  uniform float uThresh;
+  void main() {
+    vec3 c = box4(uTex, vUv, uTexel * 0.5);
+    float l = lum(c);
+    float w = smoothstep(uThresh - 0.25, uThresh + 0.6, l);
+    o = vec4(c * w, 1.0);
+  }`;
+  const DOWN_FS = `#version 300 es
+  ${POST_COMMON}
+  void main() { o = vec4(box4(uTex, vUv, uTexel * 0.5), 1.0); }`;
+  const BLUR_FS = `#version 300 es
+  ${POST_COMMON}
+  uniform vec2 uDir;
+  void main() {
+    vec3 c = texture(uTex, vUv).rgb * 0.227;
+    vec2 d = uDir * uTexel;
+    c += (texture(uTex, vUv + d * 1.385).rgb + texture(uTex, vUv - d * 1.385).rgb) * 0.316;
+    c += (texture(uTex, vUv + d * 3.231).rgb + texture(uTex, vUv - d * 3.231).rgb) * 0.070;
+    o = vec4(c, 1.0);
+  }`;
+  // light shafts: what is sky near the sun, then smeared away from it
+  const RAYMASK_FS = `#version 300 es
+  ${POST_COMMON}
+  uniform vec2 uSun; uniform float uAspect; uniform vec3 uSunCol;
+  void main() {
+    vec4 s = texture(uTex, vUv);
+    float sky = smoothstep(0.6, 0.95, s.a);
+    float d = length((vUv - uSun) * vec2(uAspect, 1.0));
+    float w = exp(-d * d * 5.0);
+    float l = min(lum(s.rgb), 8.0);
+    o = vec4(uSunCol * sky * w * (0.1 + l * 0.12), 1.0);
+  }`;
+  const RAYS_FS = `#version 300 es
+  ${POST_COMMON}
+  uniform vec2 uSun;
+  void main() {
+    vec2 uv = vUv;
+    vec2 step = (uSun - uv) * (1.0 / 28.0) * 0.95;
+    float j = hash(gl_FragCoord.xy) * 0.9;
+    uv += step * j;
+    vec3 c = vec3(0.0); float w = 1.0, tw = 0.0;
+    for (int i = 0; i < 28; i++) { c += texture(uTex, uv).rgb * w; tw += w; uv += step; w *= 0.93; }
+    o = vec4(c / tw, 1.0);
+  }`;
+  // the finish: haze, chromatic fringe, bloom, shafts, exposure, filmic curve, grade, hurt, vignette, grain
+  const FINAL_FS = `#version 300 es
+  ${POST_COMMON}
+  uniform sampler2D uBloom0, uBloom1, uBloom2, uRays;
+  uniform float uBloomK, uRayK, uExposure, uSat, uContrast, uGamma, uVig, uGrain, uTime, uHurt, uHeat, uCA, uHDR, uFlash;
+  uniform vec3 uLift, uGain;
+  vec3 tone(vec3 c) { c = max(c, 0.0); return c * (2.51 * c + 0.03) / (c * (2.43 * c + 0.59) + 0.14); }
+  float heat(vec2 uv) { float a = texture(uTex, uv).a; return a < 0.6 ? a : 0.0; }
+  void main() {
+    vec2 uv = vUv;
+    vec2 cv = uv - 0.5;
+    // heat haze rises off the lava: the mask is on the lava, so look a little below each pixel
+    if (uHeat > 0.0) {
+      float m = max(max(heat(uv), heat(uv + vec2(0.0, -0.03)) * 0.9), max(heat(uv + vec2(0.0, -0.07)) * 0.7, heat(uv + vec2(0.0, -0.12)) * 0.45));
+      if (m > 0.0) {
+        vec2 q = uv * vec2(40.0, 24.0) + vec2(0.0, -uTime * 2.5);
+        uv += (vec2(noise(q), noise(q + 17.0)) - 0.5) * m * uHeat * 0.02;
+      }
+    }
+    // colour fringe toward the edges, like a lens
+    float rd = dot(cv, cv) * uCA;
+    vec3 c;
+    c.r = texture(uTex, uv + cv * rd).r;
+    c.g = texture(uTex, uv).g;
+    c.b = texture(uTex, uv - cv * rd).b;
+    vec3 bl = texture(uBloom0, uv).rgb * 0.45 + texture(uBloom1, uv).rgb * 0.35 + texture(uBloom2, uv).rgb * 0.3;
+    c += bl * uBloomK;
+    c += texture(uRays, uv).rgb * uRayK;
+    c *= uExposure;
+    if (uHDR > 0.5) c = tone(c);
+    // grade
+    float l = lum(c);
+    c = mix(vec3(l), c, uSat);
+    c = (c - 0.5) * uContrast + 0.5;
+    c = pow(max(c, 0.0), vec3(uGamma)) * uGain + uLift;
+    // taking damage: red at the edges, colour drains
+    if (uHurt > 0.0) {
+      float ring = smoothstep(0.55, 1.35, length(cv) * 2.0);
+      c = mix(c, vec3(l), uHurt * 0.25);
+      c = mix(c, vec3(0.75, 0.05, 0.02) + c * 0.3, uHurt * ring);
+    }
+    c = mix(c, vec3(1.0), uFlash);
+    c *= 1.0 - uVig * smoothstep(0.35, 1.45, length(cv) * 2.0);
+    c += (hash(gl_FragCoord.xy + fract(uTime * 7.0) * 100.0) - 0.5) * uGrain * (1.0 - l * 0.6);
+    o = vec4(c, 1.0);
+  }`;
+  // FXAA, the compact version: softens edges by their luma contrast
+  const FXAA_FS = `#version 300 es
+  ${POST_COMMON}
+  void main() {
+    vec2 px = uTexel;
+    vec3 rgbNW = texture(uTex, vUv + vec2(-1.0, -1.0) * px).rgb;
+    vec3 rgbNE = texture(uTex, vUv + vec2(1.0, -1.0) * px).rgb;
+    vec3 rgbSW = texture(uTex, vUv + vec2(-1.0, 1.0) * px).rgb;
+    vec3 rgbSE = texture(uTex, vUv + vec2(1.0, 1.0) * px).rgb;
+    vec3 rgbM = texture(uTex, vUv).rgb;
+    float lNW = lum(rgbNW), lNE = lum(rgbNE), lSW = lum(rgbSW), lSE = lum(rgbSE), lM = lum(rgbM);
+    float lMin = min(lM, min(min(lNW, lNE), min(lSW, lSE)));
+    float lMax = max(lM, max(max(lNW, lNE), max(lSW, lSE)));
+    vec2 dir = vec2(-((lNW + lNE) - (lSW + lSE)), ((lNW + lSW) - (lNE + lSE)));
+    float dirReduce = max((lNW + lNE + lSW + lSE) * 0.25 * 0.125, 1.0 / 128.0);
+    float rcp = 1.0 / (min(abs(dir.x), abs(dir.y)) + dirReduce);
+    dir = min(vec2(8.0), max(vec2(-8.0), dir * rcp)) * px;
+    vec3 rgbA = 0.5 * (texture(uTex, vUv + dir * (1.0 / 3.0 - 0.5)).rgb + texture(uTex, vUv + dir * (2.0 / 3.0 - 0.5)).rgb);
+    vec3 rgbB = rgbA * 0.5 + 0.25 * (texture(uTex, vUv + dir * -0.5).rgb + texture(uTex, vUv + dir * 0.5).rgb);
+    float lB = lum(rgbB);
+    o = vec4((lB < lMin || lB > lMax) ? rgbA : rgbB, 1.0);
+  }`;
 
   function compile(gl, vs, fs) {
     const mk = (type, src) => {
@@ -417,7 +836,27 @@
     return { P, N: Nn, I };
   }
 
+  // a float as the 16 bits of a half float (no rounding; plenty for heights and shade)
+  const f32 = new Float32Array(1), u32 = new Uint32Array(f32.buffer);
+  function half(v) {
+    f32[0] = v; const x = u32[0];
+    const s = (x >> 16) & 0x8000, e = ((x >> 23) & 0xff) - 112; let m = x & 0x7fffff;
+    if (e <= 0) { if (e < -10) return s; m |= 0x800000; return s | (m >> (14 - e)); }
+    if (e >= 31) return s | 0x7c00;
+    return s | (e << 10) | (m >> 13);
+  }
+
   const INST_FLOATS = 24; // mat4 + colour + material
+  const SHADOW_SIZE = 2048;
+  // what each quality level turns on
+  const QUALITY = {
+    low:  { scale: 0.6,  post: false, msaa: 0, shadows: false, near: false, rays: false, grain: 0,     ca: 0,   heat: 0, grass: 0 },
+    mid:  { scale: 0.85, post: true,  msaa: 0, shadows: true,  near: false, rays: true,  grain: 0.02,  ca: 0.6, heat: 1, grass: 30 },
+    high: { scale: 1,    post: true,  msaa: 4, shadows: true,  near: true,  rays: true,  grain: 0.028, ca: 1.0, heat: 1, grass: 48 },
+  };
+  // the grade every map starts from; a map's look can override any of these
+  const GRADE = { exposure: 1.0, sat: 1.08, contrast: 1.06, gamma: 1.0, lift: [0, 0, 0], gain: [1, 1, 1], vignette: 0.32, bloom: 1.0, rays: 1.0, stars: 0, wet: 0 };
+  const GRASS_CELL = 1.1, GRASS_MAX = 48;
 
   class Renderer {
     constructor(canvas) {
@@ -425,13 +864,25 @@
       const gl = canvas.getContext('webgl2', { antialias: true, powerPreference: 'high-performance', alpha: false });
       if (!gl) throw new Error('This browser has no WebGL2.');
       this.gl = gl;
-      this.scale = 1;
-      this.shadowsOn = true;
+      // rendering to half-float targets needs this; without it the post pass runs in 8 bits (still fine, less glow)
+      this.floatOk = !!gl.getExtension('EXT_color_buffer_float');
+      this.q = QUALITY.mid;
+      this.scale = this.q.scale;
+      this.shadowsOn = this.q.shadows;
       this.lost = false;
+      this.fbW = 0; this.fbH = 0;
       canvas.addEventListener('webglcontextlost', e => { e.preventDefault(); this.lost = true; });
-      canvas.addEventListener('webglcontextrestored', () => { this.lost = false; this.init(); if (this.mapKey) this.setMap(this.world); });
+      canvas.addEventListener('webglcontextrestored', () => { this.lost = false; this.fbW = this.fbH = 0; this.init(); if (this.mapKey) this.setMap(this.world); });
       this.init();
     }
+    // 'low' | 'mid' | 'high'
+    setQuality(name) {
+      this.q = QUALITY[name] || QUALITY.mid;
+      this.scale = this.q.scale;
+      this.shadowsOn = this.q.shadows;
+      this.fbW = this.fbH = 0; // targets are remade on the next frame
+    }
+    get post() { return this.q.post; }
     init() {
       const gl = this.gl;
       this.progT = compile(gl, TERRAIN_VS, TERRAIN_FS);
@@ -441,6 +892,14 @@
       this.progP = compile(gl, PART_VS, PART_FS);
       this.progB = compile(gl, BEAM_VS, BEAM_FS);
       this.progW = compile(gl, WATER_VS, WATER_FS);
+      this.progG = compile(gl, GRASS_VS, GRASS_FS);
+      this.progBright = compile(gl, POST_VS, BRIGHT_FS);
+      this.progDown = compile(gl, POST_VS, DOWN_FS);
+      this.progBlur = compile(gl, POST_VS, BLUR_FS);
+      this.progRayMask = compile(gl, POST_VS, RAYMASK_FS);
+      this.progRays = compile(gl, POST_VS, RAYS_FS);
+      this.progFinal = compile(gl, POST_VS, FINAL_FS);
+      this.progFxaa = compile(gl, POST_VS, FXAA_FS);
       this.waterVao = gl.createVertexArray(); gl.bindVertexArray(this.waterVao);
       const wb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, wb);
       const L = -3000, Hh = SIZE + 3000;
@@ -449,7 +908,7 @@
       gl.bindVertexArray(null);
       // meshes
       this.meshes = {};
-      for (const [k, g] of Object.entries({ box: boxGeo(), sphere: sphereGeo(8), cyl: cylGeo(14) })) this.meshes[k] = this.makeMesh(g);
+      for (const [k, g] of Object.entries({ box: boxGeo(), sphere: sphereGeo(10), cyl: cylGeo(18) })) this.meshes[k] = this.makeMesh(g);
       // full-screen triangle
       this.triVao = gl.createVertexArray(); gl.bindVertexArray(this.triVao);
       const tb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, tb); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
@@ -466,19 +925,41 @@
       this.beamBuf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, this.beamBuf);
       for (let i = 0; i < 3; i++) { gl.enableVertexAttribArray(1 + i); gl.vertexAttribPointer(1 + i, 4, gl.FLOAT, false, 48, i * 16); gl.vertexAttribDivisor(1 + i, 1); }
       gl.bindVertexArray(null);
-      // shadow map
-      this.shadowSize = 2048;
-      this.shadowTex = gl.createTexture();
-      gl.bindTexture(gl.TEXTURE_2D, this.shadowTex);
-      gl.texStorage2D(gl.TEXTURE_2D, 1, gl.DEPTH_COMPONENT24, this.shadowSize, this.shadowSize);
+      // grass cells around the camera, nearest first, so a smaller radius is just a shorter draw
+      const R = Math.ceil(GRASS_MAX / GRASS_CELL), cells = [];
+      for (let i = -R; i <= R; i++) for (let j = -R; j <= R; j++) { const d = Math.sqrt(i * i + j * j) * GRASS_CELL; if (d <= GRASS_MAX) cells.push({ i, j, d }); }
+      cells.sort((a, b) => a.d - b.d);
+      this.grassCells = cells.map(c => c.d);
+      const cd = new Float32Array(cells.length * 2);
+      cells.forEach((c, k) => { cd[k * 2] = c.i; cd[k * 2 + 1] = c.j; });
+      this.grassVao = gl.createVertexArray(); gl.bindVertexArray(this.grassVao);
+      const gb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, gb); gl.bufferData(gl.ARRAY_BUFFER, cd, gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0); gl.vertexAttribDivisor(0, 1);
+      gl.bindVertexArray(null);
+      // two shadow maps: near (sharp, around the player) and far (the bunkers and the land around)
+      this.shadow = [this.makeShadowMap(), this.makeShadowMap()];
+      // the heightfield texture (filled by setMap)
+      this.hfTex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, this.hfTex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, 1, 1, 0, gl.RGBA, gl.HALF_FLOAT, new Uint16Array([0, half(1), 0, 0]));
+      this.terrain = null;
+      this.targets = null;
+    }
+    makeShadowMap() {
+      const gl = this.gl;
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texStorage2D(gl.TEXTURE_2D, 1, gl.DEPTH_COMPONENT24, SHADOW_SIZE, SHADOW_SIZE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_MODE, gl.COMPARE_REF_TO_TEXTURE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_FUNC, gl.LEQUAL);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      this.shadowFb = gl.createFramebuffer();
-      gl.bindFramebuffer(gl.FRAMEBUFFER, this.shadowFb);
-      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, this.shadowTex, 0);
+      const fb = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, tex, 0);
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-      this.terrain = null;
+      return { tex, fb, mat: null };
     }
     makeMesh(g) {
       const gl = this.gl;
@@ -496,11 +977,106 @@
       return { vao, count: g.I.length, inst, data: new Float32Array(INST_FLOATS * 256), n: 0, static: null };
     }
 
+    // ---------- render targets for the post pass ----------
+    tex2d(w, h, fmt) {
+      const gl = this.gl, t = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.texStorage2D(gl.TEXTURE_2D, 1, fmt, w, h);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      return t;
+    }
+    target(w, h, fmt, depth) {
+      const gl = this.gl;
+      const tex = this.tex2d(w, h, fmt);
+      const fb = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+      let rb = null;
+      if (depth) {
+        rb = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, rb);
+        gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, w, h);
+        gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, rb);
+      }
+      const ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      return { tex, fb, rb, w, h, ok };
+    }
+    dropTargets() {
+      const gl = this.gl, T = this.targets;
+      if (!T) return;
+      for (const t of T.all) { gl.deleteTexture(t.tex); gl.deleteFramebuffer(t.fb); if (t.rb) gl.deleteRenderbuffer(t.rb); }
+      if (T.ms) { gl.deleteFramebuffer(T.ms.fb); gl.deleteRenderbuffer(T.ms.color); gl.deleteRenderbuffer(T.ms.depth); }
+      this.targets = null;
+    }
+    makeTargets(W, H) {
+      const gl = this.gl;
+      this.dropTargets();
+      this.hdr = this.floatOk;
+      let T = this.buildTargets(W, H);
+      if (!T) { this.hdr = false; T = this.buildTargets(W, H); }
+      this.targets = T;
+      this.fbW = W; this.fbH = H;
+    }
+    buildTargets(W, H) {
+      const gl = this.gl;
+      const fmt = this.hdr ? gl.RGBA16F : gl.RGBA8;
+      const all = [];
+      const scene = this.target(W, H, fmt, this.q.msaa === 0); all.push(scene);
+      if (!scene.ok) { this.dropList(all); return null; }
+      let ms = null;
+      if (this.q.msaa > 0) {
+        const can = gl.getInternalformatParameter(gl.RENDERBUFFER, fmt, gl.SAMPLES);
+        const samples = can && can.length ? Math.min(this.q.msaa, can[0]) : 0;
+        if (samples > 0) {
+          const color = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, color);
+          gl.renderbufferStorageMultisample(gl.RENDERBUFFER, samples, fmt, W, H);
+          const depth = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, depth);
+          gl.renderbufferStorageMultisample(gl.RENDERBUFFER, samples, gl.DEPTH_COMPONENT24, W, H);
+          const fb = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+          gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, color);
+          gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depth);
+          const ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+          if (ok) ms = { fb, color, depth, samples };
+          else { gl.deleteFramebuffer(fb); gl.deleteRenderbuffer(color); gl.deleteRenderbuffer(depth); }
+        }
+        if (!ms) {
+          // no multisampling here: draw straight into the texture, with a depth buffer of its own
+          const rb = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, rb);
+          gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, W, H);
+          gl.bindFramebuffer(gl.FRAMEBUFFER, scene.fb);
+          gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, rb);
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+          scene.rb = rb;
+        }
+      }
+      // bloom: three sizes, each with a pair for the blur
+      const bloom = [];
+      for (let i = 0; i < 3; i++) {
+        const w = Math.max(1, W >> (i + 1)), h = Math.max(1, H >> (i + 1));
+        const a = this.target(w, h, fmt, false), b = this.target(w, h, fmt, false);
+        all.push(a, b);
+        if (!a.ok || !b.ok) { this.dropList(all); return null; }
+        bloom.push({ a, b, w, h });
+      }
+      const rw = Math.max(1, W >> 2), rh = Math.max(1, H >> 2);
+      const rayMask = this.target(rw, rh, fmt, false), rays = this.target(rw, rh, fmt, false);
+      all.push(rayMask, rays);
+      // the finished picture before FXAA (mid quality only)
+      let ldr = null;
+      if (!ms) { ldr = this.target(W, H, gl.RGBA8, false); all.push(ldr); }
+      if (!rayMask.ok || !rays.ok || (ldr && !ldr.ok)) { this.dropList(all); return null; }
+      return { scene, ms, bloom, rayMask, rays, ldr, all, W, H };
+    }
+    dropList(list) { const gl = this.gl; for (const t of list) { gl.deleteTexture(t.tex); gl.deleteFramebuffer(t.fb); if (t.rb) gl.deleteRenderbuffer(t.rb); } }
+
     // ---------- the map ----------
     setMap(world) {
       this.world = world;
       this.mapKey = world.mapKey;
       this.look = world.def.look;
+      this.grade = Object.assign({}, GRADE, this.look.grade || {});
       const gl = this.gl, t = world.terrain;
       const look = this.look;
       const sun = norm(look.sun);
@@ -508,6 +1084,7 @@
       const V = N + 1;
       // vertices: position, normal, baked sun visibility (hills shading each other) and a bit of hollow darkening
       const data = new Float32Array(V * V * 7);
+      const hf = new Uint16Array(V * V * 4);
       let hmin = Infinity, hmax = -Infinity;
       for (let iz = 0; iz < V; iz++) for (let ix = 0; ix < V; ix++) {
         const x = ix * CELL, z = iz * CELL, h = t.at(ix, iz);
@@ -530,7 +1107,22 @@
         data[o] = x; data[o + 1] = h; data[o + 2] = z;
         data[o + 3] = n[0]; data[o + 4] = n[1]; data[o + 5] = n[2];
         data[o + 6] = vis * ao;
+        const ho = (iz * V + ix) * 4;
+        hf[ho] = half(h); hf[ho + 1] = half(vis);
       }
+      // ground with something built on it (bunker floors, decks, ruins) grows no grass
+      const one = half(1);
+      for (const sld of world.solids) {
+        const b = sld.b;
+        for (let iz = Math.max(0, Math.floor(b[2] / CELL)); iz <= Math.min(N, Math.ceil(b[5] / CELL)); iz++) {
+          for (let ix = Math.max(0, Math.floor(b[0] / CELL)); ix <= Math.min(N, Math.ceil(b[3] / CELL)); ix++) {
+            const h = t.at(ix, iz);
+            if (b[1] < h + 2.5 && b[4] > h - 1) hf[(iz * V + ix) * 4 + 2] = one;
+          }
+        }
+      }
+      gl.bindTexture(gl.TEXTURE_2D, this.hfTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, V, V, 0, gl.RGBA, gl.HALF_FLOAT, hf);
       const idx = new Uint32Array(N * N * 6);
       let k = 0;
       for (let iz = 0; iz < N; iz++) for (let ix = 0; ix < N; ix++) {
@@ -590,66 +1182,142 @@
     }
 
     buildStatic(world) {
-      const list = [];
+      const boxes = [], cyls = [];
       const look = this.look;
+      this.staticLights = [];
+      const rock = mixc(look.rockCol || look.rock, [0.5, 0.5, 0.5], 0.35);
+      const stone = mixc(rock, look.mid, 0.15);
+      const rubble = [];
       for (const s of world.solids) {
         if (s.obj) continue;
         const b = s.b;
         if (s.team < 0) {
-          // out in the field: weathered stone in the map's rock colour, metal decks
-          const rock = mixc(look.rockCol || look.rock, [0.5, 0.5, 0.5], 0.35);
-          if (s.mat === 'deck') list.push({ b, col: [0.4, 0.41, 0.44], mat: [0, 1.5, 0, 0.5] });
-          else list.push({ b, col: mixc(rock, look.mid, 0.15), mat: [0, 3, 0, 0.1] });
+          // out in the field: weathered stone blocks in the map's rock colour, metal decks
+          if (s.mat === 'deck') boxes.push({ b, col: [0.4, 0.41, 0.44], mat: [0, 1.5, 0, 0.5] });
+          else { boxes.push({ b, col: stone, mat: [0, -1, 0, 0.12] }); if (b[4] - b[1] < 8) rubble.push(b); }
           continue;
         }
         const team = JF.TEAMS[s.team].rgb;
-        let col = [0.5, 0.52, 0.55], panel = 2, stripe = 0, spec = 0.4;
-        if (s.mat === 'roof') { col = [0.36, 0.38, 0.42]; }
-        else if (s.mat === 'floor') { col = [0.3, 0.31, 0.33]; panel = 1.5; }
-        else if (s.mat === 'trim') { col = mixc([0.45, 0.45, 0.48], team, 0.35); stripe = 0; }
-        else if (s.mat === 'stand') { col = mixc([0.3, 0.3, 0.32], team, 0.5); }
-        else if (s.mat === 'mast') { col = [0.42, 0.43, 0.45]; panel = 3; }
-        else if (s.mat === 'cover') { col = [0.46, 0.45, 0.43]; panel = 1.5; }
+        let col = [0.5, 0.52, 0.55], panel = 2, stripe = 0, spec = 0.45;
+        if (s.mat === 'roof') { col = [0.36, 0.38, 0.42]; spec = 0.35; }
+        else if (s.mat === 'floor') { col = [0.3, 0.31, 0.33]; panel = 1.5; spec = 0.5; }
+        else if (s.mat === 'trim') { col = mixc([0.45, 0.45, 0.48], team, 0.35); stripe = 2; spec = 0.5; }
+        else if (s.mat === 'stand') { col = mixc([0.3, 0.3, 0.32], team, 0.5); spec = 0.5; }
+        else if (s.mat === 'mast') { col = [0.42, 0.43, 0.45]; panel = 3; spec = 0.6; }
+        else if (s.mat === 'cover') { col = mixc([0.46, 0.45, 0.43], stone, 0.5); panel = -1; spec = 0.15; }
         else { col = [0.55, 0.56, 0.58]; stripe = 1; }
         // blend a touch of the ground colour in so buildings sit in the land
         col = mixc(col, look.mid, 0.08);
-        list.push({ b, col, mat: [0, panel, 0, spec], team });
+        boxes.push({ b, col, mat: [0, panel, stripe, spec] });
         // team stripes glow in the team colour: an extra thin band on the walls
-        if (stripe) {
+        if (stripe === 1) {
           const h = b[4] - b[1];
-          if (h > 4) list.push({ b: [b[0] - 0.02, b[4] - 1.0, b[2] - 0.02, b[3] + 0.02, b[4] - 0.75, b[5] + 0.02], col: team, mat: [1.6, 0, 0, 0.2] });
+          if (h > 4) boxes.push({ b: [b[0] - 0.02, b[4] - 1.0, b[2] - 0.02, b[3] + 0.02, b[4] - 0.75, b[5] + 0.02], col: team, mat: [1.8, 0, 0, 0.2] });
         }
       }
-      // door frames light
+      // the bunkers' dressing: nothing here collides, it is all to look at. Local coordinates like baseLayout in sim.js, x toward the front door.
+      const DK = [0.22, 0.23, 0.26], MT = [0.5, 0.52, 0.55], PIPE = [0.33, 0.34, 0.38], WARM = [1, 0.95, 0.85];
       for (const base of world.bases) {
-        const o = base.o, team = JF.TEAMS[base.team].rgb;
-        for (const sx of [-1, 1]) {
-          const x = o.x + sx * 12.05 * o.face;
-          list.push({ b: [x - 0.08, o.y, o.z - 2.4, x + 0.08, o.y + 4.8, o.z - 2.2], col: team, mat: [2, 0, 0, 0] });
-          list.push({ b: [x - 0.08, o.y, o.z + 2.2, x + 0.08, o.y + 4.8, o.z + 2.4], col: team, mat: [2, 0, 0, 0] });
-          list.push({ b: [x - 0.08, o.y + 4.6, o.z - 2.4, x + 0.08, o.y + 4.8, o.z + 2.4], col: team, mat: [2, 0, 0, 0] });
+        const o = base.o, team = JF.TEAMS[base.team].rgb, tg = mixc(team, [1, 1, 1], 0.25);
+        const P = b => (o.face > 0 ? [o.x + b[0], o.y + b[1], o.z + b[2], o.x + b[3], o.y + b[4], o.z + b[5]] : [o.x - b[3], o.y + b[1], o.z - b[5], o.x - b[0], o.y + b[4], o.z - b[2]]);
+        const bx = (b, col, mat) => boxes.push({ b: P(b), col, mat: mat || [0, 0, 0, 0.5] });
+        const cy = (b, col, mat, axis) => cyls.push({ b: P(b), col, mat: mat || [0, 0, 0, 0.6], axis: axis || 'y' });
+        const lt = (x, y, z, r, c) => this.staticLights.push({ x: o.x + x * o.face, y: o.y + y, z: o.z + z * o.face, r, c });
+        // corner pillars with caps and a light on top
+        for (const px of [-12, 12]) for (const pz of [-9, 9]) {
+          bx([px - 0.75, 0, pz - 0.75, px + 0.75, 10.6, pz + 0.75], DK, [0, 1.2, 0, 0.5]);
+          bx([px - 0.9, 10.6, pz - 0.9, px + 0.9, 11.0, pz + 0.9], MT, [0, 0, 0, 0.6]);
+          bx([px - 0.22, 11.0, pz - 0.22, px + 0.22, 11.5, pz + 0.22], team, [2.0, 0, 0, 0.2]);
         }
-        // team banners on the outside of the side walls
+        // a girder band around the walls, ribs between the panels
         for (const sz of [-1, 1]) {
-          const z = o.z + sz * 9.06;
-          for (const bx of [-6, 6]) list.push({ b: [o.x + bx - 1.6, o.y + 2.2, z - 0.05, o.x + bx + 1.6, o.y + 7.2, z + 0.05], col: team, mat: [0.35, 0, 0, 0.2] });
+          const z0 = sz > 0 ? 9 : -9.3, z1 = sz > 0 ? 9.3 : -9;
+          bx([-12, 5.0, z0, 12, 5.5, z1], MT, [0, 0, 0, 0.6]);
+          for (const x of [-8, -4, 0, 4, 8]) bx([x - 0.18, 0, sz > 0 ? 9 : -9.25, x + 0.18, 8, sz > 0 ? 9.25 : -9], DK, [0, 0, 0, 0.5]);
+          // pipes along the foot of the wall, with risers and clamps
+          const p0 = sz > 0 ? 9.3 : -9.7, p1 = sz > 0 ? 9.7 : -9.3;
+          cy([-11, 0.45, p0, 11, 0.85, p1], PIPE, [0, 0, 0, 0.7], 'x');
+          cy([-11, 1.0, p0 + 0.02 * sz, 11, 1.36, p1 + 0.02 * sz], PIPE, [0, 0, 0, 0.7], 'x');
+          for (const x of [-11, 11]) cy([x - 0.2, 0.45, p0, x + 0.2, 3.4, p1], PIPE, [0, 0, 0, 0.7]);
+          for (const x of [-6, 0, 6]) bx([x - 0.12, 0.3, sz > 0 ? 9.2 : -9.8, x + 0.12, 1.5, sz > 0 ? 9.8 : -9.2], DK, [0, 0, 0, 0.5]);
         }
-        // a beacon on the mast
-        const mx = o.x - 33 * o.face;
-        list.push({ b: [mx - 0.4, o.y + 25, o.z - 0.4, mx + 0.4, o.y + 25.8, o.z + 0.4], col: team, mat: [4, 0, 0, 0] });
-        // interior lights on the ceiling
-        for (const lx of [-6, 0, 6]) list.push({ b: [o.x + lx - 1.2, o.y + 7.85, o.z - 0.3, o.x + lx + 1.2, o.y + 7.95, o.z + 0.3], col: [1, 0.95, 0.85], mat: [3, 0, 0, 0] });
+        for (const sx of [-1, 1]) {
+          const x0 = sx > 0 ? 12 : -12.3, x1 = sx > 0 ? 12.3 : -12;
+          bx([x0, 5.0, -9, x1, 5.5, 9], MT, [0, 0, 0, 0.6]);
+          for (const z of [-6, 6]) bx([sx > 0 ? 12 : -12.25, 0, z - 0.18, sx > 0 ? 12.25 : -12, 8, z + 0.18], DK, [0, 0, 0, 0.5]);
+          // the door: posts, a lintel, a lit sign over it, lamps either side
+          const d0 = sx > 0 ? 11.9 : -12.35, d1 = sx > 0 ? 12.35 : -11.9;
+          bx([d0, 4.6, -2.75, d1, 5.0, 2.75], DK, [0, 0, 0, 0.5]);
+          bx([d0, 0, -2.75, d1, 4.6, -2.2], MT, [0, 0, 0, 0.6]);
+          bx([d0, 0, 2.2, d1, 4.6, 2.75], MT, [0, 0, 0, 0.6]);
+          bx([sx > 0 ? 12.3 : -12.42, 5.55, -1.6, sx > 0 ? 12.42 : -12.3, 5.85, 1.6], team, [2.5, 0, 0, 0.2]);
+          for (const z of [-3.6, 3.1]) bx([sx > 0 ? 12.25 : -12.45, 3.4, z, sx > 0 ? 12.45 : -12.25, 3.7, z + 0.5], WARM, [3, 0, 0, 0]);
+          lt(sx * 12.9, 3.6, 0, 7, [0.45, 0.4, 0.32]);
+        }
+        // vents on the back wall
+        bx([-12.3, 2.0, -5.2, -11.9, 3.4, -2.8], DK, [0, 0.25, 0, 0.4]);
+        for (const z of [3.6, 5.4]) cy([-12.35, 6.0, z, -11.9, 7.0, z + 1.0], DK, [0, 0, 0, 0.5], 'x');
+        // on the roof: a hatch, vent boxes, an antenna with a dish and a red light
+        bx([-3, 9, 4, -1, 9.45, 6], DK, [0, 0.6, 0, 0.5]);
+        for (const z of [-6.5, 4.5]) bx([6, 9, z, 8, 10.1, z + 2], MT, [0, 0.3, 0, 0.5]);
+        cy([-10.65, 10.2, -7.65, -10.35, 15.5, -7.35], MT, [0, 0, 0, 0.7]);
+        bx([-11.4, 14.2, -7.56, -9.6, 14.32, -7.44], MT, [0, 0, 0, 0.7]);
+        bx([-10.56, 13.2, -8.4, -10.44, 13.32, -6.6], MT, [0, 0, 0, 0.7]);
+        cy([-10.95, 14.4, -8.2, -10.8, 15.8, -6.8], [0.8, 0.82, 0.85], [0, 0, 0, 0.8], 'x');
+        cy([-10.62, 15.5, -7.62, -10.38, 15.8, -7.38], [1, 0.2, 0.15], [3, 0, 0, 0]);
+        lt(-10.5, 15.6, -7.5, 4, [0.5, 0.08, 0.04]);
+        // the flag stand sits on a lit disc
+        cy([-1.9, 9.0, -1.9, 1.9, 9.07, 1.9], tg, [0.6, 0, 0, 0.3]);
+        // inside: a lit ring around the generator, grating by the doors, pipes along the ceiling, screens, lockers, crates
+        cy([-2.7, 0.08, -2.7, 2.7, 0.13, 2.7], team, [0.9, 0, 0, 0.3]);
+        bx([8.5, 0.08, -2.2, 11, 0.12, 2.2], DK, [0, 0.35, 0, 0.45]);
+        bx([-11, 0.08, -2.2, -8.5, 0.12, 2.2], DK, [0, 0.35, 0, 0.45]);
+        for (const z of [-6.2, 5.8]) cy([-11.5, 7.35, z, 11.5, 7.75, z + 0.4], PIPE, [0, 0, 0, 0.7], 'x');
+        for (const sz of [-1, 1]) {
+          bx([-2.3, 2.0, sz > 0 ? 7.85 : -8.0, 2.3, 4.4, sz > 0 ? 8.0 : -7.85], DK, [0, 0, 0, 0.6]);
+          bx([-2.1, 2.2, sz > 0 ? 7.8 : -7.9, 2.1, 4.2, sz > 0 ? 7.9 : -7.8], mixc(team, [0.1, 0.1, 0.12], 0.4), [0.9, 0, 0, 0.5]);
+        }
+        bx([-11, 0, -7.6, -10.3, 2.3, -3.2], MT, [0, 0.55, 0, 0.5]);
+        bx([-11, 0, 3.2, -10.3, 2.3, 7.6], MT, [0, 0.55, 0, 0.5]);
+        bx([-10.8, 0.08, 2.5, -9.6, 1.2, 3.7], [0.45, 0.4, 0.3], [0, 1.2, 0, 0.3]);
+        bx([-9.5, 0.08, 2.6, -8.5, 1.0, 3.6], [0.4, 0.42, 0.3], [0, 1.0, 0, 0.3]);
+        bx([-10.6, 1.2, 2.7, -9.8, 2.0, 3.5], [0.45, 0.4, 0.3], [0, 0.8, 0, 0.3]);
+        // the mast: a ladder, a hazard band, cross arms and a platform under the sensor
+        for (let y = 0.3; y < 20.8; y += 0.6) bx([-34.35, y, -0.3, -34.2, y + 0.07, 0.3], MT, [0, 0, 0, 0.7]);
+        for (const z of [-0.35, 0.25]) bx([-34.35, 0, z, -34.2, 21, z + 0.1], MT, [0, 0, 0, 0.7]);
+        bx([-34.05, 10, -1.05, -31.95, 11.2, 1.05], MT, [0, 1, 2, 0.4]);
+        bx([-36.5, 19, -0.15, -29.5, 19.3, 0.15], MT, [0, 0, 0, 0.7]);
+        bx([-33.15, 19, -3.5, -32.85, 19.3, 3.5], MT, [0, 0, 0, 0.7]);
+        bx([-35.2, 21.6, -2.2, -30.8, 22, 2.2], MT, [0, 0.55, 0, 0.5]);
+        for (const [a, b] of [[-35.2, -35.1], [-30.9, -30.8]]) bx([a, 22, -2.2, b, 23, 2.2], MT, [0, 0, 0, 0.7]);
+        for (const [a, b] of [[-2.2, -2.1], [2.1, 2.2]]) bx([-35.2, 22, a, -30.8, 23, b], MT, [0, 0, 0, 0.7]);
+        // spawn pads
+        for (const sp of base.spawns) {
+          cyls.push({ b: [sp[0] - 1.15, sp[1] - 0.05, sp[2] - 1.15, sp[0] + 1.15, sp[1] + 0.03, sp[2] + 1.15], col: team, mat: [0.9, 0, 0, 0.3], axis: 'y' });
+          cyls.push({ b: [sp[0] - 0.95, sp[1] - 0.04, sp[2] - 0.95, sp[0] + 0.95, sp[1] + 0.05, sp[2] + 0.95], col: DK, mat: [0, 0.4, 0, 0.5], axis: 'y' });
+        }
       }
-      const m = this.meshes.box;
-      const data = new Float32Array(list.length * INST_FLOATS);
-      list.forEach((it, i) => {
+      const bd = new Float32Array(boxes.length * INST_FLOATS);
+      boxes.forEach((it, i) => {
         const b = it.b, o = i * INST_FLOATS;
-        trs(data, o, (b[0] + b[3]) / 2, (b[1] + b[4]) / 2, (b[2] + b[5]) / 2, 0, 0, b[3] - b[0], b[4] - b[1], b[5] - b[2]);
-        data.set([it.col[0], it.col[1], it.col[2], 1], o + 16);
-        data.set(it.mat, o + 20);
+        trs(bd, o, (b[0] + b[3]) / 2, (b[1] + b[4]) / 2, (b[2] + b[5]) / 2, 0, 0, b[3] - b[0], b[4] - b[1], b[5] - b[2]);
+        bd.set([it.col[0], it.col[1], it.col[2], 1], o + 16);
+        bd.set(it.mat, o + 20);
       });
-      this.setStatic('box', data, list.length);
-      this.scatterRocks(world);
+      this.setStatic('box', bd, boxes.length);
+      const cd = new Float32Array(cyls.length * INST_FLOATS);
+      cyls.forEach((it, i) => {
+        const b = it.b, o = i * INST_FLOATS;
+        const lx = b[3] - b[0], ly = b[4] - b[1], lz = b[5] - b[2], cx = (b[0] + b[3]) / 2, cyy = (b[1] + b[4]) / 2, cz = (b[2] + b[5]) / 2;
+        // a cylinder's own axis is y; roll it onto x, or pitch it onto z
+        if (it.axis === 'x') trs(cd, o, cx, cyy, cz, 0, 0, ly, lx, lz, Math.PI / 2);
+        else if (it.axis === 'z') trs(cd, o, cx, cyy, cz, 0, Math.PI / 2, lx, lz, ly);
+        else trs(cd, o, cx, cyy, cz, 0, 0, lx, ly, lz);
+        cd.set([it.col[0], it.col[1], it.col[2], 1], o + 16);
+        cd.set(it.mat, o + 20);
+      });
+      this.setStatic('cyl', cd, cyls.length);
+      this.scatterRocks(world, rubble);
     }
     setStatic(kind, data, n) {
       const m = this.meshes[kind], gl = this.gl;
@@ -658,13 +1326,28 @@
       m.staticN = n;
     }
     // boulders, for scale and detail. Only to look at: they are low and the physics ignores them.
-    scatterRocks(world) {
+    scatterRocks(world, rubble) {
       const t = world.terrain, look = this.look;
       const rng = JF.mulberry(world.def.seed * 7 + 1);
       const n = look.rocks == null ? 900 : look.rocks;
-      const data = new Float32Array(n * INST_FLOATS);
+      const extra = (rubble || []).length * 6;
+      const data = new Float32Array((n + extra) * INST_FLOATS);
+      const c = look.rockCol || look.rock;
       let k = 0;
-      for (let i = 0; i < n * 3 && k < n; i++) {
+      // broken stone around the ruins
+      for (const b of rubble || []) {
+        const cx = (b[0] + b[3]) / 2, cz = (b[2] + b[5]) / 2, w = b[3] - b[0], d = b[5] - b[2];
+        for (let i = 0; i < 6; i++) {
+          const x = cx + (rng() - 0.5) * (w + 5), z = cz + (rng() - 0.5) * (d + 5);
+          const s = 0.5 + rng() * rng() * 1.8;
+          trs(data, k * INST_FLOATS, x, t.height(x, z) - s * 0.3, z, rng() * 6.28, (rng() - 0.5) * 0.8, s * (0.8 + rng() * 0.6), s * (0.5 + rng() * 0.4), s * (0.8 + rng() * 0.6), (rng() - 0.5) * 0.6);
+          const shade = 0.75 + rng() * 0.3;
+          data.set([c[0] * shade, c[1] * shade, c[2] * shade, 1], k * INST_FLOATS + 16);
+          data.set([0, -2, 0, 0.1], k * INST_FLOATS + 20);
+          k++;
+        }
+      }
+      for (let i = 0; i < n * 3 && k < n + extra; i++) {
         const x = JF.AREA_MIN - 150 + rng() * (JF.AREA_MAX - JF.AREA_MIN + 300), z = JF.AREA_MIN - 150 + rng() * (JF.AREA_MAX - JF.AREA_MIN + 300);
         // keep clear of the bases
         if (world.bases.some(b => Math.hypot(b.o.x - x, b.o.z - z) < 70)) continue;
@@ -677,16 +1360,15 @@
         const y = t.height(x, z) - s * 0.4;
         trs(data, k * INST_FLOATS, x, y, z, rng() * 6.28, (rng() - 0.5) * 0.6, s * (1 + rng()), s * (0.6 + rng() * 0.5), s * (1 + rng()), (rng() - 0.5) * 0.4);
         const shade = 0.8 + rng() * 0.35;
-        const c = look.rockCol || look.rock;
         data.set([c[0] * shade, c[1] * shade, c[2] * shade, 1], k * INST_FLOATS + 16);
-        data.set([0, 0, 0, 0.15], k * INST_FLOATS + 20);
+        data.set([0, -2, 0, 0.12 + rng() * 0.1], k * INST_FLOATS + 20);
         k++;
       }
       this.setStatic('sphere', data, k);
     }
 
     // ---------- per frame ----------
-    // scene: { cam: {pos, yaw, pitch, fov}, boxes/spheres/cyls: instance arrays (built with put*), parts, beams, lights, time }
+    // scene: { cam: {pos, yaw, pitch, fov}, boxes/spheres/cyls: instance arrays (built with put*), parts, beams, lights, glass, viewModel, time, hurt, flash }
     resize() {
       const c = this.canvas, dpr = Math.min(window.devicePixelRatio || 1, 2) * this.scale;
       const w = Math.max(1, Math.round(c.clientWidth * dpr)), h = Math.max(1, Math.round(c.clientHeight * dpr));
@@ -714,6 +1396,32 @@
       m.n++;
     }
 
+    // one shadow map: an orthographic view down the sun, `ext` metres each side of `center`, snapped to texels so edges do not crawl
+    renderShadow(sm, ext, center, back, far) {
+      const gl = this.gl, sun = this.sun;
+      const ld = [-sun[0], -sun[1], -sun[2]];
+      let lr = norm(cross(ld, [0, 1, 0])); if (!isFinite(lr[0]) || (lr[0] === 0 && lr[1] === 0 && lr[2] === 0)) lr = [1, 0, 0];
+      const lu = cross(lr, ld);
+      const texel = ext * 2 / SHADOW_SIZE;
+      const cr = dot(center, lr), cu = dot(center, lu);
+      const dr = Math.round(cr / texel) * texel - cr, du = Math.round(cu / texel) * texel - cu;
+      const sc = [center[0] + lr[0] * dr + lu[0] * du, center[1] + lr[1] * dr + lu[1] * du, center[2] + lr[2] * dr + lu[2] * du];
+      const eye = [sc[0] - ld[0] * back, sc[1] - ld[1] * back, sc[2] - ld[2] * back];
+      const lv = M4.view(eye, ld, lr, lu);
+      const lp = M4.ortho(-ext, ext, -ext, ext, 1, far);
+      sm.mat = M4.mul(lp, lv);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, sm.fb);
+      gl.viewport(0, 0, SHADOW_SIZE, SHADOW_SIZE);
+      gl.clear(gl.DEPTH_BUFFER_BIT);
+      gl.enable(gl.DEPTH_TEST); gl.depthMask(true);
+      gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(2, 4);
+      gl.useProgram(this.progS.p);
+      gl.uniformMatrix4fv(this.progS.u.uVP, false, sm.mat);
+      this.drawMeshes(this.progS);
+      gl.disable(gl.POLYGON_OFFSET_FILL);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    }
+
     frame(scene) {
       if (this.lost || !this.terrain) return;
       const gl = this.gl;
@@ -726,7 +1434,7 @@
       const proj = M4.persp(cam.fov, W / H, 0.12, 6000);
       const vp = M4.mul(proj, view);
       this.vp = vp; this.camF = f; this.camR = r; this.camU = u; this.camPos = cam.pos; this.W = W; this.H = H;
-      const look = this.look, sun = this.sun;
+      const look = this.look, sun = this.sun, q = this.q, g = this.grade;
 
       // upload instance data
       for (const m of Object.values(this.meshes)) {
@@ -734,35 +1442,33 @@
         gl.bufferData(gl.ARRAY_BUFFER, m.data.subarray(0, m.n * INST_FLOATS), gl.STREAM_DRAW);
       }
 
-      // ----- shadow pass -----
-      let shadowMat = null;
-      if (this.shadowsOn) {
-        const ext = 90;
-        const c = [cam.pos[0] + f[0] * ext * 0.6, cam.pos[1], cam.pos[2] + f[2] * ext * 0.6];
-        // light basis
-        const ld = [-sun[0], -sun[1], -sun[2]];
-        let lr = norm(cross(ld, [0, 1, 0])); if (!isFinite(lr[0])) lr = [1, 0, 0];
-        const lu = cross(lr, ld);
-        // snap to texels so the shadow edges do not crawl
-        const texel = ext * 2 / this.shadowSize;
-        const cr = dot(c, lr), cu = dot(c, lu);
-        const sc = [c[0] + lr[0] * (Math.round(cr / texel) * texel - cr) + lu[0] * (Math.round(cu / texel) * texel - cu), c[1] + lr[1] * (Math.round(cr / texel) * texel - cr) + lu[1] * (Math.round(cu / texel) * texel - cu), c[2] + lr[2] * (Math.round(cr / texel) * texel - cr) + lu[2] * (Math.round(cu / texel) * texel - cu)];
-        const eye = [sc[0] - ld[0] * 400, sc[1] - ld[1] * 400, sc[2] - ld[2] * 400];
-        const lv = M4.view(eye, ld, lr, lu);
-        const lp = M4.ortho(-ext, ext, -ext, ext, 1, 900);
-        shadowMat = M4.mul(lp, lv);
-        gl.bindFramebuffer(gl.FRAMEBUFFER, this.shadowFb);
-        gl.viewport(0, 0, this.shadowSize, this.shadowSize);
-        gl.clear(gl.DEPTH_BUFFER_BIT);
-        gl.enable(gl.DEPTH_TEST); gl.depthMask(true);
-        gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(2, 4);
-        gl.useProgram(this.progS.p);
-        gl.uniformMatrix4fv(this.progS.u.uVP, false, shadowMat);
-        this.drawMeshes(true);
-        gl.disable(gl.POLYGON_OFFSET_FILL);
-        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      // lights: the scene's and the bunkers' own, nearest first
+      let lights = (scene.lights || []).concat(this.staticLights || []);
+      if (lights.length > MAX_LIGHTS) {
+        const d2 = l => (l.x - cam.pos[0]) ** 2 + (l.y - cam.pos[1]) ** 2 + (l.z - cam.pos[2]) ** 2;
+        lights = lights.slice().sort((a, b) => d2(a) - d2(b)).slice(0, MAX_LIGHTS);
       }
 
+      // ----- shadow passes -----
+      let shadowOn = false, nearOn = false;
+      if (this.shadowsOn) {
+        const extF = q.near ? 150 : 100;
+        this.renderShadow(this.shadow[1], extF, [cam.pos[0] + f[0] * extF * 0.55, cam.pos[1], cam.pos[2] + f[2] * extF * 0.55], 320, 760);
+        shadowOn = true;
+        if (q.near) {
+          const extN = 26;
+          this.renderShadow(this.shadow[0], extN, [cam.pos[0] + f[0] * extN * 0.5, cam.pos[1], cam.pos[2] + f[2] * extN * 0.5], 160, 420);
+          nearOn = true;
+        }
+      }
+
+      // ----- where the scene goes: the canvas, or the HDR target for the post pass -----
+      const post = q.post;
+      if (post && (this.fbW !== W || this.fbH !== H || !this.targets)) this.makeTargets(W, H);
+      if (!post && this.targets) this.dropTargets();
+      const T = this.targets;
+      const hdr = post && this.hdr;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, post ? (T.ms ? T.ms.fb : T.scene.fb) : null);
       gl.viewport(0, 0, W, H);
       gl.clearColor(look.fog[0], look.fog[1], look.fog[2], 1);
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -770,14 +1476,17 @@
       gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK);
       gl.disable(gl.BLEND);
 
-      const lights = scene.lights || [];
       const setCommon = prog => {
         const U = prog.u;
         gl.uniform3fv(U.uSunDir, sun); gl.uniform3fv(U.uSunCol, look.sunColor); gl.uniform3fv(U.uAmb, look.ambient);
         if (U.uSkyTop) gl.uniform3fv(U.uSkyTop, look.skyTop);
         if (U.uSkyHor) gl.uniform3fv(U.uSkyHor, look.skyHorizon);
+        if (U.uGround) gl.uniform3fv(U.uGround, look.mid);
         gl.uniform3fv(U.uFogCol, look.fog); gl.uniform1f(U.uFogDist, look.fogDist * (scene.fogScale || 1));
         gl.uniform3fv(U.uCam, cam.pos); gl.uniform1f(U.uTime, scene.time || 0);
+        if (U.uHDR) gl.uniform1f(U.uHDR, hdr ? 1 : 0);
+        if (U.uWet) gl.uniform1f(U.uWet, g.wet || 0);
+        if (U.uClouds) gl.uniform1f(U.uClouds, look.clouds);
         const n = Math.min(MAX_LIGHTS, lights.length);
         if (U.uNumLights) {
           gl.uniform1i(U.uNumLights, n);
@@ -787,23 +1496,26 @@
             gl.uniform4fv(U.uLightPos, lp); gl.uniform3fv(U.uLightCol, lc);
           }
         }
-        if (U.uShadow) {
-          gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.shadowTex);
-          gl.uniform1i(U.uShadow, 0);
-          gl.uniform1f(U.uShadowOn, shadowMat ? 1 : 0);
-          if (shadowMat) gl.uniformMatrix4fv(U.uShadowMat, false, shadowMat);
+        if (U.uShadowF) {
+          gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.shadow[0].tex); gl.uniform1i(U.uShadowN, 0);
+          gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this.shadow[1].tex); gl.uniform1i(U.uShadowF, 1);
+          gl.uniform1f(U.uShadowOn, shadowOn ? 1 : 0); gl.uniform1f(U.uNearOn, nearOn ? 1 : 0);
+          if (shadowOn) gl.uniformMatrix4fv(U.uShadowMatF, false, this.shadow[1].mat);
+          if (nearOn) gl.uniformMatrix4fv(U.uShadowMatN, false, this.shadow[0].mat);
         }
+        if (U.uHF) { gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, this.hfTex); gl.uniform1i(U.uHF, 2); }
+        gl.activeTexture(gl.TEXTURE0);
       };
 
       // ----- land -----
-      const T = this.progT;
-      gl.useProgram(T.p); setCommon(T);
-      gl.uniformMatrix4fv(T.u.uVP, false, vp);
-      gl.uniform3fv(T.u.uLow, look.low); gl.uniform3fv(T.u.uMid, look.mid); gl.uniform3fv(T.u.uHigh, look.high);
-      gl.uniform3fv(T.u.uRock, look.rock); gl.uniform3fv(T.u.uSnow, look.snow);
-      gl.uniform1f(T.u.uSnowLine, look.snowLine); gl.uniform1f(T.u.uHmin, this.hmin); gl.uniform1f(T.u.uHmax, this.hmax);
-      gl.uniform1f(T.u.uLava, this.world.terrain.lavaH != null ? 1 : 0);
-      gl.uniform1f(T.u.uLavaH, this.world.terrain.lavaH || 0);
+      const Tp = this.progT;
+      gl.useProgram(Tp.p); setCommon(Tp);
+      gl.uniformMatrix4fv(Tp.u.uVP, false, vp);
+      gl.uniform3fv(Tp.u.uLow, look.low); gl.uniform3fv(Tp.u.uMid, look.mid); gl.uniform3fv(Tp.u.uHigh, look.high);
+      gl.uniform3fv(Tp.u.uRock, look.rock); gl.uniform3fv(Tp.u.uSnow, look.snow);
+      gl.uniform1f(Tp.u.uSnowLine, look.snowLine); gl.uniform1f(Tp.u.uHmin, this.hmin); gl.uniform1f(Tp.u.uHmax, this.hmax);
+      gl.uniform1f(Tp.u.uLava, this.world.terrain.lavaH != null ? 1 : 0);
+      gl.uniform1f(Tp.u.uLavaH, this.world.terrain.lavaH || 0);
       gl.bindVertexArray(this.terrain.vao); gl.drawElements(gl.TRIANGLES, this.terrain.count, gl.UNSIGNED_INT, 0);
       gl.bindVertexArray(this.ring.vao); gl.drawElements(gl.TRIANGLES, this.ring.count, gl.UNSIGNED_INT, 0);
 
@@ -811,33 +1523,55 @@
       const Mp = this.progM;
       gl.useProgram(Mp.p); setCommon(Mp);
       gl.uniformMatrix4fv(Mp.u.uVP, false, vp);
-      this.drawMeshes(false);
+      gl.uniform1f(Mp.u.uGlass, 0);
+      this.drawMeshes(Mp);
+
+      // ----- grass -----
+      const grassK = look.grass == null ? 0 : look.grass;
+      if (q.grass > 0 && grassK > 0) {
+        const Gp = this.progG;
+        gl.useProgram(Gp.p); setCommon(Gp);
+        gl.uniformMatrix4fv(Gp.u.uVP, false, vp);
+        gl.uniform1f(Gp.u.uCell, GRASS_CELL); gl.uniform1f(Gp.u.uRadius, q.grass); gl.uniform1f(Gp.u.uDensity, grassK);
+        gl.uniform1f(Gp.u.uSnowLine, look.snowLine); gl.uniform1f(Gp.u.uHmin, this.hmin); gl.uniform1f(Gp.u.uHmax, this.hmax);
+        const t = this.world.terrain;
+        gl.uniform1f(Gp.u.uLowH, t.waterH != null ? t.waterH : t.lavaH != null ? t.lavaH : -1e6);
+        const gc = look.grassCol || mixc(look.low, [0.9, 1, 0.5], 0.08), gc2 = look.grassCol2 || mixc(mixc(look.low, look.mid, 0.6), [0.9, 0.95, 0.45], 0.1);
+        gl.uniform3fv(Gp.u.uGrassCol, gc); gl.uniform3fv(Gp.u.uGrassCol2, gc2);
+        let n = 0; while (n < this.grassCells.length && this.grassCells[n] <= q.grass) n++;
+        gl.disable(gl.CULL_FACE);
+        gl.bindVertexArray(this.grassVao);
+        gl.drawArraysInstanced(gl.TRIANGLES, 0, 12, n);
+        gl.enable(gl.CULL_FACE);
+      }
 
       // ----- sky (behind everything, drawn last to save fill) -----
       const S = this.progSky;
       gl.useProgram(S.p); setCommon(S);
       gl.uniformMatrix4fv(S.u.uInvVP, false, M4.inv(vp));
-      gl.uniform1f(S.u.uClouds, look.clouds);
+      gl.uniform1f(S.u.uStars, g.stars || 0);
       gl.disable(gl.CULL_FACE);
       gl.bindVertexArray(this.triVao); gl.drawArrays(gl.TRIANGLES, 0, 3);
 
+      // blending never touches the alpha already there: it is the post pass's mask
       // ----- water -----
       if (this.world.terrain.waterH != null) {
         const Wp = this.progW;
         gl.useProgram(Wp.p); setCommon(Wp);
         gl.uniformMatrix4fv(Wp.u.uVP, false, vp); gl.uniform1f(Wp.u.uH, this.world.terrain.waterH);
         gl.uniform3fv(Wp.u.uWater, look.water || [0.1, 0.2, 0.25]);
-        gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false); gl.disable(gl.CULL_FACE);
+        gl.enable(gl.BLEND); gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ZERO, gl.ONE); gl.depthMask(false); gl.disable(gl.CULL_FACE);
         gl.bindVertexArray(this.waterVao); gl.drawArrays(gl.TRIANGLES, 0, 6);
         gl.depthMask(true); gl.disable(gl.BLEND);
       }
 
       // ----- see-through things (shields) -----
       if (scene.glass && scene.glass.length) {
-        gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE); gl.depthMask(false);
+        gl.enable(gl.BLEND); gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE, gl.ZERO, gl.ONE); gl.depthMask(false);
         gl.useProgram(Mp.p);
+        gl.uniform1f(Mp.u.uGlass, 1); gl.uniform1f(Mp.u.uBox, 0);
         const m = this.meshes.sphere, d = new Float32Array(scene.glass.length * INST_FLOATS);
-        scene.glass.forEach((g, i) => { trs(d, i * INST_FLOATS, g.x, g.y, g.z, 0, 0, g.s, g.s * 1.2, g.s); d.set([g.c[0], g.c[1], g.c[2], g.a], i * INST_FLOATS + 16); d.set([0.6, 0, 0, 1], i * INST_FLOATS + 20); });
+        scene.glass.forEach((gs, i) => { trs(d, i * INST_FLOATS, gs.x, gs.y, gs.z, 0, 0, gs.s, gs.s * 1.2, gs.s); d.set([gs.c[0], gs.c[1], gs.c[2], gs.a], i * INST_FLOATS + 16); d.set([0.6, 0, 0, 1], i * INST_FLOATS + 20); });
         gl.bindVertexArray(m.vao); gl.bindBuffer(gl.ARRAY_BUFFER, m.inst); gl.bufferData(gl.ARRAY_BUFFER, d, gl.STREAM_DRAW);
         gl.drawElementsInstanced(gl.TRIANGLES, m.count, gl.UNSIGNED_SHORT, 0, scene.glass.length);
       }
@@ -853,7 +1587,7 @@
         gl.bindBuffer(gl.ARRAY_BUFFER, this.partBuf);
         gl.bufferData(gl.ARRAY_BUFFER, scene.parts.data.subarray(0, scene.parts.n * 12), gl.STREAM_DRAW);
         // premultiplied: smoke uses alpha (blend), glows add (alpha ~0 in the w channel of aK)
-        gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+        gl.blendFuncSeparate(gl.ONE, gl.ONE_MINUS_SRC_ALPHA, gl.ZERO, gl.ONE);
         gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, scene.parts.n);
       }
       if (scene.beams && scene.beams.n) {
@@ -863,7 +1597,7 @@
         gl.bindVertexArray(this.beamVao);
         gl.bindBuffer(gl.ARRAY_BUFFER, this.beamBuf);
         gl.bufferData(gl.ARRAY_BUFFER, scene.beams.data.subarray(0, scene.beams.n * 12), gl.STREAM_DRAW);
-        gl.blendFunc(gl.ONE, gl.ONE);
+        gl.blendFuncSeparate(gl.ONE, gl.ONE, gl.ZERO, gl.ONE);
         gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, scene.beams.n);
       }
       gl.depthMask(true); gl.disable(gl.BLEND);
@@ -874,7 +1608,7 @@
         const vproj = M4.persp(1.1, W / H, 0.02, 10);
         const vvp = M4.mul(vproj, view);
         gl.useProgram(Mp.p); setCommon(Mp);
-        gl.uniform1f(Mp.u.uShadowOn, 0);
+        gl.uniform1f(Mp.u.uShadowOn, 0); gl.uniform1f(Mp.u.uGlass, 0);
         gl.uniformMatrix4fv(Mp.u.uVP, false, vvp);
         gl.enable(gl.CULL_FACE);
         const byKind = {};
@@ -882,16 +1616,87 @@
         for (const [kind, list] of Object.entries(byKind)) {
           const m = this.meshes[kind], d = new Float32Array(list.length * INST_FLOATS);
           list.forEach((it, i) => { d.set(it.m, i * INST_FLOATS); d.set([it.col[0], it.col[1], it.col[2], 1], i * INST_FLOATS + 16); d.set(it.mat || [0, 0, 0, 0.6], i * INST_FLOATS + 20); });
+          gl.uniform1f(Mp.u.uBox, kind === 'box' ? 1 : 0);
           gl.bindVertexArray(m.vao); gl.bindBuffer(gl.ARRAY_BUFFER, m.inst); gl.bufferData(gl.ARRAY_BUFFER, d, gl.STREAM_DRAW);
           gl.drawElementsInstanced(gl.TRIANGLES, m.count, gl.UNSIGNED_SHORT, 0, list.length);
         }
       }
       gl.bindVertexArray(null);
+
+      if (post) this.postPass(scene, T, W, H, hdr, vp, f);
     }
 
-    drawMeshes(shadow) {
+    // bloom, light shafts, tone mapping, grade, vignette, grain: the HDR picture becomes the one on screen
+    postPass(scene, T, W, H, hdr, vp, f) {
+      const gl = this.gl, g = this.grade, q = this.q, look = this.look, sun = this.sun;
+      gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND); gl.disable(gl.CULL_FACE);
+      gl.bindVertexArray(this.triVao);
+      if (T.ms) {
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, T.ms.fb);
+        gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, T.scene.fb);
+        gl.blitFramebuffer(0, 0, W, H, 0, 0, W, H, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+      }
+      const draw = (prog, target, tex, tw, th, set) => {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, target ? target.fb : null);
+        gl.viewport(0, 0, target ? target.w : W, target ? target.h : H);
+        gl.useProgram(prog.p);
+        gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.uniform1i(prog.u.uTex, 0);
+        gl.uniform2f(prog.u.uTexel, 1 / tw, 1 / th);
+        if (set) set(prog.u);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+      };
+      // bloom: bright bits, blurred at three sizes
+      const B = T.bloom;
+      draw(this.progBright, B[0].a, T.scene.tex, W, H, U => gl.uniform1f(U.uThresh, hdr ? 1.0 : 0.72));
+      const blur = b => {
+        draw(this.progBlur, b.b, b.a.tex, b.w, b.h, U => gl.uniform2f(U.uDir, 1, 0));
+        draw(this.progBlur, b.a, b.b.tex, b.w, b.h, U => gl.uniform2f(U.uDir, 0, 1));
+      };
+      blur(B[0]);
+      for (let i = 1; i < 3; i++) { draw(this.progDown, B[i].a, B[i - 1].a.tex, B[i - 1].w, B[i - 1].h); blur(B[i]); }
+      // light shafts from the sun, when it is in front of the camera
+      let rayK = 0;
+      if (q.rays && g.rays > 0) {
+        const px = this.camPos[0] + sun[0] * 2000, py = this.camPos[1] + sun[1] * 2000, pz = this.camPos[2] + sun[2] * 2000;
+        const m = vp;
+        const cx = m[0] * px + m[4] * py + m[8] * pz + m[12], cy = m[1] * px + m[5] * py + m[9] * pz + m[13], cw = m[3] * px + m[7] * py + m[11] * pz + m[15];
+        if (cw > 0) {
+          const su = cx / cw * 0.5 + 0.5, sv = cy / cw * 0.5 + 0.5;
+          const off = Math.max(Math.abs(su - 0.5), Math.abs(sv - 0.5)) * 2;
+          const vis = sstep(0.05, 0.3, dot(f, sun)) * (1 - sstep(0.75, 1.5, off));
+          if (vis > 0.01) {
+            draw(this.progRayMask, T.rayMask, T.scene.tex, W, H, U => { gl.uniform2f(U.uSun, su, sv); gl.uniform1f(U.uAspect, W / H); gl.uniform3fv(U.uSunCol, look.sunColor); });
+            draw(this.progRays, T.rays, T.rayMask.tex, T.rayMask.w, T.rayMask.h, U => gl.uniform2f(U.uSun, su, sv));
+            rayK = g.rays * vis * 0.6;
+          }
+        }
+      }
+      // the finish
+      draw(this.progFinal, T.ldr, T.scene.tex, W, H, U => {
+        gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, B[0].a.tex); gl.uniform1i(U.uBloom0, 1);
+        gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, B[1].a.tex); gl.uniform1i(U.uBloom1, 2);
+        gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, B[2].a.tex); gl.uniform1i(U.uBloom2, 3);
+        gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, T.rays.tex); gl.uniform1i(U.uRays, 4);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.uniform1f(U.uBloomK, (hdr ? 0.35 : 0.5) * g.bloom); gl.uniform1f(U.uRayK, rayK);
+        gl.uniform1f(U.uExposure, g.exposure); gl.uniform1f(U.uSat, g.sat); gl.uniform1f(U.uContrast, g.contrast); gl.uniform1f(U.uGamma, g.gamma);
+        gl.uniform3fv(U.uLift, g.lift); gl.uniform3fv(U.uGain, g.gain);
+        gl.uniform1f(U.uVig, g.vignette); gl.uniform1f(U.uGrain, q.grain); gl.uniform1f(U.uTime, scene.time || 0);
+        gl.uniform1f(U.uHurt, Math.min(1, scene.hurt || 0)); gl.uniform1f(U.uFlash, Math.min(1, scene.flash || 0));
+        gl.uniform1f(U.uHeat, this.world.terrain.lavaH != null ? q.heat : 0); gl.uniform1f(U.uCA, q.ca * 0.012);
+        gl.uniform1f(U.uHDR, hdr ? 1 : 0);
+      });
+      if (T.ldr) draw(this.progFxaa, null, T.ldr.tex, W, H);
+      gl.bindVertexArray(null);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.enable(gl.DEPTH_TEST); gl.enable(gl.CULL_FACE);
+    }
+
+    drawMeshes(prog) {
       const gl = this.gl;
       for (const [k, m] of Object.entries(this.meshes)) {
+        if (prog.u.uBox) gl.uniform1f(prog.u.uBox, k === 'box' ? 1 : 0);
         if (m.staticN) {
           // static instances: bind the static buffer as instances
           gl.bindVertexArray(m.vao);
@@ -905,7 +1710,6 @@
         gl.bindVertexArray(m.vao);
         gl.drawElementsInstanced(gl.TRIANGLES, m.count, gl.UNSIGNED_SHORT, 0, m.n);
       }
-      void shadow;
     }
 
     // world point to screen pixels (CSS), or null when behind
@@ -945,7 +1749,8 @@
   function cross(a, b) { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
   const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
   const clamp01 = x => (x < 0 ? 0 : x > 1 ? 1 : x);
+  const sstep = (a, b, x) => { const t = clamp01((x - a) / (b - a)); return t * t * (3 - 2 * t); };
   const mixc = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 
-  root.JFRender = { Renderer, Batch, M4, trs, norm, cross, mixc };
+  root.JFRender = { Renderer, Batch, M4, trs, norm, cross, mixc, QUALITY };
 })(window);

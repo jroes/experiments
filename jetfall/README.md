@@ -15,10 +15,11 @@ T chat, V quick chat (V G S is "Shazbot!"), F third person. Phones get on-screen
 
 ## How it works
 
-- `sim.js` the rules: terrain, bases, armor, weapons, flags, turrets. No DOM; the tests run it in node.
+- `sim.js` the rules: terrain, bases, armor, weapons, flags, turrets, and how each map looks. No DOM; the tests run it in node.
 - `net.js` binary packets, the host (runs the world, takes inputs, sends snapshots) and the client (prediction and interpolation).
 - `host-worker.js` the host in a Web Worker. `link.js` the relay connection and WebRTC.
-- `bots.js` computer players. `render.js`, `models.js` WebGL2 drawing. `audio.js` Web Audio sounds. `ui.js` the page.
+- `bots.js` computer players. `render.js`, `models.js` WebGL2 drawing: HDR with bloom, light shafts, soft shadows, grass and a grade per map on the Balanced
+  and Sharp settings, a plain fast path on Fast. `audio.js` Web Audio sounds. `ui.js` the page.
 
 The relay is `/jetfall` on the elf-punch server (see its README). Tests: `node --test tests/jetfall.test.js`, plus `elf-punch/test-relay.js`.
 

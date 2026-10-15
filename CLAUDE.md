@@ -147,7 +147,18 @@ host's copy is hidden. The host decides every hit.
 - **Midair replay.** A disc that kills you well off the ground is a midair (`mid` on the kill event). The client keeps about 7 s of snapshots and events
   (`hist`, `histEv`) and the page plays them back with `viewAt`: over the killer's shoulder, behind the disc, slow around the hit. It is only a picture.
 - The renderer is raw WebGL2 like the HD-2D one: the land is one mesh with the physics' own triangles, everything solid is an instanced box, sphere or cylinder,
-  a sun shadow map around the camera, particles and beams as instanced quads. `?relay=ws://127.0.0.1:8135/jetfall` points a page at a local server;
+  two sun shadow maps around the camera (near and far), particles and beams as instanced quads. On the Balanced and Sharp settings the scene is drawn in HDR
+  (half float) and finished in a post pass: bloom, light shafts from the sun, heat haze over lava, filmic tone mapping with a colour grade per map (`look.grade`),
+  vignette and grain; Sharp adds 4x MSAA and the near shadow map, Balanced uses FXAA. Fast (phones) draws straight to the canvas with none of that. The alpha of
+  the HDR target is a mask for the post pass (1 sky, small values heat), so everything that blends uses `blendFuncSeparate` and leaves it alone. The heightfield
+  is also a texture (height, sun visibility, built-on), which is how people and smoke stand in a hill's shadow, how water knows its depth (shore foam, clear
+  shallows) and where the grass goes. Grass is tufts on a grid that follows the camera, placed by the vertex shader from the heightfield (`look.grass` is the density).
+  Colours are tuned without a gamma step, like the first version, so do not add one without retuning every look.
+  Surfaces are shader materials, not textures: an instance's material is `[glow, kind, extra, gloss]`, where kind > 0 is metal panels that many metres
+  across (seams with a bevel, bolts, scratches, grime; extra 1 = a team stripe, 2 = hazard stripes), -1 stone blocks (courses, mortar, cracks, moss),
+  -2 rock (3D noise bumps in world space), -3 cloth, -4 armour plating. `buildStatic` dresses the bunkers (pillars, girders, ribs, pipes, vents, antenna,
+  screens, lockers, the mast's ladder, spawn pads) with boxes and cylinders that do not collide; `models.js` builds everything else from the same three
+  shapes with `kit()`. A part hanging at -y tips forward with a positive x rotation. `?relay=ws://127.0.0.1:8135/jetfall` points a page at a local server;
   `JFGame.cam = { follow: id }` in the console follows a player (handy for screenshots). `tools/jetfall-og.js` makes the preview picture.
 
 **Two ways to host a game.** Browsers hold the rules (lockstep, `/kv`, Sector Dominion) when friends are playing and cheating does not matter. The server holds
