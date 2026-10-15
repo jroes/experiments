@@ -372,3 +372,22 @@ test('the client: welcome, snapshots, prediction and a smooth view', () => {
   // with no lag the prediction is at most a tick or two ahead of the host
   assert.ok(maxErr < 3, 'prediction drifted ' + maxErr);
 });
+
+test('a match ends, the next map starts, and the client follows without losing its place', () => {
+  let client;
+  const h = new Net.Host({ send: (peer, bytes) => { if (peer === 0) client.receive(bytes); }, settings: { map: 'highland', bots: 1, caps: 1, rotate: true } });
+  client = new Net.Client({ send: b => h.receive(0, b), name: 'me', loadout: JF.DEFAULT_LOADOUT });
+  client.hello(0);
+  const you = client.welcome.you;
+  for (let f = 0; f < 120; f++) { h.update(1 / 60); client.update(1 / 60, idle()); }
+  h.world.finish(0);
+  let maps = new Set([client.welcome.map]);
+  for (let f = 0; f < 60 * 14; f++) { h.update(1 / 60); client.update(1 / 60, idle()); maps.add(client.welcome.map); }
+  assert.ok(maps.has('dunes'), 'moved on to the next map: ' + [...maps]);
+  assert.equal(client.world.mapKey, 'dunes');
+  assert.equal(client.welcome.you, you, 'same player id');
+  assert.equal(h.world.over, null);
+  for (let f = 0; f < 120; f++) { h.update(1 / 60); client.update(1 / 60, idle()); }
+  assert.ok(client.me && client.me.alive, 'playing again');
+  assert.ok(client.takeEvents().some(e => e.k === 'map' && e.map === 'dunes'));
+});
