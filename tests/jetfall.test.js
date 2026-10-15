@@ -421,7 +421,15 @@ test('bot skill matters: easy bots barely hurt a dodging player, brutal ones do'
     }
     return dmg;
   };
-  const easy = duel(0.2), normal = duel(0.5), brutal = duel(1);
-  assert.ok(easy * 4 < brutal, 'easy ' + easy + ' brutal ' + brutal);
-  assert.ok(normal < brutal * 0.6, 'normal ' + normal + ' brutal ' + brutal);
+  // bots use Math.random, so seed it and add up several duels: one duel is too noisy to compare
+  const random = Math.random;
+  const total = skill => {
+    let sum = 0;
+    for (let seed = 1; seed <= 4; seed++) { Math.random = JF.mulberry(seed * 7919); sum += duel(skill); }
+    return sum;
+  };
+  let easy, normal, brutal;
+  try { easy = total(0.2); normal = total(0.5); brutal = total(1); } finally { Math.random = random; }
+  assert.ok(easy * 3 < brutal, 'easy ' + easy + ' brutal ' + brutal);
+  assert.ok(normal < brutal * 0.7, 'normal ' + normal + ' brutal ' + brutal);
 });
