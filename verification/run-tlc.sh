@@ -4,8 +4,9 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-URL=https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar
-SHA=7beec0f04818732a62fa193731711a99aa4f11279499b2360a7d156c519ea78d
+# v1.8.0 is a rolling pre-release that gets rebuilt (its hash changes), so pin the last fixed release
+URL=https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
+SHA=936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
 JAR=.cache/tla2tools.jar
 mkdir -p .cache
 [ -f "$JAR" ] || curl -fsSL -o "$JAR" "$URL"
