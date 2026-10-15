@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Jetfall</title>
+<meta name="description" content="Jetpacks, skiing and capture the flag in the browser. Play against bots or with friends.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Jetfall">
+<meta property="og:title" content="Jetfall">
+<meta property="og:description" content="Jetpacks, skiing and capture the flag. Free, in your browser. Play against bots or with friends.">
+<meta property="og:url" content="https://jroes.github.io/experiments/jetfall/">
+<meta property="og:image" content="https://jroes.github.io/experiments/jetfall/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<canvas id="view"></canvas>
+
+<!-- in-game HUD -->
+<div id="hud" hidden>
+  <div id="cross"><i></i><i></i><i></i><i></i><b></b></div>
+  <div id="hitmark"></div>
+  <div id="dmgdir"></div>
+  <div id="markers"></div>
+  <div id="top">
+    <div class="tscore t0"><span class="tname"></span><b id="s0">0</b><span class="fl" id="f0"></span></div>
+    <div id="clock">20:00</div>
+    <div class="tscore t1"><span class="fl" id="f1"></span><b id="s1">0</b><span class="tname"></span></div>
+  </div>
+  <canvas id="radar" width="200" height="200"></canvas>
+  <div id="feed"></div>
+  <div id="center"></div>
+  <div id="sub"></div>
+  <div id="chatlog"></div>
+  <div id="bars">
+    <div class="bar"><span>HEALTH</span><div><i id="hp"></i></div><b id="hpn"></b></div>
+    <div class="bar en"><span>ENERGY</span><div><i id="en"></i></div><b id="enn"></b></div>
+    <div id="speed"><b id="spd">0</b> km/h <span id="alt"></span></div>
+  </div>
+  <div id="weapons"></div>
+  <div id="station"><span id="sttext"></span><div><i id="stbar"></i></div></div>
+  <div id="dead" hidden><b>You died</b><span id="deadtxt"></span></div>
+  <div id="roomtag"></div>
+  <div id="net"></div>
+  <div id="fps"></div>
+  <div id="chatbox" hidden><span id="chatto">say:</span><input id="chatin" maxlength="140" autocomplete="off"></div>
+</div>
+
+<!-- touch controls -->
+<div id="touch" hidden>
+  <div id="stick"><i></i></div>
+  <div id="tbtns">
+    <button data-b="fire" class="big">FIRE</button>
+    <button data-b="jet" class="big">JET</button>
+    <button data-b="ski">SKI</button>
+    <button data-b="next">GUN</button>
+    <button data-b="gren">GREN</button>
+    <button data-b="pack">PACK</button>
+  </div>
+  <button id="tmenu">≡</button>
+</div>
+
+<!-- main menu -->
+<div id="menu">
+  <div class="panel">
+    <h1>JETFALL</h1>
+    <p class="tag">Jetpacks, skiing, capture the flag.</p>
+    <label class="name">Your name <input id="name" maxlength="20" autocomplete="nickname" placeholder="name"></label>
+    <div class="go">
+      <button id="playBots" class="primary">Play against bots</button>
+      <button id="hostBtn">Host a game for friends</button>
+      <div class="join"><input id="code" maxlength="6" placeholder="CODE" autocapitalize="characters" autocomplete="off"><button id="joinBtn">Join</button></div>
+    </div>
+    <div id="menuMsg" class="msg"></div>
+    <h3>Open games <button id="refresh" class="small">refresh</button></h3>
+    <div id="rooms" class="rooms"><span class="dim">Looking…</span></div>
+    <div class="links"><button id="helpBtn" class="link">How to play</button> · <button id="settingsBtn" class="link">Settings</button> · <a href="../">more games</a></div>
+  </div>
+</div>
+
+<dialog id="hostDlg">
+  <h2>Host a game</h2>
+  <label>Game name <input id="hName" maxlength="24"></label>
+  <label>Map <select id="hMap"></select></label>
+  <label>Bots per team <select id="hBots"><option>0</option><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option><option>6</option><option>8</option></select></label>
+  <label>Bot skill <select id="hSkill"><option value="0.2">Easy</option><option value="0.5" selected>Normal</option><option value="0.8">Hard</option><option value="1">Brutal</option></select></label>
+  <label>Captures to win <select id="hCaps"><option>3</option><option selected>5</option><option>8</option></select></label>
+  <label>Time limit <select id="hMins"><option value="10">10 minutes</option><option value="20" selected>20 minutes</option><option value="30">30 minutes</option></select></label>
+  <label class="check"><input type="checkbox" id="hPublic" checked> <span>List it under Open games. Anyone can join a listed game. Unlisted games need the code.</span></label>
+  <p class="fine">Your browser runs the game, so keep this tab open. If you leave, the game ends for everyone. Bots fill empty seats and step aside when friends join.</p>
+  <div class="row"><button value="cancel" id="hCancel">Cancel</button><button id="hGo" class="primary">Start</button></div>
+</dialog>
+
+<dialog id="pauseDlg">
+  <h2>Paused <span class="dim" id="pRoom"></span></h2>
+  <div id="pInvite" class="invite" hidden>
+    <p>Friends join with code <b id="pCode"></b> or this link:</p>
+    <div class="join"><input id="pLink" readonly><button id="pCopy">Copy</button></div>
+  </div>
+  <div class="col">
+    <button id="pResume" class="primary">Back to the game</button>
+    <button id="pLoadout">Loadout (I)</button>
+    <button id="pTeam">Switch team</button>
+    <button id="pSettings">Settings</button>
+    <button id="pHelp">How to play</button>
+    <button id="pHostSet" hidden>Game settings (host)</button>
+    <button id="pLeave" class="warn">Leave game</button>
+  </div>
+</dialog>
+
+<dialog id="hostSetDlg">
+  <h2>Game settings</h2>
+  <label>Map <select id="gMap"></select></label>
+  <label>Bots per team <select id="gBots"><option>0</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option><option>8</option></select></label>
+  <label>Bot skill <select id="gSkill"><option value="0.2">Easy</option><option value="0.5">Normal</option><option value="0.8">Hard</option><option value="1">Brutal</option></select></label>
+  <label>Captures to win <select id="gCaps"><option>3</option><option>5</option><option>8</option></select></label>
+  <label>Time limit <select id="gMins"><option value="10">10 minutes</option><option value="20">20 minutes</option><option value="30">30 minutes</option></select></label>
+  <h3>Players</h3>
+  <div id="gPlayers"></div>
+  <p class="fine">A new map or rule starts a fresh match.</p>
+  <div class="row"><button id="gCancel">Close</button><button id="gApply">Apply</button><button id="gRestart" class="primary">Apply and restart</button></div>
+</dialog>
+
+<dialog id="loadDlg" class="wide">
+  <h2>Loadout</h2>
+  <p class="fine">You spawn in light armor with a blaster, chaingun and disc launcher. Step on an inventory station in your base (inside the bunker) to put this on. Stations need your generator to be working.</p>
+  <div id="armors" class="opts"></div>
+  <h3>Weapons <span class="dim" id="slots"></span></h3>
+  <div id="wlist" class="opts"></div>
+  <h3>Pack</h3>
+  <div id="packs" class="opts"></div>
+  <div class="row"><button id="lDone" class="primary">Done</button></div>
+</dialog>
+
+<dialog id="setDlg">
+  <h2>Settings</h2>
+  <label>Mouse speed <input type="range" id="sSens" min="0.2" max="3" step="0.05"></label>
+  <label class="check"><input type="checkbox" id="sInvert"> <span>Invert mouse up and down</span></label>
+  <label>Field of view <input type="range" id="sFov" min="70" max="110" step="1"> <span id="sFovN" class="dim"></span></label>
+  <label>Picture <select id="sQual"><option value="low">Fast (lower resolution, no shadows)</option><option value="mid">Balanced</option><option value="high">Sharp</option></select></label>
+  <label>Volume <input type="range" id="sVol" min="0" max="1" step="0.05"></label>
+  <label class="check"><input type="checkbox" id="sSfx"> <span>Sound</span></label>
+  <label class="check"><input type="checkbox" id="sFps"> <span>Show frame rate and ping</span></label>
+  <label class="check"><input type="checkbox" id="sSkiHold"> <span>Ski with the jump key held (off: press Shift to ski)</span></label>
+  <div class="row"><button id="sDone" class="primary">Done</button></div>
+</dialog>
+
+<dialog id="helpDlg" class="wide">
+  <h2>How to play</h2>
+  <p>Two teams, two bases. Take the enemy flag from the top of their bunker and bring it to your own flag while yours is at home. First to the capture limit wins.</p>
+  <h3>Moving</h3>
+  <ul>
+    <li><b>Jets</b> (right mouse or E) lift you and push you the way you are moving. They burn energy, which comes back when you stop.</li>
+    <li><b>Skiing</b> (hold Space on the ground): no friction. Go down hills to build speed, then jet over the top of the next one. This is how you cross the map fast.</li>
+    <li>Tap Space to jump. Landing hard hurts, so land on a downhill slope or jet just before you touch down.</li>
+    <li>A disc at your own feet throws you into the air. It costs some health.</li>
+  </ul>
+  <h3>Your base</h3>
+  <ul>
+    <li><b>Inventory stations</b> inside the bunker give you your loadout (I): armor, weapons, a pack, and refill everything.</li>
+    <li>The <b>generator</b> in the middle of the bunker powers the stations and the turrets on the roof. If the enemy blows it up, fix it with a repair pack.</li>
+    <li>Heavy armor is slow but tough and carries the mortar. Light armor is fast and carries the laser rifle.</li>
+  </ul>
+  <h3>Keys</h3>
+  <table class="keys">
+    <tr><td>W A S D</td><td>move</td><td>Mouse</td><td>look</td></tr>
+    <tr><td>Left mouse</td><td>fire</td><td>Right mouse / E</td><td>jets</td></tr>
+    <tr><td>Space</td><td>jump, hold to ski</td><td>1 to 5, wheel, Q</td><td>weapons</td></tr>
+    <tr><td>G</td><td>throw grenade</td><td>R</td><td>use pack</td></tr>
+    <tr><td>I</td><td>loadout</td><td>Tab</td><td>scores</td></tr>
+    <tr><td>T / Y</td><td>chat / team chat</td><td>V</td><td>third person</td></tr>
+    <tr><td>M</td><td>map</td><td>K</td><td>respawn now</td></tr>
+  </table>
+  <p class="fine">On a phone: left thumb moves, drag on the right to look, buttons for the rest. A keyboard and mouse is a lot easier.</p>
+  <h3>Weapons</h3>
+  <div id="wHelp"></div>
+  <p class="fine">Friends only: there are no accounts and the host's browser runs the game, so a host could change anything. Don't play with people you don't trust.</p>
+  <div class="row"><button id="helpDone" class="primary">Done</button></div>
+</dialog>
+
+<div id="scores" hidden></div>
+<div id="bigmap" hidden><canvas id="mapc" width="600" height="600"></canvas></div>
+<div id="over" hidden></div>
+<div id="loading" hidden>Loading…</div>
+
+<script src="../shared/config.js"></script>
+<script src="../shared/version.js"></script>
+<script src="../shared/update.js"></script>
+<script src="sim.js"></script>
+<script src="bots.js"></script>
+<script src="net.js"></script>
+<script src="link.js"></script>
+<script src="render.js"></script>
+<script src="models.js"></script>
+<script src="audio.js"></script>
+<script src="ui.js"></script>
+</body>
+</html>
