@@ -133,7 +133,8 @@ host's copy is hidden. The host decides every hit.
   guest is refused with "refresh".
 - **Bots** play through the same inputs as a person. `bots.js` picks a goal (grab, run home, chase the carrier, defend, raid the generator, restock),
   routes through the bunker doors, steers by the velocity it wants (jets to turn at speed) and leads its shots with `leadAim`. Teams get the same mix of jobs
-  by slot. A test plays every map and wants kills and a flag taken.
+  by slot. A test plays every map and wants kills and a flag taken. Skill scales how they fight, not how they move: how far they notice you, reaction time,
+  aim wander, how well they lead, aiming at the feet, pauses between shots. A duel test against a dodging dummy keeps Easy and Normal well under Brutal.
 - The renderer is raw WebGL2 like the HD-2D one: the land is one mesh with the physics' own triangles, everything solid is an instanced box, sphere or cylinder,
   a sun shadow map around the camera, particles and beams as instanced quads. `?relay=ws://127.0.0.1:8135/jetfall` points a page at a local server;
   `JFGame.cam = { follow: id }` in the console follows a player (handy for screenshots). `tools/jetfall-og.js` makes the preview picture.

@@ -391,3 +391,37 @@ test('a match ends, the next map starts, and the client follows without losing i
   assert.ok(client.me && client.me.alive, 'playing again');
   assert.ok(client.takeEvents().some(e => e.k === 'map' && e.map === 'dunes'));
 });
+
+test('bot skill matters: easy bots barely hurt a dodging player, brutal ones do', () => {
+  // one bot at a time against a strafing, jetting dummy, put back 30-70 m apart every 6 s
+  const duel = skill => {
+    let dmg = 0;
+    const w = new JF.World({ map: 'highland', seed: 3 });
+    const d = spawned(w, 1, { team: 0 });
+    for (const slot of [0, 1, 2]) {
+      const b = w.addPlayer({ id: 10 + slot, name: 'bot', team: 1, bot: true, loadout: Bots.loadout(slot) });
+      b.skill = skill;
+      const brain = Bots.create(b); brain.role = 'defense';
+      let t = 0, last = w.evSeq;
+      for (let i = 0; i < 60 * 48; i++) {
+        t += TICK;
+        if (i % 360 === 0) {
+          for (const p of [d, b]) if (!p.alive) w.spawn(p);
+          JF.equip(b, b.loadout);
+          const cx = 1024 + (i % 7) * 30, cz = 1024, ang = i * 0.37, r = 30 + (i % 3) * 20;
+          d.pos = [cx, w.terrain.height(cx, cz) + 0.1, cz]; d.vel = [0, 0, 0]; d.hp = 70; d.spawnProt = 0;
+          b.pos = [cx + Math.cos(ang) * r, 0, cz + Math.sin(ang) * r]; b.pos[1] = w.terrain.height(b.pos[0], b.pos[2]) + 0.1; b.vel = [0, 0, 0]; b.spawnProt = 0;
+        }
+        w.step();
+        if (d.alive) w.applyInput(d, idle({ b: (Math.sin(t * 0.9) > 0.2 ? B.JET : 0) | (Math.sin(t * 1.7) > 0 ? B.JUMP : 0), mx: Math.sin(t * 1.3) > 0 ? 1 : -1, mz: Math.sin(t * 0.5) * 0.6, yaw: t * 0.2 }));
+        if (b.alive) w.applyInput(b, Bots.think(brain, w, b));
+        for (const e of w.events) if (e.s > last) { last = e.s; if (e.k === 'hit' && e.by === b.id) dmg += e.d; }
+      }
+      w.removePlayer(b.id);
+    }
+    return dmg;
+  };
+  const easy = duel(0.2), normal = duel(0.5), brutal = duel(1);
+  assert.ok(easy * 4 < brutal, 'easy ' + easy + ' brutal ' + brutal);
+  assert.ok(normal < brutal * 0.6, 'normal ' + normal + ' brutal ' + brutal);
+});
