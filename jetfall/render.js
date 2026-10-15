@@ -120,6 +120,10 @@
   float noise(vec2 p) { vec2 i = floor(p), f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
     return mix(mix(hash(i), hash(i + vec2(1, 0)), u.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), u.x), u.y); }
   float fbm(vec2 p) { float s = 0.0, a = 0.5; for (int i = 0; i < 4; i++) { s += a * noise(p); p *= 2.07; a *= 0.5; } return s; }
+  float hash3(vec3 p) { p = fract(p * 0.3183099 + vec3(0.1, 0.2, 0.3)); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+  float noise3(vec3 p) { vec3 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(mix(hash3(i), hash3(i + vec3(1, 0, 0)), f.x), mix(hash3(i + vec3(0, 1, 0)), hash3(i + vec3(1, 1, 0)), f.x), f.y),
+               mix(mix(hash3(i + vec3(0, 0, 1)), hash3(i + vec3(1, 0, 1)), f.x), mix(hash3(i + vec3(0, 1, 1)), hash3(i + vec3(1, 1, 1)), f.x), f.y), f.z); }
   float lum(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
   // the heightfield texture: x = ground height, y = how much sun reaches the ground there, z = 1 where something is built on it
   vec2 hfAt(vec2 xz) { return texture(uHF, (xz / ${CELL}.0 + 0.5) / ${N + 1}.0).xy; }
@@ -153,7 +157,8 @@
       vec3 d = uLightPos[i].xyz - wp; float l = length(d); float r = uLightPos[i].w;
       if (l < r) { float k = 1.0 - l / r; s += uLightCol[i] * k * k * (0.35 + 0.65 * max(dot(n, d / max(l, 0.001)), 0.0)); }
     }
-    return s;
+    // a blast right next to you is bright, not a wall of colour
+    return s / (1.0 + 0.35 * lum(s));
   }
   // the clouds' shadows drift over the land
   float cloudAt(vec2 xz) { return 1.0 - 0.4 * uClouds * smoothstep(0.52, 0.72, fbm(xz * 0.0022 + vec2(uTime * 0.012, uTime * 0.006))); }
@@ -260,7 +265,7 @@
   layout(location=2) in vec4 aM0; layout(location=3) in vec4 aM1; layout(location=4) in vec4 aM2; layout(location=5) in vec4 aM3;
   layout(location=6) in vec4 aCol; layout(location=7) in vec4 aMat;
   uniform mat4 uVP;
-  out vec3 vPos; out vec3 vNor; out vec3 vLocal; out vec3 vLocalN; out vec3 vHalf; out vec4 vCol; out vec4 vMat;
+  out vec3 vPos; out vec3 vNor; out vec3 vLocal; out vec3 vLocalN; out vec3 vHalf; out vec4 vCol; out vec4 vMat; out vec3 vT; out vec3 vB;
   void main() {
     mat4 m = mat4(aM0, aM1, aM2, aM3);
     vec4 wp = m * vec4(aPos, 1.0);
@@ -269,31 +274,63 @@
     vNor = normalize(nm * aNor);
     vec3 sc = vec3(length(aM0.xyz), length(aM1.xyz), length(aM2.xyz));
     vLocal = aPos * sc; vLocalN = aNor; vHalf = sc * 0.5; vCol = aCol; vMat = aMat;
+    // the face's own axes in the world, for the bumps (same pick as the fragment shader's uv)
+    vec3 an = abs(aNor);
+    vec3 lt = an.x > 0.5 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    vec3 lb = an.y > 0.5 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+    vT = normalize(mat3(m) * lt); vB = normalize(mat3(m) * lb);
     gl_Position = uVP * wp;
   }`;
-  // material: x = glow, y = panel size (0 = none), z = team stripe, w = gloss (0 dull .. 1 polished metal)
+  // material: x = glow, y = kind, z = extra, w = gloss (0 dull .. 1 polished metal)
+  //   y > 0   metal panels that many metres across (z: 1 = team stripe along the top, 2 = hazard stripes)
+  //   y = 0   plain
+  //   y = -1  stone blocks (field ruins, towers, cover)
+  //   y = -2  rock (the boulders; bumps from 3D noise in the world, so they stay put)
+  //   y = -3  cloth (flags)
+  //   y = -4  fine armour plating (seams, no bolts)
   const MESH_FS = `#version 300 es
   precision highp float;
   ${COMMON}
   uniform float uBox, uGlass;
-  in vec3 vPos; in vec3 vNor; in vec3 vLocal; in vec3 vLocalN; in vec3 vHalf; in vec4 vCol; in vec4 vMat; out vec4 o;
+  in vec3 vPos; in vec3 vNor; in vec3 vLocal; in vec3 vLocalN; in vec3 vHalf; in vec4 vCol; in vec4 vMat; in vec3 vT; in vec3 vB; out vec4 o;
   void main() {
     vec3 n = normalize(vNor);
     vec3 col = vCol.rgb;
     float glow = vMat.x;
     float gloss = clamp(vMat.w, 0.0, 1.0);
+    float kind = vMat.y;
     vec3 an = abs(vLocalN);
     vec2 uv = an.x > 0.5 ? vLocal.zy : an.y > 0.5 ? vLocal.xz : vLocal.xy;
-    // panels: seams every few metres on the face, picked by the face's own normal
-    if (vMat.y > 0.0) {
-      vec2 g = abs(fract(uv / vMat.y + 0.5) - 0.5) * vMat.y;
-      float seam = 1.0 - smoothstep(0.03, 0.07, min(g.x, g.y));
+    float camD = length(vPos - uCam);
+    float near = 1.0 - smoothstep(15.0, 110.0, camD);
+    vec2 bump = vec2(0.0);
+    float wall = 1.0 - an.y;
+    if (kind > 0.0 || kind < -3.5) {
+      // metal panels: seams every few metres on the face, picked by the face's own normal
+      float ps = kind > 0.0 ? kind : 0.3;
+      vec2 cell = floor(uv / ps + 0.5);
+      col *= 0.94 + 0.12 * hash(cell + 0.37);
+      vec2 fr = fract(uv / ps + 0.5) - 0.5;
+      vec2 g = abs(fr) * ps;
+      float gm = min(g.x, g.y);
+      float sw = clamp(ps * 0.03, 0.008, 0.06);
+      float seam = 1.0 - smoothstep(sw * 0.6, sw * 1.6, gm);
       col *= 1.0 - 0.35 * seam;
+      // the plate's edge rounds down into the seam
+      float bev = 1.0 - smoothstep(sw, clamp(ps * 0.06, 0.012, 0.1), gm);
+      bump += (g.x < g.y ? vec2(-sign(fr.x), 0.0) : vec2(0.0, -sign(fr.y))) * bev * (kind > 0.0 ? 0.5 * min(1.0, ps) : 0.12);
       col *= 0.92 + 0.12 * noise(uv * 1.7);
-      // bolts at the panel corners
-      vec2 bq = abs(fract(uv / vMat.y + 0.5) - 0.5) * vMat.y - vec2(0.12);
-      float bolt = 1.0 - smoothstep(0.02, 0.05, length(bq));
-      col *= 1.0 - 0.3 * bolt; gloss = max(gloss, bolt * 0.7);
+      if (kind >= 0.5) {
+        // bolts at the panel corners, standing proud
+        vec2 bq = g - vec2(0.12);
+        float bl = length(bq);
+        float bolt = 1.0 - smoothstep(0.025, 0.05, bl);
+        col *= 1.0 - 0.25 * bolt; gloss = max(gloss, bolt * 0.7);
+        bump += (bq / max(bl, 0.001)) * bolt * (1.0 - smoothstep(0.0, 0.04, bl)) * 0.6 * sign(fr.x) * sign(fr.y) * vec2(sign(fr.x), sign(fr.y));
+        // scratches
+        float scr = smoothstep(0.76, 0.81, noise(vec2(uv.x * 5.0 + uv.y * 0.4, uv.y * 40.0))) * smoothstep(0.5, 0.7, noise(uv * 0.9 + 4.0)) * near;
+        col = mix(col, col * 1.25 + 0.05, scr * 0.5); gloss = min(1.0, gloss + scr * 0.2);
+      }
       // grime at the foot of walls, and streaks running down them
       if (an.y < 0.5) {
         float foot = 1.0 - smoothstep(0.0, 1.8, vLocal.y + vHalf.y);
@@ -301,17 +338,64 @@
         float st = noise(vec2(uv.x * 5.0, uv.y * 0.25));
         col *= 1.0 - 0.14 * smoothstep(0.55, 0.8, st);
       }
-      // a glowing stripe along the top of walls in team colour
-      if (vMat.z > 0.0) { float stripe = (1.0 - smoothstep(0.0, 0.08, abs(fract(vLocal.y / 3.0) - 0.82))) * (1.0 - an.y); glow += stripe * vMat.z; }
+      // a glowing stripe along the top of walls in team colour, or black and yellow hazard stripes
+      if (vMat.z > 1.5) { float hz = fract((uv.x + uv.y) * 1.5); col = mix(col, mix(vec3(0.9, 0.7, 0.1), vec3(0.07, 0.07, 0.08), step(0.5, hz)) * (0.85 + 0.3 * noise(uv * 4.0)), 0.9 * wall); gloss = min(gloss, 0.35); }
+      else if (vMat.z > 0.0) { float stripe = (1.0 - smoothstep(0.0, 0.08, abs(fract(vLocal.y / 3.0) - 0.82))) * wall; glow += stripe * vMat.z; }
+    } else if (kind < -0.5 && kind > -1.5) {
+      // stone blocks in courses, mortar between, chipped and cracked, the ground's colour creeping up the low parts
+      vec2 bs = vec2(1.3, 0.62);
+      vec2 bu = vec2(uv.x + mod(floor(uv.y / bs.y), 2.0) * 0.65, uv.y);
+      vec2 bc = floor(bu / bs + 0.5);
+      vec2 fr = fract(bu / bs + 0.5) - 0.5;
+      vec2 g = abs(fr) * bs;
+      float gm = min(g.x, g.y);
+      float mortar = 1.0 - smoothstep(0.025, 0.06, gm + noise(uv * 9.0) * 0.03);
+      col *= 0.86 + 0.28 * hash(bc + 3.1);
+      col *= 1.0 - 0.32 * mortar;
+      float bev = 1.0 - smoothstep(0.02, 0.09, gm);
+      bump += (g.x < g.y ? vec2(-sign(fr.x), 0.0) : vec2(0.0, -sign(fr.y))) * bev * 0.6;
+      // grain and cracks
+      float grain = noise(uv * 7.0) * 0.6 + noise(uv * 23.0) * 0.4;
+      col *= 0.88 + 0.24 * grain;
+      bump += (vec2(noise(uv * 7.0 + vec2(0.07, 0.0)), noise(uv * 7.0 + vec2(0.0, 0.07))) - noise(uv * 7.0)) * 3.0 * near;
+      // chips: a few dark pits
+      float chip = smoothstep(0.78, 0.86, noise(uv * 11.0 + 3.0)) * near;
+      col *= 1.0 - 0.35 * chip;
+      // moss and dirt in the mortar, on the tops and low down
+      float foot = 1.0 - smoothstep(0.0, 2.5, vLocal.y + vHalf.y);
+      float moss = smoothstep(0.45, 0.7, noise(uv * 0.9 + 5.0)) * (0.5 * an.y + 0.5 * foot + 0.5 * mortar);
+      col = mix(col, uGround * 0.85, clamp(moss, 0.0, 1.0) * 0.55);
+      gloss = min(gloss, 0.15);
+    } else if (kind < -1.5 && kind > -2.5) {
+      // a boulder: craggy from 3D noise, banded, lichen on top
+      vec3 p = vPos * 1.3;
+      float e = 0.08;
+      float n0 = noise3(p) * 0.6 + noise3(p * 2.9) * 0.4;
+      vec3 gr = vec3(noise3(p + vec3(e, 0.0, 0.0)) * 0.6 + noise3((p + vec3(e, 0.0, 0.0)) * 2.9) * 0.4 - n0,
+                     noise3(p + vec3(0.0, e, 0.0)) * 0.6 + noise3((p + vec3(0.0, e, 0.0)) * 2.9) * 0.4 - n0,
+                     noise3(p + vec3(0.0, 0.0, e)) * 0.6 + noise3((p + vec3(0.0, 0.0, e)) * 2.9) * 0.4 - n0);
+      n = normalize(n - gr * 9.0 * (0.4 + 0.6 * near));
+      col *= 0.8 + 0.4 * n0;
+      col *= 0.85 + 0.3 * noise(vec2(vPos.y * 2.2, vPos.x * 0.3 + vPos.z * 0.3));
+      float lich = smoothstep(0.55, 0.72, noise3(vPos * 0.9 + 9.0)) * max(n.y, 0.0);
+      col = mix(col, uGround * 0.9, lich * 0.6);
+      gloss = min(gloss, 0.2);
+    } else if (kind < -2.5 && kind > -3.5) {
+      // cloth: a weave, folds that move, no shine
+      vec2 cu = vec2(vPos.x + vPos.z, vPos.y);
+      col *= 0.9 + 0.14 * noise(cu * 60.0);
+      col *= 0.82 + 0.3 * noise(cu * vec2(2.5, 1.2) + vec2(uTime * 1.5, 0.0));
+      gloss = 0.04;
     }
+    if (dot(bump, bump) > 0.0) n = normalize(n + (vT * bump.x + vB * bump.y) * (0.3 + 0.7 * near));
     // worn edges on boxes: a thin bright chamfer where the paint has gone
-    if (uBox > 0.5) {
+    if (uBox > 0.5 && !(kind < -2.5 && kind > -3.5)) {
       vec3 ed = vHalf - abs(vLocal);
       float ew = clamp(min(vHalf.x, min(vHalf.y, vHalf.z)) * 0.12, 0.012, 0.05);
       float e = an.x > 0.5 ? min(ed.y, ed.z) : an.y > 0.5 ? min(ed.x, ed.z) : min(ed.x, ed.y);
       float edge = 1.0 - smoothstep(0.0, ew, e);
-      col = mix(col, col * 1.3 + 0.05, edge * 0.7);
-      gloss = max(gloss, edge * 0.65);
+      if (kind < -0.5 && kind > -1.5) { edge *= smoothstep(0.3, 0.6, noise(uv * 5.0)); col = mix(col, col * 1.15, edge); }
+      else { col = mix(col, col * 1.3 + 0.05, edge * 0.7); gloss = max(gloss, edge * 0.65); }
     }
     float sh = shadowAt(vPos, n) * groundShade(vPos) * cloudAt(vPos.xz);
     vec3 v = normalize(uCam - vPos);
@@ -1098,71 +1182,142 @@
     }
 
     buildStatic(world) {
-      const list = [];
+      const boxes = [], cyls = [];
       const look = this.look;
       this.staticLights = [];
+      const rock = mixc(look.rockCol || look.rock, [0.5, 0.5, 0.5], 0.35);
+      const stone = mixc(rock, look.mid, 0.15);
+      const rubble = [];
       for (const s of world.solids) {
         if (s.obj) continue;
         const b = s.b;
         if (s.team < 0) {
-          // out in the field: weathered stone in the map's rock colour, metal decks
-          const rock = mixc(look.rockCol || look.rock, [0.5, 0.5, 0.5], 0.35);
-          if (s.mat === 'deck') list.push({ b, col: [0.4, 0.41, 0.44], mat: [0, 1.5, 0, 0.5] });
-          else list.push({ b, col: mixc(rock, look.mid, 0.15), mat: [0, 3, 0, 0.12] });
+          // out in the field: weathered stone blocks in the map's rock colour, metal decks
+          if (s.mat === 'deck') boxes.push({ b, col: [0.4, 0.41, 0.44], mat: [0, 1.5, 0, 0.5] });
+          else { boxes.push({ b, col: stone, mat: [0, -1, 0, 0.12] }); if (b[4] - b[1] < 8) rubble.push(b); }
           continue;
         }
         const team = JF.TEAMS[s.team].rgb;
         let col = [0.5, 0.52, 0.55], panel = 2, stripe = 0, spec = 0.45;
         if (s.mat === 'roof') { col = [0.36, 0.38, 0.42]; spec = 0.35; }
         else if (s.mat === 'floor') { col = [0.3, 0.31, 0.33]; panel = 1.5; spec = 0.5; }
-        else if (s.mat === 'trim') { col = mixc([0.45, 0.45, 0.48], team, 0.35); stripe = 0; spec = 0.55; }
+        else if (s.mat === 'trim') { col = mixc([0.45, 0.45, 0.48], team, 0.35); stripe = 2; spec = 0.5; }
         else if (s.mat === 'stand') { col = mixc([0.3, 0.3, 0.32], team, 0.5); spec = 0.5; }
         else if (s.mat === 'mast') { col = [0.42, 0.43, 0.45]; panel = 3; spec = 0.6; }
-        else if (s.mat === 'cover') { col = [0.46, 0.45, 0.43]; panel = 1.5; spec = 0.3; }
+        else if (s.mat === 'cover') { col = mixc([0.46, 0.45, 0.43], stone, 0.5); panel = -1; spec = 0.15; }
         else { col = [0.55, 0.56, 0.58]; stripe = 1; }
         // blend a touch of the ground colour in so buildings sit in the land
         col = mixc(col, look.mid, 0.08);
-        list.push({ b, col, mat: [0, panel, 0, spec], team });
+        boxes.push({ b, col, mat: [0, panel, stripe, spec] });
         // team stripes glow in the team colour: an extra thin band on the walls
-        if (stripe) {
+        if (stripe === 1) {
           const h = b[4] - b[1];
-          if (h > 4) list.push({ b: [b[0] - 0.02, b[4] - 1.0, b[2] - 0.02, b[3] + 0.02, b[4] - 0.75, b[5] + 0.02], col: team, mat: [1.8, 0, 0, 0.2] });
+          if (h > 4) boxes.push({ b: [b[0] - 0.02, b[4] - 1.0, b[2] - 0.02, b[3] + 0.02, b[4] - 0.75, b[5] + 0.02], col: team, mat: [1.8, 0, 0, 0.2] });
         }
       }
-      // door frames light
+      // the bunkers' dressing: nothing here collides, it is all to look at. Local coordinates like baseLayout in sim.js, x toward the front door.
+      const DK = [0.22, 0.23, 0.26], MT = [0.5, 0.52, 0.55], PIPE = [0.33, 0.34, 0.38], WARM = [1, 0.95, 0.85];
       for (const base of world.bases) {
-        const o = base.o, team = JF.TEAMS[base.team].rgb;
-        for (const sx of [-1, 1]) {
-          const x = o.x + sx * 12.05 * o.face;
-          list.push({ b: [x - 0.08, o.y, o.z - 2.4, x + 0.08, o.y + 4.8, o.z - 2.2], col: team, mat: [2.2, 0, 0, 0] });
-          list.push({ b: [x - 0.08, o.y, o.z + 2.2, x + 0.08, o.y + 4.8, o.z + 2.4], col: team, mat: [2.2, 0, 0, 0] });
-          list.push({ b: [x - 0.08, o.y + 4.6, o.z - 2.4, x + 0.08, o.y + 4.8, o.z + 2.4], col: team, mat: [2.2, 0, 0, 0] });
-          // the doorway glows in the team colour
-          this.staticLights.push({ x, y: o.y + 2.5, z: o.z, r: 7, c: [team[0] * 0.5, team[1] * 0.5, team[2] * 0.5] });
+        const o = base.o, team = JF.TEAMS[base.team].rgb, tg = mixc(team, [1, 1, 1], 0.25);
+        const P = b => (o.face > 0 ? [o.x + b[0], o.y + b[1], o.z + b[2], o.x + b[3], o.y + b[4], o.z + b[5]] : [o.x - b[3], o.y + b[1], o.z - b[5], o.x - b[0], o.y + b[4], o.z - b[2]]);
+        const bx = (b, col, mat) => boxes.push({ b: P(b), col, mat: mat || [0, 0, 0, 0.5] });
+        const cy = (b, col, mat, axis) => cyls.push({ b: P(b), col, mat: mat || [0, 0, 0, 0.6], axis: axis || 'y' });
+        const lt = (x, y, z, r, c) => this.staticLights.push({ x: o.x + x * o.face, y: o.y + y, z: o.z + z * o.face, r, c });
+        // corner pillars with caps and a light on top
+        for (const px of [-12, 12]) for (const pz of [-9, 9]) {
+          bx([px - 0.75, 0, pz - 0.75, px + 0.75, 10.6, pz + 0.75], DK, [0, 1.2, 0, 0.5]);
+          bx([px - 0.9, 10.6, pz - 0.9, px + 0.9, 11.0, pz + 0.9], MT, [0, 0, 0, 0.6]);
+          bx([px - 0.22, 11.0, pz - 0.22, px + 0.22, 11.5, pz + 0.22], team, [2.0, 0, 0, 0.2]);
         }
-        // team banners on the outside of the side walls
+        // a girder band around the walls, ribs between the panels
         for (const sz of [-1, 1]) {
-          const z = o.z + sz * 9.06;
-          for (const bx of [-6, 6]) list.push({ b: [o.x + bx - 1.6, o.y + 2.2, z - 0.05, o.x + bx + 1.6, o.y + 7.2, z + 0.05], col: team, mat: [0.4, 0, 0, 0.25] });
+          const z0 = sz > 0 ? 9 : -9.3, z1 = sz > 0 ? 9.3 : -9;
+          bx([-12, 5.0, z0, 12, 5.5, z1], MT, [0, 0, 0, 0.6]);
+          for (const x of [-8, -4, 0, 4, 8]) bx([x - 0.18, 0, sz > 0 ? 9 : -9.25, x + 0.18, 8, sz > 0 ? 9.25 : -9], DK, [0, 0, 0, 0.5]);
+          // pipes along the foot of the wall, with risers and clamps
+          const p0 = sz > 0 ? 9.3 : -9.7, p1 = sz > 0 ? 9.7 : -9.3;
+          cy([-11, 0.45, p0, 11, 0.85, p1], PIPE, [0, 0, 0, 0.7], 'x');
+          cy([-11, 1.0, p0 + 0.02 * sz, 11, 1.36, p1 + 0.02 * sz], PIPE, [0, 0, 0, 0.7], 'x');
+          for (const x of [-11, 11]) cy([x - 0.2, 0.45, p0, x + 0.2, 3.4, p1], PIPE, [0, 0, 0, 0.7]);
+          for (const x of [-6, 0, 6]) bx([x - 0.12, 0.3, sz > 0 ? 9.2 : -9.8, x + 0.12, 1.5, sz > 0 ? 9.8 : -9.2], DK, [0, 0, 0, 0.5]);
         }
-        // a beacon on the mast
-        const mx = o.x - 33 * o.face;
-        list.push({ b: [mx - 0.4, o.y + 25, o.z - 0.4, mx + 0.4, o.y + 25.8, o.z + 0.4], col: team, mat: [5, 0, 0, 0] });
-        // interior lights on the ceiling, and the warm light they throw
-        for (const lx of [-6, 0, 6]) {
-          list.push({ b: [o.x + lx - 1.2, o.y + 7.85, o.z - 0.3, o.x + lx + 1.2, o.y + 7.95, o.z + 0.3], col: [1, 0.95, 0.85], mat: [3.5, 0, 0, 0] });
-          this.staticLights.push({ x: o.x + lx, y: o.y + 7.2, z: o.z, r: 10, c: [0.55, 0.5, 0.4] });
+        for (const sx of [-1, 1]) {
+          const x0 = sx > 0 ? 12 : -12.3, x1 = sx > 0 ? 12.3 : -12;
+          bx([x0, 5.0, -9, x1, 5.5, 9], MT, [0, 0, 0, 0.6]);
+          for (const z of [-6, 6]) bx([sx > 0 ? 12 : -12.25, 0, z - 0.18, sx > 0 ? 12.25 : -12, 8, z + 0.18], DK, [0, 0, 0, 0.5]);
+          // the door: posts, a lintel, a lit sign over it, lamps either side
+          const d0 = sx > 0 ? 11.9 : -12.35, d1 = sx > 0 ? 12.35 : -11.9;
+          bx([d0, 4.6, -2.75, d1, 5.0, 2.75], DK, [0, 0, 0, 0.5]);
+          bx([d0, 0, -2.75, d1, 4.6, -2.2], MT, [0, 0, 0, 0.6]);
+          bx([d0, 0, 2.2, d1, 4.6, 2.75], MT, [0, 0, 0, 0.6]);
+          bx([sx > 0 ? 12.3 : -12.42, 5.55, -1.6, sx > 0 ? 12.42 : -12.3, 5.85, 1.6], team, [2.5, 0, 0, 0.2]);
+          for (const z of [-3.6, 3.1]) bx([sx > 0 ? 12.25 : -12.45, 3.4, z, sx > 0 ? 12.45 : -12.25, 3.7, z + 0.5], WARM, [3, 0, 0, 0]);
+          lt(sx * 12.9, 3.6, 0, 7, [0.45, 0.4, 0.32]);
+        }
+        // vents on the back wall
+        bx([-12.3, 2.0, -5.2, -11.9, 3.4, -2.8], DK, [0, 0.25, 0, 0.4]);
+        for (const z of [3.6, 5.4]) cy([-12.35, 6.0, z, -11.9, 7.0, z + 1.0], DK, [0, 0, 0, 0.5], 'x');
+        // on the roof: a hatch, vent boxes, an antenna with a dish and a red light
+        bx([-3, 9, 4, -1, 9.45, 6], DK, [0, 0.6, 0, 0.5]);
+        for (const z of [-6.5, 4.5]) bx([6, 9, z, 8, 10.1, z + 2], MT, [0, 0.3, 0, 0.5]);
+        cy([-10.65, 10.2, -7.65, -10.35, 15.5, -7.35], MT, [0, 0, 0, 0.7]);
+        bx([-11.4, 14.2, -7.56, -9.6, 14.32, -7.44], MT, [0, 0, 0, 0.7]);
+        bx([-10.56, 13.2, -8.4, -10.44, 13.32, -6.6], MT, [0, 0, 0, 0.7]);
+        cy([-10.95, 14.4, -8.2, -10.8, 15.8, -6.8], [0.8, 0.82, 0.85], [0, 0, 0, 0.8], 'x');
+        cy([-10.62, 15.5, -7.62, -10.38, 15.8, -7.38], [1, 0.2, 0.15], [3, 0, 0, 0]);
+        lt(-10.5, 15.6, -7.5, 4, [0.5, 0.08, 0.04]);
+        // the flag stand sits on a lit disc
+        cy([-1.9, 9.0, -1.9, 1.9, 9.07, 1.9], tg, [0.6, 0, 0, 0.3]);
+        // inside: a lit ring around the generator, grating by the doors, pipes along the ceiling, screens, lockers, crates
+        cy([-2.7, 0.08, -2.7, 2.7, 0.13, 2.7], team, [0.9, 0, 0, 0.3]);
+        bx([8.5, 0.08, -2.2, 11, 0.12, 2.2], DK, [0, 0.35, 0, 0.45]);
+        bx([-11, 0.08, -2.2, -8.5, 0.12, 2.2], DK, [0, 0.35, 0, 0.45]);
+        for (const z of [-6.2, 5.8]) cy([-11.5, 7.35, z, 11.5, 7.75, z + 0.4], PIPE, [0, 0, 0, 0.7], 'x');
+        for (const sz of [-1, 1]) {
+          bx([-2.3, 2.0, sz > 0 ? 7.85 : -8.0, 2.3, 4.4, sz > 0 ? 8.0 : -7.85], DK, [0, 0, 0, 0.6]);
+          bx([-2.1, 2.2, sz > 0 ? 7.8 : -7.9, 2.1, 4.2, sz > 0 ? 7.9 : -7.8], mixc(team, [0.1, 0.1, 0.12], 0.4), [0.9, 0, 0, 0.5]);
+        }
+        bx([-11, 0, -7.6, -10.3, 2.3, -3.2], MT, [0, 0.55, 0, 0.5]);
+        bx([-11, 0, 3.2, -10.3, 2.3, 7.6], MT, [0, 0.55, 0, 0.5]);
+        bx([-10.8, 0.08, 2.5, -9.6, 1.2, 3.7], [0.45, 0.4, 0.3], [0, 1.2, 0, 0.3]);
+        bx([-9.5, 0.08, 2.6, -8.5, 1.0, 3.6], [0.4, 0.42, 0.3], [0, 1.0, 0, 0.3]);
+        bx([-10.6, 1.2, 2.7, -9.8, 2.0, 3.5], [0.45, 0.4, 0.3], [0, 0.8, 0, 0.3]);
+        // the mast: a ladder, a hazard band, cross arms and a platform under the sensor
+        for (let y = 0.3; y < 20.8; y += 0.6) bx([-34.35, y, -0.3, -34.2, y + 0.07, 0.3], MT, [0, 0, 0, 0.7]);
+        for (const z of [-0.35, 0.25]) bx([-34.35, 0, z, -34.2, 21, z + 0.1], MT, [0, 0, 0, 0.7]);
+        bx([-34.05, 10, -1.05, -31.95, 11.2, 1.05], MT, [0, 1, 2, 0.4]);
+        bx([-36.5, 19, -0.15, -29.5, 19.3, 0.15], MT, [0, 0, 0, 0.7]);
+        bx([-33.15, 19, -3.5, -32.85, 19.3, 3.5], MT, [0, 0, 0, 0.7]);
+        bx([-35.2, 21.6, -2.2, -30.8, 22, 2.2], MT, [0, 0.55, 0, 0.5]);
+        for (const [a, b] of [[-35.2, -35.1], [-30.9, -30.8]]) bx([a, 22, -2.2, b, 23, 2.2], MT, [0, 0, 0, 0.7]);
+        for (const [a, b] of [[-2.2, -2.1], [2.1, 2.2]]) bx([-35.2, 22, a, -30.8, 23, b], MT, [0, 0, 0, 0.7]);
+        // spawn pads
+        for (const sp of base.spawns) {
+          cyls.push({ b: [sp[0] - 1.15, sp[1] - 0.05, sp[2] - 1.15, sp[0] + 1.15, sp[1] + 0.03, sp[2] + 1.15], col: team, mat: [0.9, 0, 0, 0.3], axis: 'y' });
+          cyls.push({ b: [sp[0] - 0.95, sp[1] - 0.04, sp[2] - 0.95, sp[0] + 0.95, sp[1] + 0.05, sp[2] + 0.95], col: DK, mat: [0, 0.4, 0, 0.5], axis: 'y' });
         }
       }
-      const data = new Float32Array(list.length * INST_FLOATS);
-      list.forEach((it, i) => {
+      const bd = new Float32Array(boxes.length * INST_FLOATS);
+      boxes.forEach((it, i) => {
         const b = it.b, o = i * INST_FLOATS;
-        trs(data, o, (b[0] + b[3]) / 2, (b[1] + b[4]) / 2, (b[2] + b[5]) / 2, 0, 0, b[3] - b[0], b[4] - b[1], b[5] - b[2]);
-        data.set([it.col[0], it.col[1], it.col[2], 1], o + 16);
-        data.set(it.mat, o + 20);
+        trs(bd, o, (b[0] + b[3]) / 2, (b[1] + b[4]) / 2, (b[2] + b[5]) / 2, 0, 0, b[3] - b[0], b[4] - b[1], b[5] - b[2]);
+        bd.set([it.col[0], it.col[1], it.col[2], 1], o + 16);
+        bd.set(it.mat, o + 20);
       });
-      this.setStatic('box', data, list.length);
-      this.scatterRocks(world);
+      this.setStatic('box', bd, boxes.length);
+      const cd = new Float32Array(cyls.length * INST_FLOATS);
+      cyls.forEach((it, i) => {
+        const b = it.b, o = i * INST_FLOATS;
+        const lx = b[3] - b[0], ly = b[4] - b[1], lz = b[5] - b[2], cx = (b[0] + b[3]) / 2, cyy = (b[1] + b[4]) / 2, cz = (b[2] + b[5]) / 2;
+        // a cylinder's own axis is y; roll it onto x, or pitch it onto z
+        if (it.axis === 'x') trs(cd, o, cx, cyy, cz, 0, 0, ly, lx, lz, Math.PI / 2);
+        else if (it.axis === 'z') trs(cd, o, cx, cyy, cz, 0, Math.PI / 2, lx, lz, ly);
+        else trs(cd, o, cx, cyy, cz, 0, 0, lx, ly, lz);
+        cd.set([it.col[0], it.col[1], it.col[2], 1], o + 16);
+        cd.set(it.mat, o + 20);
+      });
+      this.setStatic('cyl', cd, cyls.length);
+      this.scatterRocks(world, rubble);
     }
     setStatic(kind, data, n) {
       const m = this.meshes[kind], gl = this.gl;
@@ -1171,13 +1326,28 @@
       m.staticN = n;
     }
     // boulders, for scale and detail. Only to look at: they are low and the physics ignores them.
-    scatterRocks(world) {
+    scatterRocks(world, rubble) {
       const t = world.terrain, look = this.look;
       const rng = JF.mulberry(world.def.seed * 7 + 1);
       const n = look.rocks == null ? 900 : look.rocks;
-      const data = new Float32Array(n * INST_FLOATS);
+      const extra = (rubble || []).length * 6;
+      const data = new Float32Array((n + extra) * INST_FLOATS);
+      const c = look.rockCol || look.rock;
       let k = 0;
-      for (let i = 0; i < n * 3 && k < n; i++) {
+      // broken stone around the ruins
+      for (const b of rubble || []) {
+        const cx = (b[0] + b[3]) / 2, cz = (b[2] + b[5]) / 2, w = b[3] - b[0], d = b[5] - b[2];
+        for (let i = 0; i < 6; i++) {
+          const x = cx + (rng() - 0.5) * (w + 5), z = cz + (rng() - 0.5) * (d + 5);
+          const s = 0.5 + rng() * rng() * 1.8;
+          trs(data, k * INST_FLOATS, x, t.height(x, z) - s * 0.3, z, rng() * 6.28, (rng() - 0.5) * 0.8, s * (0.8 + rng() * 0.6), s * (0.5 + rng() * 0.4), s * (0.8 + rng() * 0.6), (rng() - 0.5) * 0.6);
+          const shade = 0.75 + rng() * 0.3;
+          data.set([c[0] * shade, c[1] * shade, c[2] * shade, 1], k * INST_FLOATS + 16);
+          data.set([0, -2, 0, 0.1], k * INST_FLOATS + 20);
+          k++;
+        }
+      }
+      for (let i = 0; i < n * 3 && k < n + extra; i++) {
         const x = JF.AREA_MIN - 150 + rng() * (JF.AREA_MAX - JF.AREA_MIN + 300), z = JF.AREA_MIN - 150 + rng() * (JF.AREA_MAX - JF.AREA_MIN + 300);
         // keep clear of the bases
         if (world.bases.some(b => Math.hypot(b.o.x - x, b.o.z - z) < 70)) continue;
@@ -1190,9 +1360,8 @@
         const y = t.height(x, z) - s * 0.4;
         trs(data, k * INST_FLOATS, x, y, z, rng() * 6.28, (rng() - 0.5) * 0.6, s * (1 + rng()), s * (0.6 + rng() * 0.5), s * (1 + rng()), (rng() - 0.5) * 0.4);
         const shade = 0.8 + rng() * 0.35;
-        const c = look.rockCol || look.rock;
         data.set([c[0] * shade, c[1] * shade, c[2] * shade, 1], k * INST_FLOATS + 16);
-        data.set([0, 0, 0, 0.12 + rng() * 0.1], k * INST_FLOATS + 20);
+        data.set([0, -2, 0, 0.12 + rng() * 0.1], k * INST_FLOATS + 20);
         k++;
       }
       this.setStatic('sphere', data, k);
