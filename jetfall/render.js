@@ -115,6 +115,10 @@
   uniform mat4 uShadowMatN, uShadowMatF;
   uniform float uShadowOn, uNearOn, uClouds;
   uniform sampler2D uHF;
+  // surface textures (render-tex): albedo + height, and normal xy + roughness; one layer per material
+  uniform mediump sampler2DArray uTexA, uTexN;
+  uniform float uTexOn;
+  uniform vec4 uMat[16];   // per material: x = repeats per metre, yzw = 1 / its mean albedo
   const float PI = 3.14159265;
   float hash(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
   float noise(vec2 p) { vec2 i = floor(p), f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
@@ -125,6 +129,39 @@
     return mix(mix(mix(hash3(i), hash3(i + vec3(1, 0, 0)), f.x), mix(hash3(i + vec3(0, 1, 0)), hash3(i + vec3(1, 1, 0)), f.x), f.y),
                mix(mix(hash3(i + vec3(0, 0, 1)), hash3(i + vec3(1, 0, 1)), f.x), mix(hash3(i + vec3(0, 1, 1)), hash3(i + vec3(1, 1, 1)), f.x), f.y), f.z); }
   float lum(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+  vec3 triW(vec3 n) { vec3 w = abs(n); w = w * w; w = w * w; return w / (w.x + w.y + w.z); }
+  // Material m on a surface at p (metres) with normal n, mapped from the three axes and blended by w (triW).
+  // A.rgb = albedo over the material's mean (so 1 on average: it is a detail, the caller's colour is the tint),
+  // A.a = height; Nr.xyz = the surface normal with the texture's bumps (whiteout blend), Nr.w = roughness.
+  void matTri(int m, vec3 p, vec3 n, vec3 w, float scale, out vec4 A, out vec4 Nr) {
+    float s = uMat[m].x * scale, L = float(m);
+    A = vec4(0.0); vec3 nn = vec3(0.0); float r = 0.0, ws = 0.0;
+    if (w.y > 0.03) {
+      vec2 uv = p.xz * s;
+      vec4 a = texture(uTexA, vec3(uv, L)); vec3 t = texture(uTexN, vec3(uv, L)).xyz;
+      vec2 tn = t.xy * 2.0 - 1.0; float tz = sqrt(max(0.0, 1.0 - dot(tn, tn)));
+      vec3 b = vec3(tn + n.xz, tz * n.y);
+      A += a * w.y; nn += b.xzy * w.y; r += t.z * w.y; ws += w.y;
+    }
+    if (w.x > 0.03) {
+      vec2 uv = p.zy * s;
+      vec4 a = texture(uTexA, vec3(uv, L)); vec3 t = texture(uTexN, vec3(uv, L)).xyz;
+      vec2 tn = t.xy * 2.0 - 1.0; float tz = sqrt(max(0.0, 1.0 - dot(tn, tn)));
+      vec3 b = vec3(tn + n.zy, tz * n.x);
+      A += a * w.x; nn += b.zyx * w.x; r += t.z * w.x; ws += w.x;
+    }
+    if (w.z > 0.03) {
+      vec2 uv = p.xy * s;
+      vec4 a = texture(uTexA, vec3(uv, L)); vec3 t = texture(uTexN, vec3(uv, L)).xyz;
+      vec2 tn = t.xy * 2.0 - 1.0; float tz = sqrt(max(0.0, 1.0 - dot(tn, tn)));
+      vec3 b = vec3(tn + n.xy, tz * n.z);
+      A += a * w.z; nn += b.xyz * w.z; r += t.z * w.z; ws += w.z;
+    }
+    ws = max(ws, 1e-4);
+    A /= ws; r /= ws;
+    A.rgb *= uMat[m].yzw;
+    Nr = vec4(normalize(nn + n * 1e-3), r);
+  }
   // the heightfield texture: x = ground height, y = how much sun reaches the ground there, z = 1 where something is built on it
   vec2 hfAt(vec2 xz) { return texture(uHF, (xz / ${CELL}.0 + 0.5) / ${N + 1}.0).xy; }
   // things near the ground share the hills' shade; 30 m up they are in full sun
@@ -191,6 +228,8 @@
   precision highp float;
   ${COMMON}
   uniform vec3 uLow, uMid, uHigh, uRock, uSnow; uniform float uSnowLine, uHmin, uHmax, uLava, uLavaH;
+  uniform ivec4 uLayers;   // materials for low ground, high and worn ground, cliffs, snow
+  uniform float uWorn;     // how much worn, earthy ground shows on slopes and in patches (look.worn)
   in vec3 vPos; in vec3 vNor; in float vShade; out vec4 o;
   void main() {
     vec3 gn = normalize(vNor);
@@ -199,14 +238,14 @@
     float h = clamp((vPos.y - uHmin) / (uHmax - uHmin), 0.0, 1.0);
     float big = fbm(vPos.xz * 0.004);
     float mid = fbm(vPos.xz * 0.05);
-    float fine = mix(noise(vPos.xz * 0.9) * 0.5 + noise(vPos.xz * 3.1) * 0.5, 0.5, smoothstep(60.0, 400.0, camD));
+    float fine = uTexOn > 0.5 ? 0.5 : mix(noise(vPos.xz * 0.9) * 0.5 + noise(vPos.xz * 3.1) * 0.5, 0.5, smoothstep(60.0, 400.0, camD));
     float hh = h + (big - 0.5) * 0.25;
     float patchy = fbm(vPos.xz * 0.0016 + 7.3);
     float slope = 1.0 - gn.y;
     float rock = smoothstep(0.28, 0.45, slope + (mid - 0.5) * 0.15);
     // small bumps close up: rock is craggy, soil is soft. Only the lighting sees them.
     vec3 n = gn;
-    if (near > 0.001) {
+    if (near > 0.001 && uTexOn < 0.5) {
       vec2 p = vPos.xz * (1.6 + rock * 1.2); float e = 0.12;
       float b0 = noise(p) * 0.5 + noise(p * 3.1) * 0.5;
       float bx = noise(p + vec2(e, 0.0)) * 0.5 + noise(p * 3.1 + vec2(e * 3.1, 0.0)) * 0.5;
@@ -226,9 +265,59 @@
     rc = mix(rc, rc * vec3(0.8, 1.0, 0.75), smoothstep(0.55, 0.75, mid) * (1.0 - smoothstep(0.3, 0.6, hh)) * 0.5);
     col = mix(col, rc, rock);
     float snow = smoothstep(uSnowLine - 0.06, uSnowLine + 0.06, hh + (mid - 0.5) * 0.15) * (1.0 - smoothstep(0.35, 0.55, slope));
-    col = mix(col, uSnow, snow);
+    float ao = 1.0, texRough = 1.0;
+    if (uTexOn > 0.5) {
+      // the same split by height and slope, but each part gets its own material, and where they meet the higher
+      // texture wins (stones poke through grass, snow sits in the hollows of the rock)
+      vec3 cLow = mix(uLow, uMid, smoothstep(0.15, 0.45, hh + (mid - 0.5) * 0.2));
+      cLow = mix(cLow, cLow * vec3(1.18, 1.06, 0.78), smoothstep(0.45, 0.7, patchy));
+      cLow = mix(cLow, cLow * vec3(0.8, 0.9, 0.85), (1.0 - smoothstep(0.3, 0.5, patchy)) * 0.6);
+      float worn = (smoothstep(0.22, 0.3, slope) * 0.8 + smoothstep(0.7, 0.86, fbm(vPos.xz * 0.021 + 3.0) + (noise(vPos.xz * 0.35) - 0.5) * 0.12) * 0.55 + hollow * 0.15) * uWorn;
+      float hiF = clamp(smoothstep(0.5, 0.8, hh) + worn, 0.0, 1.0);
+      // worn ground: earthy, a bit of the grass's colour in it, darker than bare high ground
+      vec3 cHigh = mix(uHigh, mix(uLow, uRock, 0.45) * 0.8, 0.5 * uWorn * (1.0 - smoothstep(0.5, 0.8, hh)));
+      float wSnow = snow * (1.0 - rock);
+      float rest = (1.0 - rock) * (1.0 - wSnow);
+      vec4 w = vec4(rest * (1.0 - hiF), rest * hiF, rock, wSnow);
+      vec3 tw = triW(gn);
+      vec4 A0 = vec4(1.0, 1.0, 1.0, 0.0), A1 = A0, A2 = A0, A3 = A0;
+      vec4 N0 = vec4(gn, 1.0), N1 = N0, N2 = N0, N3 = N0;
+      if (w.x > 0.01) {
+        matTri(uLayers.x, vPos, gn, tw, 1.0, A0, N0);
+        // a second, larger copy of the same texture further off hides the repeat
+        float far = smoothstep(12.0, 60.0, camD);
+        if (far > 0.0) { vec4 Af, Nf; matTri(uLayers.x, vPos, gn, tw, 0.21, Af, Nf); A0.rgb = mix(A0.rgb, Af.rgb, far * 0.55); }
+      }
+      if (w.y > 0.01) matTri(uLayers.y, vPos, gn, tw, 1.0, A1, N1);
+      if (w.z > 0.01) {
+        matTri(uLayers.z, vPos, gn, tw, 1.0, A2, N2);
+        // cliffs: a much larger copy for the big shapes, and broad light and dark bands, so a mountainside is not one tile
+        float far = smoothstep(8.0, 50.0, camD);
+        vec4 Af, Nf; matTri(uLayers.z, vPos, gn, tw, 0.11, Af, Nf);
+        A2.rgb = mix(A2.rgb, A2.rgb * Af.rgb, 0.5 + 0.3 * far);
+        N2.xyz = normalize(mix(N2.xyz, Nf.xyz, 0.35 + 0.4 * far));
+        A2.rgb *= mix(0.68, 1.18, noise(vPos.xz * 0.025 + vPos.y * 0.04)) * mix(0.85, 1.1, fbm(vec2(vPos.x + vPos.z, vPos.y * 3.0) * 0.05));
+      }
+      if (w.w > 0.01) matTri(uLayers.w, vPos, gn, tw, 1.0, A3, N3);
+      vec4 has = step(vec4(0.01), w);
+      vec4 hgt = vec4(A0.a, A1.a, A2.a, A3.a);
+      vec4 v4 = (w + hgt * 0.55) * has;
+      float mx = max(max(v4.x, v4.y), max(v4.z, v4.w)) - 0.22;
+      vec4 b = max(v4 - mx, 0.0) * has;
+      b /= max(b.x + b.y + b.z + b.w, 1e-4);
+      // broad patches of lighter and darker ground, so the land does not read as one lawn from a distance
+      float macro = fbm(vPos.xz * 0.006 + 11.0), macro2 = fbm(vPos.xz * 0.022 - 4.0);
+      cLow *= mix(vec3(0.78, 0.84, 0.9), vec3(1.15, 1.08, 0.92), macro) * (0.9 + 0.2 * macro2);
+      cHigh *= 0.85 + 0.3 * macro2;
+      col = cLow * A0.rgb * b.x + cHigh * A1.rgb * b.y + rc * A2.rgb * b.z + uSnow * A3.rgb * b.w;
+      n = normalize(N0.xyz * b.x + N1.xyz * b.y + N2.xyz * b.z + N3.xyz * b.w);
+      texRough = dot(vec4(N0.w, N1.w, N2.w, N3.w), b);
+      float th = dot(hgt, b);
+      ao = mix(0.6, 1.0, smoothstep(0.05, 0.55, th));
+      rock = b.z; snow = b.w;
+    } else col = mix(col, uSnow, snow);
     col *= 0.78 + 0.34 * fine * (1.0 - snow * 0.6) + 0.3 * (mid - 0.5);
-    col *= 1.0 - slope * 0.35;
+    col *= 1.0 - slope * (uTexOn > 0.5 ? 0.15 : 0.35);
     // lava in the low ground (Ashfall)
     vec3 emit = vec3(0.0);
     float heat = 0.0;
@@ -246,14 +335,14 @@
       heat = lv * 0.5 * (1.0 - smoothstep(20.0, 160.0, camD));
     }
     float sh = shadowAt(vPos, gn) * cloudAt(vPos.xz);
-    float sun = max(dot(n, uSunDir), 0.0) * vShade * sh;
+    float sun = max(dot(n, uSunDir), 0.0) * vShade * sh * mix(1.0, ao, 0.4);
     vec3 v = normalize(uCam - vPos);
     vec3 hv = normalize(v + uSunDir);
     // wet ground and snow catch the sun
-    float gloss = uWet * (1.0 - rock * 0.5) + snow * 0.25 + rock * 0.08;
+    float gloss = uWet * (1.0 - rock * 0.5) + snow * 0.25 + rock * 0.08 + (1.0 - texRough) * 0.5;
     float spec = pow(max(dot(n, hv), 0.0), mix(12.0, 60.0, gloss)) * gloss * 0.6 * sun;
     float glint = pow(noise(vPos.xz * 23.0 + v.xz * 2.0), 14.0) * 6.0 * snow * near * sun;
-    vec3 amb = hemi(n) * (0.7 + 0.3 * vShade);
+    vec3 amb = hemi(n) * (0.7 + 0.3 * vShade) * ao;
     vec3 lit = col * (uSunCol * sun * 1.15 + amb + pointLights(vPos, n)) + uSunCol * (spec + glint) + emit;
     lit = fogMix(lit, vPos);
     o = vec4(outc(lit), heat);
@@ -265,12 +354,13 @@
   layout(location=2) in vec4 aM0; layout(location=3) in vec4 aM1; layout(location=4) in vec4 aM2; layout(location=5) in vec4 aM3;
   layout(location=6) in vec4 aCol; layout(location=7) in vec4 aMat;
   uniform mat4 uVP;
-  out vec3 vPos; out vec3 vNor; out vec3 vLocal; out vec3 vLocalN; out vec3 vHalf; out vec4 vCol; out vec4 vMat; out vec3 vT; out vec3 vB;
+  out vec3 vPos; out vec3 vNor; out vec3 vLocal; out vec3 vLocalN; out vec3 vHalf; out vec4 vCol; out vec4 vMat; out vec3 vT; out vec3 vB; out mat3 vNM;
   void main() {
     mat4 m = mat4(aM0, aM1, aM2, aM3);
     vec4 wp = m * vec4(aPos, 1.0);
     vPos = wp.xyz;
     mat3 nm = transpose(inverse(mat3(m)));
+    vNM = nm;
     vNor = normalize(nm * aNor);
     vec3 sc = vec3(length(aM0.xyz), length(aM1.xyz), length(aM2.xyz));
     vLocal = aPos * sc; vLocalN = aNor; vHalf = sc * 0.5; vCol = aCol; vMat = aMat;
@@ -288,11 +378,15 @@
   //   y = -2  rock (the boulders; bumps from 3D noise in the world, so they stay put)
   //   y = -3  cloth (flags)
   //   y = -4  fine armour plating (seams, no bolts)
+  //   y = -5  bark (tree trunks and branches)
+  // With textures loaded each kind also gets a material from the arrays (uMeshMats: metal, concrete, rock, bark),
+  // mapped in the mesh's own space so it stays on things that move.
   const MESH_FS = `#version 300 es
   precision highp float;
   ${COMMON}
-  uniform float uBox, uGlass;
-  in vec3 vPos; in vec3 vNor; in vec3 vLocal; in vec3 vLocalN; in vec3 vHalf; in vec4 vCol; in vec4 vMat; in vec3 vT; in vec3 vB; out vec4 o;
+  uniform float uBox, uGlass, uMaskA;
+  uniform ivec4 uMeshMats;
+  in vec3 vPos; in vec3 vNor; in vec3 vLocal; in vec3 vLocalN; in vec3 vHalf; in vec4 vCol; in vec4 vMat; in vec3 vT; in vec3 vB; in mat3 vNM; out vec4 o;
   void main() {
     vec3 n = normalize(vNor);
     vec3 col = vCol.rgb;
@@ -358,9 +452,6 @@
       float grain = noise(uv * 7.0) * 0.6 + noise(uv * 23.0) * 0.4;
       col *= 0.88 + 0.24 * grain;
       bump += (vec2(noise(uv * 7.0 + vec2(0.07, 0.0)), noise(uv * 7.0 + vec2(0.0, 0.07))) - noise(uv * 7.0)) * 3.0 * near;
-      // chips: a few dark pits
-      float chip = smoothstep(0.78, 0.86, noise(uv * 11.0 + 3.0)) * near;
-      col *= 1.0 - 0.35 * chip;
       // moss and dirt in the mortar, on the tops and low down
       float foot = 1.0 - smoothstep(0.0, 2.5, vLocal.y + vHalf.y);
       float moss = smoothstep(0.45, 0.7, noise(uv * 0.9 + 5.0)) * (0.5 * an.y + 0.5 * foot + 0.5 * mortar);
@@ -388,6 +479,24 @@
       gloss = 0.04;
     }
     if (dot(bump, bump) > 0.0) n = normalize(n + (vT * bump.x + vB * bump.y) * (0.3 + 0.7 * near));
+    if (uTexOn > 0.5) {
+      int tm = -1; float tsc = 1.0, tk = 0.85;
+      if (kind > 0.5) tm = uMeshMats.x;
+      else if (kind < -0.5 && kind > -1.5) tm = uMeshMats.y;
+      else if (kind < -1.5 && kind > -2.5) { tm = uMeshMats.z; tsc = 0.6; }
+      else if (kind < -3.5 && kind > -4.5) { tm = uMeshMats.x; tsc = 3.0; tk = 0.5; }
+      else if (kind < -4.5 && kind > -5.5) { tm = uMeshMats.w; tsc = 1.5; tk = 1.0; }
+      if (tm >= 0) {
+        vec3 ln = normalize(vLocalN);
+        vec4 A, Nr;
+        matTri(tm, vLocal, ln, triW(ln), tsc, A, Nr);
+        col *= mix(vec3(1.0), A.rgb, tk);
+        // the texture's tilt, carried from the mesh's space into the world and added to what is already there
+        vec3 tilt = normalize(vNM * Nr.xyz) - normalize(vNM * ln);
+        n = normalize(n + tilt * (0.4 + 0.6 * near));
+        gloss *= mix(1.0, 1.25 - Nr.w, tk);
+      }
+    }
     // worn edges on boxes: a thin bright chamfer where the paint has gone
     if (uBox > 0.5 && !(kind < -2.5 && kind > -3.5)) {
       vec3 ed = vHalf - abs(vLocal);
@@ -422,7 +531,7 @@
     float rim = pow(1.0 - ndv, 3.0) * 0.3;
     vec3 lit = diff * (uSunCol * ndl * sh + amb + pointLights(vPos, n)) + spec + ambSpec + amb * rim + col * glow;
     lit = fogMix(lit, vPos);
-    o = vec4(outc(lit), vCol.a * uGlass);
+    o = vec4(outc(lit), uMaskA > 0.0 ? uMaskA : vCol.a * uGlass);
   }`;
   const SHADOW_VS = `#version 300 es
   layout(location=0) in vec3 aPos;
@@ -706,7 +815,8 @@
   // the finish: haze, chromatic fringe, bloom, shafts, exposure, filmic curve, grade, hurt, vignette, grain
   const FINAL_FS = `#version 300 es
   ${POST_COMMON}
-  uniform sampler2D uBloom0, uBloom1, uBloom2, uRays;
+  uniform sampler2D uBloom0, uBloom1, uBloom2, uRays, uAO, uFog;
+  uniform float uAOK, uFogK;
   uniform float uBloomK, uRayK, uExposure, uSat, uContrast, uGamma, uVig, uGrain, uTime, uHurt, uHeat, uCA, uHDR, uFlash;
   uniform vec3 uLift, uGain;
   vec3 tone(vec3 c) { c = max(c, 0.0); return c * (2.51 * c + 0.03) / (c * (2.43 * c + 0.59) + 0.14); }
@@ -728,6 +838,13 @@
     c.r = texture(uTex, uv + cv * rd).r;
     c.g = texture(uTex, uv).g;
     c.b = texture(uTex, uv - cv * rd).b;
+    // occlusion on everything solid, fog over everything but the weapon (alpha marks the sky and the weapon)
+    float mask = texture(uTex, uv).a;
+    if (!(mask > 0.7 && mask < 0.8)) {
+      if (mask < 0.9) c *= mix(1.0, texture(uAO, uv).r, uAOK);
+      vec4 fg = texture(uFog, uv);
+      c = c * mix(1.0, fg.a, uFogK) + fg.rgb * uFogK;
+    }
     vec3 bl = texture(uBloom0, uv).rgb * 0.45 + texture(uBloom1, uv).rgb * 0.35 + texture(uBloom2, uv).rgb * 0.3;
     c += bl * uBloomK;
     c += texture(uRays, uv).rgb * uRayK;
@@ -850,13 +967,17 @@
   const SHADOW_SIZE = 2048;
   // what each quality level turns on
   const QUALITY = {
-    low:  { scale: 0.6,  post: false, msaa: 0, shadows: false, near: false, rays: false, grain: 0,     ca: 0,   heat: 0, grass: 0 },
-    mid:  { scale: 0.85, post: true,  msaa: 0, shadows: true,  near: false, rays: true,  grain: 0.02,  ca: 0.6, heat: 1, grass: 30 },
-    high: { scale: 1,    post: true,  msaa: 4, shadows: true,  near: true,  rays: true,  grain: 0.028, ca: 1.0, heat: 1, grass: 48 },
+    low:  { scale: 0.6,  post: false, msaa: 0, shadows: false, near: false, rays: false, grain: 0,     ca: 0,   heat: 0, grass: 0,  tex: false, veg: 0.3, ao: false, fog: false },
+    mid:  { scale: 0.85, post: true,  msaa: 0, shadows: true,  near: false, rays: true,  grain: 0.02,  ca: 0.6, heat: 1, grass: 30, tex: true,  veg: 0.7, ao: true,  fog: true },
+    high: { scale: 1,    post: true,  msaa: 4, shadows: true,  near: true,  rays: true,  grain: 0.028, ca: 1.0, heat: 1, grass: 48, tex: true,  veg: 1,   ao: true,  fog: true },
   };
   // the grade every map starts from; a map's look can override any of these
   const GRADE = { exposure: 1.0, sat: 1.08, contrast: 1.06, gamma: 1.0, lift: [0, 0, 0], gain: [1, 1, 1], vignette: 0.32, bloom: 1.0, rays: 1.0, stars: 0, wet: 0 };
   const GRASS_CELL = 1.1, GRASS_MAX = 48;
+  // which baked material each map layer uses when a map's look does not say (see tools/jetfall-textures.py)
+  const DEFAULT_LAYERS = ['grass', 'dirt', 'rock', 'snow'];
+  const MESH_MATS = ['metal', 'concrete', 'rock', 'bark'];
+  const ROCK_SHAPES = 4;
 
   class Renderer {
     constructor(canvas) {
@@ -872,15 +993,84 @@
       this.lost = false;
       this.fbW = 0; this.fbH = 0;
       canvas.addEventListener('webglcontextlost', e => { e.preventDefault(); this.lost = true; });
-      canvas.addEventListener('webglcontextrestored', () => { this.lost = false; this.fbW = this.fbH = 0; this.init(); if (this.mapKey) this.setMap(this.world); });
+      canvas.addEventListener('webglcontextrestored', () => { this.lost = false; this.fbW = this.fbH = 0; this.texLoading = null; this.init(); if (this.mapKey) this.setMap(this.world); this.loadTextures(); });
+      this.texBase = 'tex/';
       this.init();
     }
+
+    // ---------- surface textures ----------
+    // tex/manifest.json lists the baked materials; each is an albedo, a normal (+ roughness) and a height JPEG. They go
+    // into two texture arrays: albedo with the height in alpha, and normal + roughness. Until they arrive (or if they
+    // never do) the shaders draw the untextured look.
+    // Fast only fetches the foliage cards (small); the ground and building materials come when a setting uses them.
+    loadTextures() {
+      if (typeof Image === 'undefined' || typeof fetch === 'undefined') return;
+      const wantMats = !!this.q.tex;
+      const have = this.tex ? (this.tex.A ? 2 : 1) : 0, want = wantMats ? 2 : 1;
+      if (have >= want || (this.texLoading && this.texLoading >= want)) return;
+      this.texLoading = want;
+      const gl = this.gl, base = this.texBase, gen = (this.texGen = (this.texGen || 0) + 1);
+      const load = src => new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error('could not load ' + src)); im.src = src; });
+      fetch(base + 'manifest.json').then(r => r.json()).then(async man => {
+        const list = wantMats ? man.materials : [], S = man.size;
+        const imgs = await Promise.all(list.map(m => Promise.all(['_a', '_n', '_h'].map(k => load(base + m.name + k + '.jpg')))));
+        const cards = await Promise.all((man.cards || []).map(c => load(base + c + '.png')));
+        if (this.lost || gen !== this.texGen) return;
+        this.texLoading = null;
+        const cv = document.createElement('canvas'); cv.width = cv.height = S;
+        const cx = cv.getContext('2d', { willReadFrequently: true });
+        const px = im => { cx.clearRect(0, 0, S, S); cx.drawImage(im, 0, 0, S, S); return cx.getImageData(0, 0, S, S).data; };
+        gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+        const texA = list.length ? this.makeArray(S, list.length) : null, texN = list.length ? this.makeArray(S, list.length) : null;
+        const buf = new Uint8Array(S * S * 4);
+        list.forEach((m, i) => {
+          const a = px(imgs[i][0]), h = px(imgs[i][2]);
+          for (let k = 0; k < S * S; k++) { buf[k * 4] = a[k * 4]; buf[k * 4 + 1] = a[k * 4 + 1]; buf[k * 4 + 2] = a[k * 4 + 2]; buf[k * 4 + 3] = h[k * 4]; }
+          gl.bindTexture(gl.TEXTURE_2D_ARRAY, texA);
+          gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, i, S, S, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+          gl.bindTexture(gl.TEXTURE_2D_ARRAY, texN);
+          gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, i, S, S, 1, gl.RGBA, gl.UNSIGNED_BYTE, imgs[i][1]);
+        });
+        for (const t of [texA, texN]) if (t) { gl.bindTexture(gl.TEXTURE_2D_ARRAY, t); gl.generateMipmap(gl.TEXTURE_2D_ARRAY); }
+        let texC = null;
+        if (cards.length) {
+          const CS = cards[0].width;
+          texC = this.makeArray(CS, cards.length);
+          gl.bindTexture(gl.TEXTURE_2D_ARRAY, texC);
+          cards.forEach((im, i) => gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, i, CS, CS, 1, gl.RGBA, gl.UNSIGNED_BYTE, im));
+          gl.generateMipmap(gl.TEXTURE_2D_ARRAY);
+        }
+        const info = new Float32Array(16 * 4), index = {};
+        list.forEach((m, i) => { index[m.name] = i; info.set([1 / m.scale, 1 / m.mean[0], 1 / m.mean[1], 1 / m.mean[2]], i * 4); });
+        const cardIndex = {}; (man.cards || []).forEach((c, i) => { cardIndex[c] = i; });
+        if (this.tex) for (const t of [this.tex.A, this.tex.N, this.tex.C]) if (t) gl.deleteTexture(t);
+        this.tex = { A: texA, N: texN, C: texC, info, index, cardIndex };
+      }).catch(e => { this.texLoading = null; console.warn('Jetfall textures:', e.message || e); });
+    }
+    makeArray(S, layers) {
+      const gl = this.gl, t = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, t);
+      gl.texStorage3D(gl.TEXTURE_2D_ARRAY, Math.floor(Math.log2(S)) + 1, gl.RGBA8, S, S, layers);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.REPEAT);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.REPEAT);
+      const an = gl.getExtension('EXT_texture_filter_anisotropic');
+      if (an) gl.texParameterf(gl.TEXTURE_2D_ARRAY, an.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(8, gl.getParameter(an.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
+      return t;
+    }
+    // material indices for a list of names (an unknown name falls back to the first material)
+    matIdx(names) { const ix = this.tex.index; return names.map(n => (ix[n] != null ? ix[n] : 0)); }
     // 'low' | 'mid' | 'high'
     setQuality(name) {
       this.q = QUALITY[name] || QUALITY.mid;
       this.scale = this.q.scale;
       this.shadowsOn = this.q.shadows;
       this.fbW = this.fbH = 0; // targets are remade on the next frame
+      this.loadTextures();
+      if (this.world && this.buildVeg && (!this.vegFor || this.vegFor.q !== this.q.veg)) this.buildVeg(this.world);
     }
     get post() { return this.q.post; }
     init() {
@@ -909,6 +1099,8 @@
       // meshes
       this.meshes = {};
       for (const [k, g] of Object.entries({ box: boxGeo(), sphere: sphereGeo(10), cyl: cylGeo(18) })) this.meshes[k] = this.makeMesh(g);
+      // boulders: four shapes made in code (vegetation.js)
+      if (root.JFVeg) for (let i = 0; i < ROCK_SHAPES; i++) this.meshes['rock' + i] = this.makeMesh(root.JFVeg.rock(11 + i * 7));
       // full-screen triangle
       this.triVao = gl.createVertexArray(); gl.bindVertexArray(this.triVao);
       const tb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, tb); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
@@ -944,8 +1136,18 @@
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, 1, 1, 0, gl.RGBA, gl.HALF_FLOAT, new Uint16Array([0, half(1), 0, 0]));
+      this.dummyArr = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.dummyArr);
+      gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.RGBA8, 1, 1, 1);
+      gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, 1, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([128, 128, 255, 255]));
+      this.tex = null;
       this.terrain = null;
       this.targets = null;
+      if (this.vegInit && root.JFVeg) this.vegInit();
+      if (this.atmosInit) this.atmosInit();
+      // 1 x 1 stand-ins for the final pass when occlusion or fog are off
+      const one = (r, g, b, a) => { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([r, g, b, a])); return t; };
+      this.whiteTex = one(255, 255, 255, 255); this.noFogTex = one(0, 0, 0, 255);
     }
     makeShadowMap() {
       const gl = this.gl;
@@ -1067,7 +1269,9 @@
       let ldr = null;
       if (!ms) { ldr = this.target(W, H, gl.RGBA8, false); all.push(ldr); }
       if (!rayMask.ok || !rays.ok || (ldr && !ldr.ok)) { this.dropList(all); return null; }
-      return { scene, ms, bloom, rayMask, rays, ldr, all, W, H };
+      const T = { scene, ms, bloom, rayMask, rays, ldr, all, W, H, atm: null };
+      if (this.atmosTargets) this.atmosTargets(T, W, H);
+      return T;
     }
     dropList(list) { const gl = this.gl; for (const t of list) { gl.deleteTexture(t.tex); gl.deleteFramebuffer(t.fb); if (t.rb) gl.deleteRenderbuffer(t.rb); } }
 
@@ -1171,6 +1375,9 @@
         const o = (iz * V + ix) * 7;
         data[o] = x; data[o + 1] = h; data[o + 2] = z; data[o + 3] = n[0]; data[o + 4] = n[1]; data[o + 5] = n[2]; data[o + 6] = 0.9;
       }
+      const hs = new Float32Array(V * V);
+      for (let i = 0; i < V * V; i++) hs[i] = data[i * 7 + 1];
+      this.ringGrid = { lo, C, V, hs };
       const idx = [];
       for (let iz = 0; iz < R; iz++) for (let ix = 0; ix < R; ix++) {
         const x0 = lo + ix * C, z0 = lo + iz * C;
@@ -1181,6 +1388,16 @@
       return this.makeTerrainVao(data, new Uint32Array(idx));
     }
 
+    // the height of the land as drawn: the map itself, or the ring of hills around it (on the ring's own triangles)
+    landHeight(x, z) {
+      if (x >= 0 && x <= SIZE && z >= 0 && z <= SIZE) return this.world.terrain.height(x, z);
+      const g = this.ringGrid;
+      const u = (x - g.lo) / g.C, v = (z - g.lo) / g.C;
+      const ix = Math.max(0, Math.min(g.V - 2, Math.floor(u))), iz = Math.max(0, Math.min(g.V - 2, Math.floor(v)));
+      const fx = Math.min(1, Math.max(0, u - ix)), fz = Math.min(1, Math.max(0, v - iz));
+      const a = g.hs[iz * g.V + ix], b = g.hs[iz * g.V + ix + 1], c = g.hs[(iz + 1) * g.V + ix], d = g.hs[(iz + 1) * g.V + ix + 1];
+      return fx + fz <= 1 ? a + (b - a) * fx + (c - a) * fz : d + (c - d) * (1 - fx) + (b - d) * (1 - fz);
+    }
     buildStatic(world) {
       const boxes = [], cyls = [];
       const look = this.look;
@@ -1318,6 +1535,7 @@
       });
       this.setStatic('cyl', cd, cyls.length);
       this.scatterRocks(world, rubble);
+      if (this.buildVeg) this.buildVeg(world);
     }
     setStatic(kind, data, n) {
       const m = this.meshes[kind], gl = this.gl;
@@ -1332,6 +1550,7 @@
       const n = look.rocks == null ? 900 : look.rocks;
       const extra = (rubble || []).length * 6;
       const data = new Float32Array((n + extra) * INST_FLOATS);
+      const shaped = !!this.meshes.rock0;
       const c = look.rockCol || look.rock;
       let k = 0;
       // broken stone around the ruins
@@ -1357,14 +1576,28 @@
         const steep = 1 - nr[1];
         if (rng() > 0.25 + steep * 3) continue; // more on slopes
         const s = (1.0 + rng() * rng() * 4.5) * (steep > 0.2 ? 1.5 : 1);
-        const y = t.height(x, z) - s * 0.4;
-        trs(data, k * INST_FLOATS, x, y, z, rng() * 6.28, (rng() - 0.5) * 0.6, s * (1 + rng()), s * (0.6 + rng() * 0.5), s * (1 + rng()), (rng() - 0.5) * 0.4);
+        // sunk deeper on slopes, so the downhill side does not float
+        const y = t.height(x, z) - s * (0.6 + steep * 2.2);
+        trs(data, k * INST_FLOATS, x, y, z, rng() * 6.28, (rng() - 0.5) * 0.5, s * (0.9 + rng() * 0.7), s * (0.75 + rng() * 0.55), s * (0.9 + rng() * 0.7), (rng() - 0.5) * 0.4);
         const shade = 0.8 + rng() * 0.35;
         data.set([c[0] * shade, c[1] * shade, c[2] * shade, 1], k * INST_FLOATS + 16);
         data.set([0, -2, 0, 0.12 + rng() * 0.1], k * INST_FLOATS + 20);
         k++;
       }
-      this.setStatic('sphere', data, k);
+      if (!shaped) { this.setStatic('sphere', data, k); return; }
+      this.setStatic('sphere', new Float32Array(0), 0);
+      // deal the rocks out to the shapes; the shapes are about twice as wide as the old spheres, so halve them
+      for (let r = 0; r < ROCK_SHAPES; r++) {
+        const sel = [];
+        for (let i = r; i < k; i += ROCK_SHAPES) sel.push(i);
+        const d = new Float32Array(sel.length * INST_FLOATS);
+        sel.forEach((i, j) => {
+          d.set(data.subarray(i * INST_FLOATS, (i + 1) * INST_FLOATS), j * INST_FLOATS);
+          const o = j * INST_FLOATS;
+          for (let q = 0; q < 12; q++) if (q % 4 !== 3) d[o + q] *= 1.6;
+        });
+        this.setStatic('rock' + r, d, sel.length);
+      }
     }
 
     // ---------- per frame ----------
@@ -1418,6 +1651,7 @@
       gl.useProgram(this.progS.p);
       gl.uniformMatrix4fv(this.progS.u.uVP, false, sm.mat);
       this.drawMeshes(this.progS);
+      if (this.drawVeg) this.drawVeg('shadow', sm.mat, null, center, ext);
       gl.disable(gl.POLYGON_OFFSET_FILL);
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     }
@@ -1434,7 +1668,9 @@
       const proj = M4.persp(cam.fov, W / H, 0.12, 6000);
       const vp = M4.mul(proj, view);
       this.vp = vp; this.camF = f; this.camR = r; this.camU = u; this.camPos = cam.pos; this.W = W; this.H = H;
+      this.proj = proj; this.view = view;
       const look = this.look, sun = this.sun, q = this.q, g = this.grade;
+      this.time = scene.time || 0;
 
       // upload instance data
       for (const m of Object.values(this.meshes)) {
@@ -1476,7 +1712,8 @@
       gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK);
       gl.disable(gl.BLEND);
 
-      const setCommon = prog => {
+      const texOn = !!(this.tex && this.tex.A && q.tex);
+      const setCommon = this.setCommonFn = prog => {
         const U = prog.u;
         gl.uniform3fv(U.uSunDir, sun); gl.uniform3fv(U.uSunCol, look.sunColor); gl.uniform3fv(U.uAmb, look.ambient);
         if (U.uSkyTop) gl.uniform3fv(U.uSkyTop, look.skyTop);
@@ -1504,6 +1741,14 @@
           if (nearOn) gl.uniformMatrix4fv(U.uShadowMatN, false, this.shadow[0].mat);
         }
         if (U.uHF) { gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, this.hfTex); gl.uniform1i(U.uHF, 2); }
+        if (U.uTexA) {
+          gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D_ARRAY, texOn ? this.tex.A : this.dummyArr); gl.uniform1i(U.uTexA, 3);
+          gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D_ARRAY, texOn ? this.tex.N : this.dummyArr); gl.uniform1i(U.uTexN, 4);
+          gl.uniform1f(U.uTexOn, texOn ? 1 : 0);
+          if (texOn && U.uMat) gl.uniform4fv(U.uMat, this.tex.info);
+        }
+        if (U.uTexC) { gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.tex && this.tex.C ? this.tex.C : this.dummyArr); gl.uniform1i(U.uTexC, 5); }
+        if (U.uMaskA) gl.uniform1f(U.uMaskA, 0);
         gl.activeTexture(gl.TEXTURE0);
       };
 
@@ -1516,6 +1761,8 @@
       gl.uniform1f(Tp.u.uSnowLine, look.snowLine); gl.uniform1f(Tp.u.uHmin, this.hmin); gl.uniform1f(Tp.u.uHmax, this.hmax);
       gl.uniform1f(Tp.u.uLava, this.world.terrain.lavaH != null ? 1 : 0);
       gl.uniform1f(Tp.u.uLavaH, this.world.terrain.lavaH || 0);
+      if (texOn) gl.uniform4iv(Tp.u.uLayers, this.matIdx(look.mats || DEFAULT_LAYERS));
+      gl.uniform1f(Tp.u.uWorn, look.worn != null ? look.worn : 1);
       gl.bindVertexArray(this.terrain.vao); gl.drawElements(gl.TRIANGLES, this.terrain.count, gl.UNSIGNED_INT, 0);
       gl.bindVertexArray(this.ring.vao); gl.drawElements(gl.TRIANGLES, this.ring.count, gl.UNSIGNED_INT, 0);
 
@@ -1524,7 +1771,9 @@
       gl.useProgram(Mp.p); setCommon(Mp);
       gl.uniformMatrix4fv(Mp.u.uVP, false, vp);
       gl.uniform1f(Mp.u.uGlass, 0);
+      if (texOn) gl.uniform4iv(Mp.u.uMeshMats, this.matIdx(MESH_MATS));
       this.drawMeshes(Mp);
+      if (this.drawVeg) this.drawVeg('main', vp, setCommon);
 
       // ----- grass -----
       const grassK = look.grass == null ? 0 : look.grass;
@@ -1602,12 +1851,15 @@
       }
       gl.depthMask(true); gl.disable(gl.BLEND);
 
+      // the scene's depth, for occlusion and fog, before the weapon clears it
+      if (post && this.grabDepth) this.grabDepth(T, T.ms ? T.ms.fb : T.scene.fb, W, H);
       // ----- first-person weapon: its own near camera, drawn over everything -----
       if (scene.viewModel && scene.viewModel.length) {
         gl.clear(gl.DEPTH_BUFFER_BIT);
         const vproj = M4.persp(1.1, W / H, 0.02, 10);
         const vvp = M4.mul(vproj, view);
         gl.useProgram(Mp.p); setCommon(Mp);
+        gl.uniform1f(Mp.u.uMaskA, 0.75); // marks the weapon so occlusion and fog leave it alone
         gl.uniform1f(Mp.u.uShadowOn, 0); gl.uniform1f(Mp.u.uGlass, 0);
         gl.uniformMatrix4fv(Mp.u.uVP, false, vvp);
         gl.enable(gl.CULL_FACE);
@@ -1672,8 +1924,12 @@
           }
         }
       }
+      const atm = this.atmosPass ? this.atmosPass(T, scene) : null;
       // the finish
       draw(this.progFinal, T.ldr, T.scene.tex, W, H, U => {
+        gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, atm && atm.ao ? atm.ao : this.whiteTex); gl.uniform1i(U.uAO, 5);
+        gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, atm && atm.fog ? atm.fog : this.noFogTex); gl.uniform1i(U.uFog, 6);
+        gl.uniform1f(U.uAOK, atm && atm.ao ? (g.ao != null ? g.ao : 0.85) : 0); gl.uniform1f(U.uFogK, atm && atm.fog ? 1 : 0);
         gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, B[0].a.tex); gl.uniform1i(U.uBloom0, 1);
         gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, B[1].a.tex); gl.uniform1i(U.uBloom1, 2);
         gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, B[2].a.tex); gl.uniform1i(U.uBloom2, 3);
@@ -1752,5 +2008,5 @@
   const sstep = (a, b, x) => { const t = clamp01((x - a) / (b - a)); return t * t * (3 - 2 * t); };
   const mixc = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 
-  root.JFRender = { Renderer, Batch, M4, trs, norm, cross, mixc, QUALITY };
+  root.JFRender = { Renderer, Batch, M4, trs, norm, cross, mixc, QUALITY, COMMON, compile, INST_FLOATS, POST_VS };
 })(window);
