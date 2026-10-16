@@ -225,6 +225,8 @@
     gendown: (a, d) => { a.tone(d, { f: 220, to: 40, dur: 1.4, gain: 0.25, type: 'sawtooth' }); a.tone(d, { f: 60, to: 25, dur: 1.2, gain: 0.3 }); },
     genup: (a, d) => { a.tone(d, { f: 60, to: 240, dur: 1.0, gain: 0.2, type: 'sawtooth' }); },
     chat: (a, d) => a.tone(d, { f: 1200, dur: 0.06, gain: 0.08 }),
+    gate: (a, d) => { a.tone(d, { f: 880, dur: 0.12, gain: 0.1, type: 'triangle' }); a.tone(d, { f: 1320, at: 0.08, dur: 0.25, gain: 0.1, type: 'triangle' }); },
+    target: (a, d) => { a.tone(d, { f: 1760, to: 2200, dur: 0.12, gain: 0.1 }); a.tone(d, { f: 2640, at: 0.1, dur: 0.2, gain: 0.07 }); a.hiss(d, { from: 3000, to: 6000, dur: 0.08, q: 3, gain: 0.04 }); },
     win: (a, d) => [523, 659, 784, 1047, 784, 1047].forEach((f, i) => a.tone(d, { f, at: i * 0.15, dur: 0.6, gain: 0.15, type: 'triangle' })),
     lose: (a, d) => [392, 349, 311, 262].forEach((f, i) => a.tone(d, { f, at: i * 0.22, dur: 0.6, gain: 0.15, type: 'triangle' })),
     shield: (a, d) => { a.tone(d, { f: 600, to: 1300, dur: 0.1, gain: 0.1 }); a.hiss(d, { from: 3000, to: 6000, dur: 0.1, q: 3, gain: 0.05 }); },

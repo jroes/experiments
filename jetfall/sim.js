@@ -75,6 +75,7 @@
     station: { name: 'Inventory station', hp: 320 },
     turret:  { name: 'Turret', hp: 180, range: 110, cd: 2.2, turn: 1.3, lead: 0.85, spread: 0.02 },
     sensor:  { name: 'Sensor', hp: 260 },
+    target:  { name: 'Target', hp: 1 },
   };
   const ONLINE_AT = 0.6; // a destroyed thing comes back when repaired to this fraction
 
@@ -199,6 +200,52 @@
     },
   };
   const MAP_KEYS = Object.keys(MAPS);
+
+  // ---------- courses ----------
+  // A course is a line of gates to pass in order (the first starts the clock, the last stops it) and targets to shoot on the way.
+  // Gates are [x, z, h, r]: h is the centre's height over the ground (left out: a gate you ski through), r the radius.
+  // Targets are [x, z, h]: a disc on a post, h over the ground. Each target missed adds `penalty` seconds. Everyone runs the same kit so times compare.
+  const COURSE_KIT = { armor: 'light', weapons: ['disc', 'chain', 'blaster'], pack: 'energy' };
+  const GATE_H = 3, GATE_R = 7, TARGET_PENALTY = 5, COURSE_RESPAWN_S = 1;
+  const COURSES = {
+    green: {
+      name: 'Green Run', map: 'highland', blurb: 'A long run down the hills, one jump. Learn to ski here.',
+      start: [300, 288],
+      gates: [[320, 300], [415, 355], [519, 393], [627, 412], [711, 482, 10, 8], [801, 546], [891, 609], [982, 672], [1060, 760]],
+      targets: [[405, 377], [617, 434], [726, 463], [787, 566], [905, 589], [966, 690]],
+    },
+    dunes: {
+      name: 'Dune Dash', map: 'dunes', blurb: 'Off the big dune and straight down. Two gates in the air.',
+      start: [1085, 862],
+      gates: [[1060, 870], [1000, 880], [900, 834], [801, 787], [701, 741, 12, 8], [601, 694], [493, 675], [383, 665, 10, 8], [300, 620]],
+      targets: [[1005, 857], [811, 765], [691, 763], [608, 671], [490, 699], [390, 642]],
+    },
+    ridge: {
+      name: 'Ridge Line', map: 'frost', blurb: 'Steep drops off the north ridge, then a climb to the finish. You will need the jets.',
+      start: [1165, 535],
+      gates: [[1150, 560], [1100, 680], [1050, 790, 12, 8], [1000, 900], [950, 1000], [880, 1100], [800, 1200]],
+      targets: [[1078, 670], [1072, 800], [978, 890], [971, 1012], [861, 1086]],
+    },
+    lava: {
+      name: 'Lava Run', map: 'ashfall', blurb: 'Down the black slopes and over a pool of lava. Do not land in it.',
+      start: [920, 495],
+      gates: [[900, 520], [800, 600], [700, 680], [600, 740], [500, 800], [420, 900], [480, 1000, 16, 8], [440, 1130]],
+      targets: [[785, 581], [714, 700], [588, 719], [516, 818], [396, 898]],
+    },
+    shore: {
+      name: 'Shore Run', map: 'lakes', blurb: 'From the east hills down to the lake, then along the shore. Water is slow: stay on the bank.',
+      start: [1760, 425],
+      gates: [[1740, 440], [1650, 500], [1580, 600], [1615, 720], [1605, 840], [1600, 960], [1550, 1060], [1545, 1160], [1480, 1260]],
+      targets: [[1633, 483], [1604, 604], [1629, 841], [1577, 954], [1522, 1152]],
+    },
+    canyon: {
+      name: 'Canyon Dive', map: 'canyon', blurb: 'Dive off the rim and ski the canyon floor under three bridges. Long and fast.',
+      start: [1010, 280],
+      gates: [[1027, 300], [1136, 400], [1068, 520], [971, 640], [913, 744], [915, 860], [988, 980], [1024, 1024], [1111, 1140], [1135, 1304], [1068, 1420], [971, 1540]],
+      targets: [[1112, 404], [899, 640, 8], [951, 626], [892, 867], [1010, 1035], [1133, 1131], [1072, 1250, 8], [1083, 1430]],
+    },
+  };
+  const COURSE_KEYS = Object.keys(COURSES);
 
   // base origins: point symmetric about the centre, so neither side has the better land
   function basePositions(def) {
@@ -407,7 +454,9 @@
   class World {
     constructor(opts) {
       opts = opts || {};
-      this.mapKey = has(MAPS, opts.map) ? opts.map : 'highland';
+      this.courseKey = has(COURSES, opts.course) ? opts.course : null;
+      this.course = null; // built below: { def, gates, targets, start, yaw, kit, penalty }
+      this.mapKey = this.courseKey ? COURSES[this.courseKey].map : has(MAPS, opts.map) ? opts.map : 'highland';
       this.def = MAPS[this.mapKey];
       this.terrain = opts.terrain || makeTerrain(this.mapKey);
       this.rng = mulberry(opts.seed == null ? 12345 : opts.seed);
@@ -427,6 +476,38 @@
       this.flags = [];
       this.bases = [];
       this.buildBases();
+      if (this.courseKey) this.buildCourse();
+    }
+
+    // Gates get a facing (from the gate before to the one after) and a centre on the land; targets become objects anyone can hit.
+    buildCourse() {
+      const def = COURSES[this.courseKey], t = this.terrain;
+      const gates = def.gates.map(g => ({ c: [g[0], t.height(g[0], g[1]) + (g[2] == null ? GATE_H : g[2]), g[1]], r: g[3] || GATE_R, n: [0, 0, 1], air: g[2] != null && g[2] > GATE_H + 2 }));
+      gates.forEach((g, i) => {
+        const a = gates[Math.max(0, i - 1)].c, b = gates[Math.min(gates.length - 1, i + 1)].c;
+        const dx = b[0] - a[0], dz = b[2] - a[2], l = Math.sqrt(dx * dx + dz * dz) || 1;
+        g.n = [dx / l, 0, dz / l];
+      });
+      const targets = def.targets.map((tg, ti) => {
+        const y = t.height(tg[0], tg[1]) + (tg[2] == null ? 4 : tg[2]);
+        const b = [tg[0] - 1.2, y - 1.2, tg[1] - 1.2, tg[0] + 1.2, y + 1.2, tg[1] + 1.2];
+        // faces the nearest gate: that is where the shots come from
+        let near = gates[0], nd = Infinity;
+        for (const g of gates) { const d = (g.c[0] - tg[0]) ** 2 + (g.c[2] - tg[1]) ** 2; if (d < nd) { nd = d; near = g; } }
+        const yaw = Math.atan2(-(near.c[0] - tg[0]), -(near.c[2] - tg[1]));
+        const obj = { id: this.objects.length, kind: 'target', team: -1, ti, b, c: [tg[0], y, tg[1]], hp: 1, max: 1, up: true, yaw, pitch: 0, cd: 0, target: -1, repairT: 0 };
+        this.objects.push(obj);
+        const grp = this.baseBounds.length;
+        this.solids.push({ b, mat: 'target', team: -1, obj, grp });
+        this.baseBounds.push(b.slice());
+        return obj;
+      });
+      const start = [def.start[0], t.height(def.start[0], def.start[1]), def.start[1]];
+      const g0 = gates[0].c;
+      this.course = {
+        key: this.courseKey, def, gates, targets, start, yaw: Math.atan2(-(g0[0] - start[0]), -(g0[2] - start[2])),
+        kit: cleanLoadout(def.kit || COURSE_KIT), penalty: def.penalty == null ? TARGET_PENALTY : def.penalty,
+      };
     }
 
     buildBases() {
@@ -552,7 +633,7 @@
     // ----- players -----
     addPlayer(o) {
       const id = o.id;
-      const team = o.team === 0 || o.team === 1 ? o.team : this.smallerTeam();
+      const team = this.course ? 0 : o.team === 0 || o.team === 1 ? o.team : this.smallerTeam(); // a course has one team: nobody shoots anybody
       const p = newPlayer(id, cleanName(o.name), team, !!o.bot);
       p.loadout = cleanLoadout(o.loadout) || { ...DEFAULT_LOADOUT, weapons: DEFAULT_LOADOUT.weapons.slice() };
       this.players.set(id, p);
@@ -574,7 +655,7 @@
     }
     setTeam(id, team) {
       const p = this.players.get(id);
-      if (!p || (team !== 0 && team !== 1) || p.team === team) return;
+      if (!p || (team !== 0 && team !== 1) || p.team === team || this.course) return;
       if (p.alive) this.kill(p, null, 'team');
       p.team = team;
       this.ev({ k: 'team', id, team });
@@ -583,6 +664,7 @@
     ev(e) { e.t = this.tick; e.s = ++this.evSeq; this.events.push(e); }
 
     spawn(p) {
+      if (this.course) return this.spawnCourse(p);
       const base = this.bases[p.team];
       const s = base.spawns[Math.floor(this.rng() * base.spawns.length)];
       p.alive = true;
@@ -597,6 +679,56 @@
       p.lastHitBy = -1;
       p.spawnProt = 2;
       this.ev({ k: 'spawn', id: p.id });
+    }
+    // a course: everyone starts behind the first gate, facing it, in the course's kit, with a fresh run
+    spawnCourse(p) {
+      const C = this.course;
+      p.alive = true;
+      p.pos = [C.start[0] + (this.rng() - 0.5) * 6, C.start[1] + 0.2, C.start[2] + (this.rng() - 0.5) * 6];
+      p.vel = [0, 0, 0]; p.yaw = C.yaw; p.pitch = 0; p.spawnYaw = p.yaw;
+      p.ground = false; p.kick = 0; p.flagSeen = null; p.gateSeen = null;
+      equip(p, C.kit);
+      p.wi = Math.max(0, p.weapons.indexOf('disc'));
+      p.lastHitBy = -1; p.spawnProt = 0;
+      p.run = newRun(C);
+      this.ev({ k: 'spawn', id: p.id });
+    }
+    // back to the start, now (K): a run in progress is thrown away
+    restart(p) {
+      if (!this.course) return;
+      if (p.alive) this.spawnCourse(p); else p.wantSpawn = true;
+    }
+
+    // the gate the player is due passes when the path since the last tick crosses its disc; the first starts the clock, the last stops it
+    touchGates(p) {
+      const run = p.run, C = this.course;
+      const a = p.gateSeen || p.pos, b = p.pos;
+      p.gateSeen = p.pos.slice();
+      if (!run || run.done) return;
+      const g = C.gates[run.gate];
+      const da = (a[0] - g.c[0]) * g.n[0] + (a[2] - g.c[2]) * g.n[2], db = (b[0] - g.c[0]) * g.n[0] + (b[2] - g.c[2]) * g.n[2];
+      if (da === db || da * db > 0) return; // did not cross the gate's plane
+      const f = da / (da - db);
+      const x = a[0] + (b[0] - a[0]) * f, y = a[1] + (b[1] - a[1]) * f + ARMORS[p.armor].h * 0.5, z = a[2] + (b[2] - a[2]) * f;
+      if ((x - g.c[0]) ** 2 + (y - g.c[1]) ** 2 + (z - g.c[2]) ** 2 > g.r * g.r) return;
+      const at = this.time - TICK * (1 - f);
+      if (run.gate === 0) { run.t0 = at; this.ev({ k: 'cstart', id: p.id }); }
+      else this.ev({ k: 'cgate', id: p.id, g: run.gate, n: C.gates.length, el: at - run.t0 });
+      run.gate++;
+      if (run.gate < C.gates.length) return;
+      run.done = true; run.doneAt = this.time;
+      run.time = at - run.t0; run.pen = (C.targets.length - run.hits) * C.penalty; run.total = run.time + run.pen;
+      let best = 0;
+      if (p.best < 0 || run.total < p.best) { p.best = run.total; best = 1; }
+      p.runs++;
+      this.ev({ k: 'cfinish', id: p.id, time: run.time, pen: run.pen, total: run.total, hits: run.hits, of: C.targets.length, best });
+    }
+    // targets are per player: hitting one counts for whoever shot it, during their run, once
+    hitTarget(o, by) {
+      const run = by && by.run;
+      if (!run || run.t0 < 0 || run.done || run.hit[o.ti]) return;
+      run.hit[o.ti] = true; run.hits++;
+      this.ev({ k: 'ctarget', id: by.id, ti: o.ti, n: run.hits, of: this.course.targets.length });
     }
 
     // run one tick of one player's own input (movement, weapons). Called once per input the player sent.
@@ -621,18 +753,19 @@
       for (const p of this.players.values()) {
         if (!p.alive) {
           p.deadT += dt;
-          if (p.deadT >= RESPAWN_S && (p.wantSpawn || p.bot || p.deadT >= AUTO_RESPAWN_S)) { p.wantSpawn = false; this.spawn(p); }
+          const wait = this.course ? COURSE_RESPAWN_S : RESPAWN_S, auto = this.course ? COURSE_RESPAWN_S + 1.5 : AUTO_RESPAWN_S;
+          if (p.deadT >= wait && (p.wantSpawn || p.bot || p.deadT >= auto)) { p.wantSpawn = false; this.spawn(p); }
           continue;
         }
         if (p.spawnProt > 0) p.spawnProt -= dt;
-        this.stations(p, dt);
-        this.touchFlags(p);
+        if (this.course) this.touchGates(p);
+        else { this.stations(p, dt); this.touchFlags(p); }
         if (p.pos[1] < this.terrain.height(p.pos[0], p.pos[2]) - 5) this.kill(p, null, 'stuck'); // fell through somehow
       }
       this.stepProjectiles(dt);
       this.stepFlags(dt);
       this.stepObjects(dt);
-      if (this.time >= this.timeLimit) this.finish(this.score[0] === this.score[1] ? -1 : this.score[0] > this.score[1] ? 0 : 1);
+      if (!this.course && this.time >= this.timeLimit) this.finish(this.score[0] === this.score[1] ? -1 : this.score[0] > this.score[1] ? 0 : 1);
       if (this.events.length > 4000) this.events.splice(0, this.events.length - 2000);
     }
 
@@ -954,6 +1087,7 @@
     }
 
     hurtObj(o, dmg, by, team) {
+      if (o.kind === 'target') { if (dmg > 0) this.hitTarget(o, by); return; }
       if (o.team === team || dmg <= 0) return;
       const was = o.hp;
       o.hp = Math.max(0, o.hp - dmg);
@@ -1071,6 +1205,7 @@
 
     // ----- turrets and generators -----
     stepObjects(dt) {
+      if (this.course) return; // no turrets on a course
       for (const o of this.objects) {
         if (o.kind !== 'turret') continue;
         if (o.cd > 0) o.cd -= dt;
@@ -1124,8 +1259,10 @@
       stationT: 0, stationCd: 0, stationId: -1,
       loadout: null, prevB: 0, seq: 0,
       kills: 0, deaths: 0, caps: 0, score: 0, lastHitBy: -1, lastHitT: 0,
+      run: null, best: -1, runs: 0, gateSeen: null, // courses
     };
   }
+  const newRun = C => ({ gate: 0, t0: -1, time: -1, pen: 0, total: -1, hit: C.targets.map(() => false), hits: 0, done: false, doneAt: 0 });
 
   function equip(p, lo) {
     const A = ARMORS[lo.armor];
@@ -1339,6 +1476,7 @@
     ARMORS, ARMOR_KEYS, WEAPONS, WEAPON_KEYS, NOT_FOR, PROJ, PROJ_BY_CODE, PACKS, PACK_KEYS, OBJ, ONLINE_AT,
     SPAWN_KIT, DEFAULT_LOADOUT, RESPAWN_S, AUTO_RESPAWN_S, FLAG_RETURN_S, STATION_S,
     MAPS, MAP_KEYS, basePositions, baseLayout, placeBox,
+    COURSES, COURSE_KEYS, COURSE_KIT, GATE_H, GATE_R, TARGET_PENALTY, COURSE_RESPAWN_S, newRun,
     mulberry, fbm, vnoise, makeTerrain, Terrain, segBox,
     World, newPlayer, equip, cleanLoadout, cleanName, movePlayer, aimDir, rightDir, eye, leadAim, clamp, has,
   };

@@ -6,6 +6,9 @@ Capture the flag with jetpacks and skiing, in the browser. In the spirit of the 
 - **Start a server**: your browser runs it, it shows in everyone's list (or not, if you untick it), and friends can also join with a 6-letter code or a link
   (`jetfall/#CODE`). Bots fill empty seats and step aside when people join. Keep the tab open: when you leave, the server goes away.
 - **Practice offline**: just you and the bots, nothing on the network.
+- **Ski courses**: six timed runs, one per map. Ski through the gates in order (the first starts the clock, the last stops it) and shoot the
+  targets on the way; each one missed adds five seconds. Everyone runs the same light kit, so times compare. Best times stay on the device.
+  Pacer bots run the course with you. Pick a course as the map when starting a server to race friends.
 
 Two teams, two bunkers. The flag sits on the roof. Take theirs home to yours while yours is at home. Stations inside the bunker give you your loadout
 (armor, weapons, pack); the generator powers them and the roof turrets, and can be blown up and repaired.
@@ -15,7 +18,7 @@ T chat, V quick chat (V G S is "Shazbot!"), F third person. Phones get on-screen
 
 ## How it works
 
-- `sim.js` the rules: terrain, bases, armor, weapons, flags, turrets, and how each map looks. No DOM; the tests run it in node.
+- `sim.js` the rules: terrain, bases, armor, weapons, flags, turrets, how each map looks, and the courses (`COURSES`: gates and targets as map coordinates). No DOM; the tests run it in node.
 - `net.js` binary packets, the host (runs the world, takes inputs, sends snapshots) and the client (prediction and interpolation).
 - `host-worker.js` the host in a Web Worker. `link.js` the relay connection and WebRTC.
 - `bots.js` computer players. `render.js`, `models.js` WebGL2 drawing: HDR with bloom, light shafts, soft shadows, grass and a grade per map on the Balanced

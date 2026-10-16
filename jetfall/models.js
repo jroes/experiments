@@ -341,6 +341,45 @@
     }
   }
 
+  // ----- courses -----
+  const GATE_NEXT = [0.4, 1.0, 0.75], GATE_SOON = [0.9, 0.75, 0.3], GATE_LATER = [0.55, 0.6, 0.7], GATE_DONE = [0.3, 0.32, 0.36];
+  // a gate: a ring of blocks standing across the course, the part under the ground left out. state: 'next' | 'soon' | 'later' | 'done'
+  function gate(r, g, groundAt, state, t) {
+    const col = state === 'next' ? GATE_NEXT : state === 'soon' ? GATE_SOON : state === 'done' ? GATE_DONE : GATE_LATER;
+    const glow = state === 'next' ? 1.6 + 0.5 * Math.sin(t * 5) : state === 'soon' ? 0.9 : state === 'done' ? 0 : 0.35;
+    const yaw = Math.atan2(-g.n[0], -g.n[2]);
+    const segs = 16, w = g.r * Math.PI * 2 / segs;
+    for (let i = 0; i < segs; i++) {
+      const a = (i + 0.5) / segs * Math.PI * 2;
+      const lx = Math.cos(a) * g.r, ly = Math.sin(a) * g.r; // in the gate's plane: lx across, ly up
+      const x = g.c[0] - g.n[2] * lx, y = g.c[1] + ly, z = g.c[2] + g.n[0] * lx;
+      if (y < groundAt(x, z) + 0.3) continue;
+      // a block tangent to the ring: roll it about the facing axis
+      r.put('box', x, y, z, yaw, 0, w * 1.05, 0.35, 0.3, col, [glow, 0, 0, 0.5], a + Math.PI / 2);
+    }
+    // two posts where a ground gate meets the land, a beacon on top of every gate
+    if (!g.air) for (const sdx of [-1, 1]) {
+      const x = g.c[0] - g.n[2] * sdx * g.r, z = g.c[2] + g.n[0] * sdx * g.r, gy = groundAt(x, z);
+      r.put('cyl', x, gy + 1.5, z, 0, 0, 0.5, 3, 0.5, DARK, [0, PLATE, 0, 0.6]);
+      r.put('sphere', x, gy + 3.2, z, 0, 0, 0.5, 0.5, 0.5, col, [glow * 1.2, 0, 0, 0.3]);
+    }
+    r.put('sphere', g.c[0], g.c[1] + g.r + 0.4, g.c[2], 0, 0, 0.7, 0.7, 0.7, col, [glow * 1.2, 0, 0, 0.3]);
+  }
+  // a target: a bullseye on a post, lit until hit, then knocked over and dark
+  function target(r, o, hit, groundY, t) {
+    const c = o.c;
+    r.put('cyl', c[0], (groundY + c[1] - 1.2) / 2, c[2], 0, 0, 0.3, c[1] - 1.2 - groundY, 0.3, DARK, [0, PLATE, 0, 0.6]);
+    const m = base(c[0], c[1], c[2], o.yaw, hit ? 1.2 : 0);
+    const K = kit(r, m);
+    const glow = hit ? 0 : 0.8 + 0.3 * Math.sin(t * 6 + o.id);
+    const white = hit ? [0.3, 0.3, 0.32] : [0.95, 0.95, 0.95], red = hit ? [0.35, 0.2, 0.18] : [1, 0.25, 0.15];
+    K.cylZ(0, 0, 0, 2.4, 0.25, white, [glow * 0.5, 0, 0, 0.3]);
+    K.cylZ(0, 0, -0.14, 1.7, 0.06, red, [glow, 0, 0, 0.3]);
+    K.cylZ(0, 0, -0.2, 1.0, 0.06, white, [glow * 0.5, 0, 0, 0.3]);
+    K.cylZ(0, 0, -0.26, 0.4, 0.06, red, [glow * 1.5, 0, 0, 0.3]);
+    K.box(0, -1.2, 0.2, 0.3, 0.4, 0.3, DARK, [0, 0, 0, 0.6]);
+  }
+
   function projectile(r, q, t) {
     const p = q.pos;
     if (q.kind === 'disc') {
@@ -386,5 +425,5 @@
     return out;
   }
 
-  root.JFModels = { player, flag, object, projectile, viewModel, base, child, partM };
+  root.JFModels = { player, flag, object, gate, target, projectile, viewModel, base, child, partM };
 })(window);

@@ -15,7 +15,7 @@
   const VGS = root.JFVGS || require('./vgs.js');
   const { B, TICK, ARMORS, ARMOR_KEYS, WEAPONS, WEAPON_KEYS, PACK_KEYS, PROJ, PROJ_BY_CODE, clamp, has } = JF;
 
-  const PROTO = 1;
+  const PROTO = 2;
   const SNAP_EVERY = 3;           // ticks between snapshots (20 a second)
   const INTERP_TICKS = 7;         // draw others this far in the past
   const HIST_SNAPS = 140;         // about seven seconds of snapshots kept for replays
@@ -133,6 +133,16 @@
       w.u8(me.wi); w.u8(me.grenades);
       w.f32(me.stationT); w.i8(clamp(me.stationId, -3, 127)); w.f32(me.deadT); w.f32(me.fireCd); w.f32(me.spin);
       w.u8(me.flag + 1);
+      // the run on a course: gate due, clock, targets hit (one bit each) and the best time so far
+      const run = me.run;
+      w.u8(run ? 1 : 0);
+      if (run) {
+        w.u8(run.gate); w.u8((run.done ? 1 : 0) | (run.t0 >= 0 ? 2 : 0));
+        w.f32(run.t0 < 0 ? 0 : run.done ? run.time : world.time - run.t0); w.f32(run.total); w.u8(run.hits);
+        w.u8(run.hit.length);
+        for (let i = 0; i < run.hit.length; i += 8) { let b = 0; for (let j = 0; j < 8 && i + j < run.hit.length; j++) if (run.hit[i + j]) b |= 1 << j; w.u8(b); }
+      }
+      w.f32(me.best);
       const L = me.loadout;
       w.u8(ARMOR_KEYS.indexOf(L.armor)); w.u8(PACK_KEYS.indexOf(L.pack)); w.u8(L.weapons.length); for (const k of L.weapons) w.u8(WEAPON_KEYS.indexOf(k));
     }
@@ -204,6 +214,16 @@
       m.wi = r.u8(); m.grenades = r.u8();
       m.stationT = r.f32(); m.stationId = r.i8(); m.deadT = r.f32(); m.fireCd = r.f32(); m.spin = r.f32();
       m.flag = r.u8() - 1;
+      m.run = null;
+      if (r.u8()) {
+        const run = { gate: r.u8() }, bits = r.u8();
+        run.done = !!(bits & 1); run.started = !!(bits & 2);
+        run.time = r.f32(); run.total = r.f32(); run.hits = r.u8();
+        const n = r.u8(); run.hit = [];
+        for (let i = 0; i < n; i += 8) { const b = r.u8(); for (let j = 0; j < 8 && i + j < n; j++) run.hit.push(!!(b & (1 << j))); }
+        m.run = run;
+      }
+      m.best = r.f32();
       const la = ARMOR_KEYS[r.u8()] || 'light', lp = PACK_KEYS[r.u8()] || 'none', lw = []; const n = r.u8();
       for (let i = 0; i < n; i++) lw.push(WEAPON_KEYS[r.u8()] || 'blaster');
       m.loadout = { armor: la, pack: lp, weapons: lw };
@@ -240,7 +260,7 @@
     newWorld() {
       const s = this.settings;
       const old = this.world;
-      this.world = new JF.World({ map: s.map, seed: (Math.random() * 1e9) | 0, capLimit: s.caps, timeLimit: s.minutes * 60 });
+      this.world = new JF.World({ map: s.map, course: s.course, seed: (Math.random() * 1e9) | 0, capLimit: s.caps, timeLimit: s.minutes * 60 });
       this.world.evSeq = old ? old.evSeq + 10 : 0; // event numbers keep going up across maps
       this.overT = 0;
       this.bots.clear();
@@ -256,7 +276,7 @@
       this.fillBots();
     }
     welcome(peer) {
-      return { t: 'welcome', v: PROTO, you: peer.pid, map: this.world.mapKey, settings: this.settings, ev: this.world.evSeq, room: this.opts.room || null };
+      return { t: 'welcome', v: PROTO, you: peer.pid, map: this.world.mapKey, course: this.world.courseKey, settings: this.settings, ev: this.world.evSeq, room: this.opts.room || null };
     }
     freePid() {
       const used = new Set(this.world.players.keys());
@@ -290,8 +310,8 @@
     // keep teams at the bot fill level: each team has at least `bots` players
     fillBots() {
       const want = this.settings.bots;
-      for (let team = 0; team < 2; team++) {
-        let n = [...this.world.players.values()].filter(p => p.team === team).length;
+      for (let team = 0; team < (this.world.course ? 1 : 2); team++) { // a course has one team: the bots are pacers
+        let n = [...this.world.players.values()].filter(p => p.team === team && (!this.world.course || p.bot)).length; // on a course: that many pacers
         while (n < want) {
           const pid = this.freePid(); if (pid < 0) break;
           const name = Bots.name(this.world, pid);
@@ -317,7 +337,8 @@
       if (bots.length) { this.world.removePlayer(bots[0].id); this.bots.delete(bots[0].id); }
     }
     roster() {
-      return [...this.world.players.values()].map(p => ({ id: p.id, name: p.name, team: p.team, bot: p.bot ? 1 : 0, k: p.kills, d: p.deaths, c: p.caps, s: p.score, ping: this.pingOf(p.id) }));
+      return [...this.world.players.values()].map(p => ({ id: p.id, name: p.name, team: p.team, bot: p.bot ? 1 : 0, k: p.kills, d: p.deaths, c: p.caps, s: p.score, ping: this.pingOf(p.id),
+        r: p.best < 0 ? -1 : Math.round(p.best * 100), n: p.runs }));
     }
     pingOf(pid) { for (const pe of this.peers.values()) if (pe.pid === pid) return pe.ping | 0; return 0; }
     broadcastRoster() {
@@ -375,6 +396,7 @@
         this.chatT.set(peerId, this.world.time);
         this.world.ev({ k: 'chat', id: p.id, name: p.name, text, team: m.team ? p.team : null });
       } else if (m.t === 'kill') { if (p.alive) this.world.kill(p, null, 'suicide'); }
+      else if (m.t === 'restart') this.world.restart(p);
       else if (m.t === 'host' && peerId === 0) this.hostCmd(m);
     }
     // settings changes from the host's own menu
@@ -413,6 +435,7 @@
       for (const [pid, bot] of this.bots) {
         const p = w.players.get(pid);
         if (!p) { this.bots.delete(pid); continue; }
+        if (w.course && p.alive && p.run && p.run.done && w.time - p.run.doneAt > 5) w.restart(p); // pacers run again
         const q = Bots.think(bot, w, p);
         p.firing = (q.b & B.FIRE) !== 0 && p.alive;
         w.applyInput(p, q);
@@ -438,7 +461,7 @@
     }
     listing() {
       const humans = [...this.world.players.values()].filter(p => !p.bot).length;
-      return { map: this.world.mapKey, n: humans, bots: this.world.players.size - humans, score: this.world.score, v: PROTO };
+      return { map: this.world.mapKey, course: this.world.courseKey, n: humans, bots: this.world.players.size - humans, score: this.world.score, v: PROTO };
     }
   }
   const MAP_NAME = k => JF.MAPS[k].name;
@@ -450,6 +473,7 @@
   function cleanSettings(s) {
     return {
       map: has(JF.MAPS, s.map) ? s.map : 'highland',
+      course: has(JF.COURSES, s.course) ? s.course : null,
       bots: clamp(Number.isInteger(s.bots) ? s.bots : 4, 0, 12),
       skill: clamp(Number.isFinite(s.skill) ? s.skill : 0.5, 0, 1),
       caps: clamp(Number.isInteger(s.caps) ? s.caps : 5, 1, 20),
@@ -498,11 +522,12 @@
     onCtrl(m) {
       if (m.t === 'welcome') {
         if (!has(JF.MAPS, m.map)) return;
-        const fresh = !this.welcome || this.welcome.map !== m.map || !this.world || this.welcome.you !== m.you || m.ev !== this.welcome.ev;
+        const course = has(JF.COURSES, m.course) ? m.course : null;
+        const fresh = !this.welcome || !this.world || this.welcome.map !== m.map || this.world.courseKey !== course || this.welcome.you !== m.you || m.ev !== this.welcome.ev;
         this.welcome = m;
         this.settings = m.settings;
         if (fresh) {
-          this.world = new JF.World({ map: m.map });
+          this.world = new JF.World({ map: m.map, course });
           this.world.damage = null;
           this.snaps = []; this.hist = []; this.histEv = []; this.pending = []; this.me = null;
           this.ackEv = m.ev | 0;
@@ -510,7 +535,8 @@
         }
         this.status = 'playing';
       } else if (m.t === 'roster' && Array.isArray(m.list)) {
-        this.roster = m.list.filter(x => x && typeof x === 'object').map(x => ({ id: x.id | 0, name: JF.cleanName(x.name), team: x.team ? 1 : 0, bot: !!x.bot, k: x.k | 0, d: x.d | 0, c: x.c | 0, s: x.s | 0, ping: x.ping | 0 }));
+        this.roster = m.list.filter(x => x && typeof x === 'object').map(x => ({ id: x.id | 0, name: JF.cleanName(x.name), team: x.team ? 1 : 0, bot: !!x.bot, k: x.k | 0, d: x.d | 0, c: x.c | 0, s: x.s | 0, ping: x.ping | 0,
+          r: Number.isFinite(x.r) && x.r >= 0 ? x.r : -1, n: x.n | 0 }));
         if (Array.isArray(m.score)) this.score = [m.score[0] | 0, m.score[1] | 0];
       } else if (m.t === 'refused') { this.status = 'refused'; this.refused = String(m.why || ''); }
     }
@@ -550,6 +576,7 @@
       m.pack = s.me.pack; m.weapons = s.me.weapons; m.ammo = s.me.ammo; m.wi = s.me.wi; m.grenades = s.me.grenades;
       m.stationT = s.me.stationT; m.stationId = s.me.stationId; m.deadT = s.me.deadT; m.fireCd = s.me.fireCd; m.spin = s.me.spin;
       m.flag = s.me.flag; m.loadout = s.me.loadout; m.wantSpawn = s.me.wantSpawn;
+      m.run = s.me.run; m.best = s.me.best;
       m.yaw = sp.yaw; m.pitch = sp.pitch;
       this.pending = this.pending.filter(q => q.seq > s.ack);
       if (m.alive) for (const q of this.pending) JF.movePlayer(this.world, m, q, TICK), m.prevB = q.b;
