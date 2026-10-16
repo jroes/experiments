@@ -77,6 +77,7 @@
   function indoorsAt(w, p) { for (let t = 0; t < 2; t++) if (insideBunker(localOf(w, t, p.pos))) return true; return false; }
 
   function think(bot, w, p) {
+    if (w.course) return courseThink(bot, w, p);
     const inp = { seq: 0, b: 0, mx: 0, mz: 0, yaw: bot.yaw, pitch: bot.pitch, w: 255 };
     const skill = p.skill == null ? 0.5 : p.skill;
     if (!p.alive) { bot.lastAlive = false; bot.wantStation = true; return inp; }
@@ -329,6 +330,99 @@
     }
     return inp;
   }
+  // ----- courses: ski from gate to gate, jet when the land or a gate is above us, shoot the targets on the way -----
+  // The tests run every course with this, so a course is only shipped if this can finish it. Skill sets how well it aims and how fast it turns.
+  function courseThink(bot, w, p) {
+    const inp = { seq: 0, b: 0, mx: 0, mz: 0, yaw: bot.yaw, pitch: bot.pitch, w: 255 };
+    const skill = p.skill == null ? 0.5 : p.skill;
+    if (!p.alive) { bot.lastAlive = false; return inp; }
+    if (!bot.lastAlive) { bot.lastAlive = true; bot.yaw = p.yaw; bot.pitch = 0; bot.jet = true; }
+    const dt = JF.TICK, A = ARMORS[p.armor], C = w.course, run = p.run;
+    const t = w.terrain;
+    const gi = run && !run.done ? run.gate : -1;
+    const v = p.vel, sp = Math.sqrt(v[0] * v[0] + v[2] * v[2]);
+    const ground = t.height(p.pos[0], p.pos[2]), alt = p.pos[1] - ground;
+    const energyF = p.energy / A.energy;
+    if (bot.jet && energyF < 0.1) bot.jet = false;
+    if (!bot.jet && energyF > 0.5) bot.jet = true;
+    let jet = false, want = false, mdx = 0, mdz = 0, wantYaw = bot.yaw, wantPitch = 0;
+    if (gi >= 0) {
+      const g = C.gates[gi];
+      // aim a little past the gate along its facing, so we go through it rather than turning at it
+      const goal = [g.c[0] + g.n[0] * 4, g.c[1], g.c[2] + g.n[2] * 4];
+      const dx = goal[0] - p.pos[0], dz = goal[2] - p.pos[2], hd = Math.sqrt(dx * dx + dz * dz) || 1;
+      const dy = goal[1] - (p.pos[1] + A.h * 0.5);
+      const ux = dx / hd, uz = dz / hd;
+      want = true;
+      // steer by the velocity we want: the speed we have (or a little, when slow), pointed at the gate
+      const vmax = Math.max(sp, 20);
+      const ex = ux * vmax - v[0], ez = uz * vmax - v[2], el = Math.sqrt(ex * ex + ez * ez);
+      if (el > 1) { mdx = ex / el; mdz = ez / el; } else { mdx = ux; mdz = uz; }
+      const toward = v[0] * ux + v[2] * uz;
+      const fl = Math.max(t.waterH ?? -Infinity, t.lavaH ?? -Infinity);
+      const ahead = 18 + sp * 0.9;
+      const rise = Math.max(t.height(p.pos[0] + ux * ahead, p.pos[2] + uz * ahead), fl) - ground; // the land ahead, relative to our feet
+      const climb = toward > 0 ? toward * toward / (2 * GRAV) * 0.7 : 0;                          // how high our speed can carry us
+      const cosv = sp > 1 ? (v[0] * ux + v[2] * uz) / sp : 1;
+      const miss = cosv > 0 ? hd * Math.sqrt(Math.max(0, 1 - cosv * cosv)) : hd; // how far from the gate we would pass at this heading
+      if (dy > 3 && hd < 70 && v[1] < 6) jet = bot.jet || (p.jetting && p.energy > 2);   // the gate is up there: go up in one go
+      else if (rise > 2 + climb && hd > 20) jet = bot.jet;                               // a hill we cannot ski over
+      else if (p.ground && toward < 10 && rise > -1) jet = bot.jet;                      // crawling on the flat: get going
+      if (sp > 12 && miss > g.r * 0.5 && bot.jet) jet = true;                              // would miss the gate: turn with the jets
+      if (!p.ground && v[1] < -24 && alt < 45 && p.energy > 3) jet = true;               // land softly
+      if (!p.ground && sp > 25 && p.energy > 2) {                                        // about to fly into a hillside
+        const ax = p.pos[0] + v[0] * 0.6, az = p.pos[2] + v[2] * 0.6, ay = p.pos[1] + v[1] * 0.6;
+        if (t.height(ax, az) > ay - 1) jet = true;
+      }
+      if (t.lavaH != null && ground < t.lavaH + 1 && alt < 8 && p.energy > 2) jet = true; // never stand in lava
+      if (t.waterH != null && p.pos[1] < t.waterH + 0.5) jet = bot.jet || (p.jetting && p.energy > 2);
+      const hAhead = rise + ground;
+      // ski unless crawling uphill with the jets off
+      if (p.ground && !(sp < 7 && hAhead > ground + 2 && !jet)) inp.b |= B.JUMP;
+      wantYaw = Math.atan2(-ux, -uz);
+      wantPitch = clamp(Math.atan2(dy, hd) * 0.6, -0.5, 0.5);
+    }
+    if (jet) inp.b |= B.JET;
+
+    // a target in sight during the run: look at it and shoot, discs from a distance, the chaingun up close
+    let tgt = null;
+    if (run && run.t0 >= 0 && !run.done) {
+      const eyeP = JF.eye(p);
+      let bd = 70 + skill * 40;
+      for (const o of C.targets) {
+        if (run.hit[o.ti]) continue;
+        const d = dist3(o.c, eyeP);
+        if (d < bd && !w.blocked(eyeP, o.c)) { tgt = o; bd = d; }
+      }
+      if (tgt) {
+        const eyeP2 = eyeP, d = bd;
+        const wk = d < 14 && p.weapons.indexOf('chain') >= 0 ? 'chain' : p.weapons.indexOf('disc') >= 0 ? 'disc' : p.weapons[0];
+        const wi = p.weapons.indexOf(wk), W = WEAPONS[wk];
+        if (wi !== p.wi) inp.w = wi;
+        bot.errT -= dt;
+        if (bot.errT <= 0) { bot.errT = 0.5; const e = Math.pow(1 - skill, 1.2) * 0.12 + 0.005; bot.aimErr = [(Math.random() - 0.5) * 2 * e, (Math.random() - 0.5) * 2 * e]; }
+        const relV = [-v[0] * W.inherit, -v[1] * W.inherit, -v[2] * W.inherit];
+        const aim = JF.leadAim(eyeP2, tgt.c, relV, W.speed, W.grav || 0);
+        wantYaw = Math.atan2(-aim[0], -aim[2]) + bot.aimErr[0];
+        wantPitch = Math.asin(clamp(aim[1], -1, 1)) + bot.aimErr[1];
+        const tol = 0.025 + (W.r ? Math.min(0.12, W.r / Math.max(d, 1) * 0.5) : 0.015);
+        const ready = W.ammo > 0 ? p.ammo[wk] > 0 : (!W.energy || p.energy >= W.energy);
+        if (wi === p.wi && Math.abs(angDiff(bot.yaw, wantYaw)) < tol && Math.abs(bot.pitch - wantPitch) < tol && ready && !(W.r > 0 && d < W.r)) inp.b |= B.FIRE;
+      }
+    }
+
+    const turn = (2.5 + skill * 7) * dt;
+    bot.yaw += clamp(angDiff(bot.yaw, wantYaw), -turn, turn);
+    bot.pitch = clamp(bot.pitch + clamp(wantPitch - bot.pitch, -turn, turn), -1.5, 1.5);
+    inp.yaw = bot.yaw; inp.pitch = bot.pitch;
+    if (want) {
+      const sy = Math.sin(bot.yaw), cy = Math.cos(bot.yaw);
+      inp.mz = clamp(-sy * mdx - cy * mdz, -1, 1);
+      inp.mx = clamp(cy * mdx - sy * mdz, -1, 1);
+    }
+    return inp;
+  }
+
   function angDiff(a, b) {
     let d = (b - a) % (Math.PI * 2);
     if (d > Math.PI) d -= Math.PI * 2;
@@ -336,7 +430,7 @@
     return d;
   }
 
-  const api = { NAMES, LOADOUTS, name, loadout, create, think, route, angDiff };
+  const api = { NAMES, LOADOUTS, name, loadout, create, think, courseThink, route, angDiff };
   void PROJ; void GRAV;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.JFBots = api;

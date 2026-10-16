@@ -23,7 +23,14 @@
       quality: ['low', 'mid', 'high'].includes(o.quality) ? o.quality : null,
       fps: o.fps === true, skiHold: o.skiHold !== false, third: o.third === true, speak: o.speak !== false,
       host: o.host && typeof o.host === 'object' ? o.host : {},
+      best: bestTimes(o.best), pacers: num(o.pacers, 0, 3, 1),
     };
+  }
+  // best course times from the device: only known courses, only sensible numbers
+  function bestTimes(o) {
+    const out = {};
+    if (o && typeof o === 'object') for (const k of JF.COURSE_KEYS) if (typeof o[k] === 'number' && o[k] > 0 && o[k] < 36000) out[k] = o[k];
+    return out;
   }
   const prefs = loadPrefs();
   const savePrefs = () => { try { localStorage.setItem(KEY, JSON.stringify(prefs)); } catch (e) { /* private mode */ } };
@@ -82,6 +89,30 @@
     enterGame();
   }
 
+  // a ski course, offline: the host runs it like practice, with pacer bots if wanted
+  function playCourse(key) {
+    if (!renderer || !JF.has(JF.COURSES, key)) return;
+    Audio.start();
+    S = startLocal({ map: JF.COURSES[key].map, course: key, bots: prefs.pacers, skill: 0.6, caps: 5, minutes: 60 }, null);
+    S.course = key;
+    S.client.hello(0);
+    enterGame();
+  }
+  function fmtT(t) { return t < 0 || t == null ? '-' : (t >= 60 ? Math.floor(t / 60) + ':' + (t % 60 < 10 ? '0' : '') : '') + (t % 60).toFixed(1); }
+  function fillCourses() {
+    const box = $('courses'); box.innerHTML = '';
+    for (const k of JF.COURSE_KEYS) {
+      const c = JF.COURSES[k];
+      const div = document.createElement('div'); div.className = 'course';
+      const cell = (cls, text) => { const e = document.createElement('span'); e.className = cls; e.textContent = text; return e; };
+      const btn = document.createElement('button'); btn.textContent = 'Run'; btn.className = 'primary';
+      div.append(cell('nm', c.name), cell('mp', JF.MAPS[c.map].name + ' · ' + c.gates.length + ' gates, ' + c.targets.length + ' targets'), cell('bl', c.blurb), cell('bt', prefs.best[k] != null ? 'best ' + fmtT(prefs.best[k]) : ''), btn);
+      div.onclick = () => { if (needName()) playCourse(k); };
+      box.appendChild(div);
+    }
+    $('pacers').value = String(prefs.pacers);
+  }
+
   async function hostOnline(opts) {
     if (!renderer) return;
     Audio.start();
@@ -89,10 +120,10 @@
     let link;
     try {
       link = Link.connect();
-      const settings = { map: opts.map, bots: opts.bots, skill: opts.skill, caps: opts.caps, minutes: opts.minutes, rotate: opts.rotate !== false };
+      const settings = { map: opts.map, course: opts.course || null, bots: opts.bots, skill: opts.skill, caps: opts.caps, minutes: opts.minutes, rotate: opts.rotate !== false };
       const r = await link.host(opts.name, { public: opts.public, map: opts.map, v: Net.PROTO, n: 1 }, opts.room);
       S = startLocal(settings, { room: r.room });
-      S.link = link; S.room = r.room; S.public = opts.public; S.roomName = opts.name; S.fixed = !!opts.room;
+      S.link = link; S.room = r.room; S.public = opts.public; S.roomName = opts.name; S.fixed = !!opts.room; S.course = opts.course || null;
       link.on('data', (id, bytes) => S && S.host && S.host.receive(id, bytes));
       link.on('left', id => S && S.host && S.host.leave(id));
       link.on('closed', () => { if (S && S.link === link) toast('Lost the connection to the game server. Friends can no longer join, but you can keep playing.'); });
@@ -180,6 +211,7 @@
     history.replaceState(null, '', location.pathname + location.search);
     setMenuMsg(msg || '');
     if (Audio.ctx) Audio.update(false, 0, 0);
+    fillCourses();
     refreshRooms();
   }
 
@@ -202,12 +234,21 @@
   $('playBots').onclick = () => { if (needName()) playBots(); };
   $('joinBtn').onclick = () => { if (needName()) join($('code').value); };
   $('code').addEventListener('keydown', e => { if (e.key === 'Enter' && needName()) join($('code').value); });
-  for (const sel of ['hMap', 'gMap']) for (const k of JF.MAP_KEYS) { const o = document.createElement('option'); o.value = k; o.textContent = JF.MAPS[k].name + ' - ' + JF.MAPS[k].blurb; $(sel).appendChild(o); }
+  for (const sel of ['hMap', 'gMap']) {
+    for (const k of JF.MAP_KEYS) { const o = document.createElement('option'); o.value = k; o.textContent = JF.MAPS[k].name + ' - ' + JF.MAPS[k].blurb; $(sel).appendChild(o); }
+    const grp = document.createElement('optgroup'); grp.label = 'Ski courses (a race: best time wins, bots are pacers)';
+    for (const k of JF.COURSE_KEYS) { const o = document.createElement('option'); o.value = 'course:' + k; o.textContent = JF.COURSES[k].name + ' - ' + JF.COURSES[k].blurb; grp.appendChild(o); }
+    $(sel).appendChild(grp);
+  }
+  // the map select's value: a map, or 'course:<key>'
+  const mapChoice = v => (v.startsWith('course:') && JF.has(JF.COURSES, v.slice(7)) ? { map: JF.COURSES[v.slice(7)].map, course: v.slice(7) } : { map: JF.has(JF.MAPS, v) ? v : 'highland', course: null });
+  fillCourses();
+  $('pacers').addEventListener('change', () => { prefs.pacers = +$('pacers').value; savePrefs(); });
   $('hostBtn').onclick = () => {
     if (!needName()) return;
     const h = prefs.host;
     $('hName').value = h.name || (prefs.name + "'s game");
-    $('hMap').value = h.map || 'highland';
+    $('hMap').value = h.course ? 'course:' + h.course : (h.map || 'highland');
     $('hBots').value = String(h.bots != null ? h.bots : 3);
     $('hSkill').value = String(h.skill != null ? h.skill : 0.5);
     $('hCaps').value = String(h.caps || 5);
@@ -217,7 +258,7 @@
   };
   $('hCancel').onclick = () => $('hostDlg').close();
   $('hGo').onclick = () => {
-    const opts = { name: JF.cleanName($('hName').value), map: $('hMap').value, bots: +$('hBots').value, skill: +$('hSkill').value, caps: +$('hCaps').value, minutes: +$('hMins').value, public: $('hPublic').checked };
+    const opts = Object.assign({ name: JF.cleanName($('hName').value), bots: +$('hBots').value, skill: +$('hSkill').value, caps: +$('hCaps').value, minutes: +$('hMins').value, public: $('hPublic').checked }, mapChoice($('hMap').value));
     prefs.host = Object.assign({}, prefs.host, opts); savePrefs();
     $('hostDlg').close();
     hostOnline(opts);
@@ -247,7 +288,7 @@
       if (!rooms.length) box.innerHTML = '<span class="dim">No servers up right now. Start one: your browser runs it and bots play until people join. Or practice offline.</span>';
       for (const r of rooms) {
         const div = document.createElement('div'); div.className = 'room';
-        const map = JF.has(JF.MAPS, r.info.map) ? JF.MAPS[r.info.map].name : '?';
+        const map = JF.has(JF.COURSES, r.info.course) ? 'Course: ' + JF.COURSES[r.info.course].name : JF.has(JF.MAPS, r.info.map) ? JF.MAPS[r.info.map].name : '?';
         const n = people(r), bots = Number.isInteger(r.info.bots) ? Math.max(0, Math.min(r.info.bots, 64)) : 0;
         const sc = Array.isArray(r.info.score) ? (r.info.score[0] | 0) + ':' + (r.info.score[1] | 0) : '';
         const cell = (cls, text) => { const c = document.createElement('span'); c.className = cls; c.textContent = text; return c; };
@@ -333,6 +374,7 @@
     $('pInvite').hidden = !S.room;
     if (S.room) { $('pCode').textContent = S.room; $('pLink').value = location.origin + location.pathname + '#' + S.room; }
     $('pHostSet').hidden = !S.isHost;
+    $('pRestart').hidden = !(S.client.world && S.client.world.course);
     openDlg('pauseDlg');
   }
   $('pResume').onclick = () => $('pauseDlg').close();
@@ -341,12 +383,13 @@
   $('pSettings').onclick = () => { fillSettings(); openDlg('setDlg'); };
   $('pHelp').onclick = () => openDlg('helpDlg');
   $('pLeave').onclick = () => leave('');
+  $('pRestart').onclick = () => { S.client.ctrl({ t: 'restart' }); $('pauseDlg').close(); };
   $('pCopy').onclick = async () => { try { await navigator.clipboard.writeText($('pLink').value); $('pCopy').textContent = 'Copied'; setTimeout(() => ($('pCopy').textContent = 'Copy'), 1500); } catch (e) { $('pLink').select(); } };
   $('tmenu').onclick = openPause;
   // host settings
   $('pHostSet').onclick = () => {
     const st = S.host.state.settings;
-    $('gMap').value = st.map; $('gBots').value = String(st.bots); $('gSkill').value = String(st.skill); $('gCaps').value = String(st.caps); $('gMins').value = String(st.minutes);
+    $('gMap').value = st.course ? 'course:' + st.course : st.map; $('gBots').value = String(st.bots); $('gSkill').value = String(st.skill); $('gCaps').value = String(st.caps); $('gMins').value = String(st.minutes);
     const box = $('gPlayers'); box.innerHTML = '';
     for (const p of S.host.state.players) {
       if (p.bot) continue;
@@ -358,7 +401,7 @@
     }
     openDlg('hostSetDlg');
   };
-  const hostSettingsFromDlg = () => ({ map: $('gMap').value, bots: +$('gBots').value, skill: +$('gSkill').value, caps: +$('gCaps').value, minutes: +$('gMins').value });
+  const hostSettingsFromDlg = () => Object.assign({ bots: +$('gBots').value, skill: +$('gSkill').value, caps: +$('gCaps').value, minutes: +$('gMins').value }, mapChoice($('gMap').value));
   $('gApply').onclick = () => { S.client.ctrl({ t: 'host', cmd: 'settings', settings: hostSettingsFromDlg(), restart: false }); $('hostSetDlg').close(); };
   $('gRestart').onclick = () => { S.client.ctrl({ t: 'host', cmd: 'settings', settings: hostSettingsFromDlg(), restart: true }); S.client.ctrl({ t: 'host', cmd: 'restart' }); $('hostSetDlg').close(); };
   $('gCancel').onclick = () => $('hostSetDlg').close();
@@ -369,6 +412,7 @@
   const touch = { fire: false, jet: false, ski: false, mx: 0, mz: 0 };
   let yaw = 0, pitch = 0, wantW = 255, jumpPulse = false;
   let thirdPerson = prefs.third;
+  let courseRestartSent = false;
   let tabDown = false, mapDown = false;
 
   function lockPointer() {
@@ -419,7 +463,7 @@
     if (e.code === 'KeyV') { openVgs(); return; }
     if (e.code === 'KeyI') { fillLoadout(); openDlg('loadDlg'); }
     if (e.code === 'KeyT' || e.code === 'KeyY' || e.code === 'Enter') { e.preventDefault(); openChat(e.code === 'KeyY'); }
-    if (e.code === 'KeyK') S.client.ctrl({ t: 'kill' });
+    if (e.code === 'KeyK') S.client.ctrl({ t: S.client.world && S.client.world.course ? 'restart' : 'kill' });
     if (e.code === 'KeyM') mapDown = true;
   });
   addEventListener('keyup', e => { keys[e.code] = false; if (e.code === 'Tab') tabDown = false; if (e.code === 'KeyM') mapDown = false; });
@@ -499,6 +543,8 @@
     const c = { b: 0, mx: 0, mz: 0, yaw, pitch, w: wantW, redundancy: S && S.link && !S.isHost && !S.link.direct(0) ? 6 : 4, sendEvery: S && S.link && !S.isHost && !S.link.direct(0) ? 2 : 1 };
     if (anyDialog()) { c.b = 0; return c; }
     if (mouse.l || touch.fire) c.b |= B.FIRE;
+    if (courseDone && touch.fire && S && !courseRestartSent) { courseRestartSent = true; S.client.ctrl({ t: 'restart' }); }
+    if (!courseDone) courseRestartSent = false;
     if (mouse.r || keys.KeyE || touch.jet) c.b |= B.JET;
     const skiKey = prefs.skiHold ? keys.Space : (keys.ShiftLeft || keys.ShiftRight);
     if (skiKey || touch.ski || jumpPulse) c.b |= B.JUMP;
@@ -647,11 +693,12 @@
   let lastFrame = performance.now(), fpsN = 0, fpsT = 0, fpsShow = 0;
   let recoil = 0, bob = 0, swayX = 0, swayY = 0, lastYaw = 0, lastPitch = 0, fireGlow = 0;
   let overShown = false;
+  let courseDone = null; // my last finished run on a course, until the next start
   let debugCam = null; // set from the console or tests: { pos, yaw, pitch }
 
   function resetView() {
     fx = []; fxBeams = []; fxLights = []; debris = []; localProj = []; anims.clear(); feed = []; chat = [];
-    wasAlive = false; deathInfo = null; overShown = false; wantW = 255; replay = null; replayWant = null;
+    wasAlive = false; deathInfo = null; overShown = false; courseDone = null; wantW = 255; replay = null; replayWant = null;
     $('over').hidden = true;
   }
   function myView() {
@@ -681,8 +728,29 @@
       switch (e.k) {
         case 'map':
           renderer.setMap(c.world); resetView(); mapCanvasFor = null;
-          center(JF.MAPS[e.map].name, JF.MAPS[e.map].blurb, '#fff', 4);
+          if (c.world.course) center(c.world.course.def.name, 'Through the gates in order, shoot the targets. The clock starts at the first gate.', '#fff', 5);
+          else center(JF.MAPS[e.map].name, JF.MAPS[e.map].blurb, '#fff', 4);
           break;
+        case 'cstart': if (e.id === myId) { center('Go!', '', '#5ee0b0', 1.2); Audio.play('flagTake'); } break;
+        case 'cgate': if (e.id === myId) { center('Gate ' + e.g + ' of ' + (e.n - 1), fmtT(e.el), '#5ee0b0', 1.2); Audio.play('gate'); } break;
+        case 'ctarget': {
+          const o = c.world.objects.find(x => x.kind === 'target' && x.ti === e.ti);
+          if (o) { sparks(o.c, 30); explosion(o.c[0], o.c[1], o.c[2], 'chain'); }
+          if (e.id === myId) { hitT = now(); hitKill = false; Audio.play('target'); center('', 'Target ' + e.n + ' of ' + e.of, '#ffe08a', 1); }
+          break;
+        }
+        case 'cfinish': {
+          const who = nameOf(e.id);
+          addFeed(teamSpan(e.id, who) + ' <span class="dim">finished in ' + esc(fmtT(e.total)) + '</span>');
+          if (e.id !== myId) break;
+          Audio.play(e.best ? 'cap' : 'ret');
+          const key = c.world.courseKey;
+          const was = prefs.best[key];
+          const record = was == null || e.total < was;
+          if (record) { prefs.best[key] = Math.round(e.total * 100) / 100; savePrefs(); }
+          courseDone = { time: e.time, pen: e.pen, total: e.total, hits: e.hits, of: e.of, record, was };
+          break;
+        }
         case 'fire': {
           if (e.id === myId && e.w !== 'hgren' && e.w !== 'laser') break; // shown when I fired it
           const p = view && view.players.find(x => x.id === e.id);
@@ -792,7 +860,8 @@
         case 'spawn':
           if (e.id === myId) {
             const base = c.world.bases[myTeam];
-            yaw = base ? (base.o.face > 0 ? -Math.PI / 2 : Math.PI / 2) : yaw; pitch = 0; deathInfo = null; wantW = 255; localProj = [];
+            yaw = c.world.course ? c.world.course.yaw : base ? (base.o.face > 0 ? -Math.PI / 2 : Math.PI / 2) : yaw; pitch = 0; deathInfo = null; wantW = 255; localProj = [];
+            courseDone = null;
             Audio.play('spawn');
           }
           break;
@@ -1313,9 +1382,21 @@
       parts.part(f.pos[0], f.pos[1] + 2.4, f.pos[2], 2.2, tc[0] * 1.5, tc[1] * 1.5, tc[2] * 1.5, 0.5, 0);
       lights.push({ x: f.pos[0], y: f.pos[1] + 2, z: f.pos[2], r: 10, c: tc.map(v => v * 1.2) });
     });
+    // a course: its gates (the one due lit), its targets (the ones I have hit knocked over)
+    const run = w.course && me ? me.run : null;
+    if (w.course) {
+      const next = run && !run.done ? run.gate : -1;
+      const groundAt = (x, z) => w.terrain.height(x, z);
+      w.course.gates.forEach((g, i) => {
+        const state = i === next ? 'next' : i === next + 1 ? 'soon' : next < 0 || i < next ? 'done' : 'later';
+        Models.gate(renderer, g, groundAt, state, time);
+        if (state === 'next' && lights.length < 6) lights.push({ x: g.c[0], y: g.c[1], z: g.c[2], r: g.r * 2.2, c: [0.3, 0.9, 0.6] });
+      });
+    }
     // base things
     w.objects.forEach((o, i) => {
       const so = view.objects[i];
+      if (o.kind === 'target') { Models.target(renderer, o, !!(run && run.hit[o.ti]), w.terrain.height(o.c[0], o.c[2]), time); return; }
       Models.object(renderer, o, so, time);
       if (so && !so.up && Math.random() < 0.25) {
         puff(o.c[0] + rnd(-1, 1), o.b[4], o.c[2] + rnd(-1, 1), { life: 2.5, s0: 0.6, s1: 2.5, c: [0.12, 0.12, 0.12], kind: 1, blend: 1, a: 0.6, v: [rnd(-0.5, 0.5), 3, rnd(-0.5, 0.5)], drag: 0.3 });
@@ -1417,7 +1498,17 @@
     const myId = view.you;
     const alive = !!(me && me.alive);
     const myTeam = me ? me.team : 0;
-    // top: score, clock, flags
+    // top: on a course the gate, the clock of the run and the targets; else score, clock, flags
+    document.body.classList.toggle('course', !!w.course);
+    if (w.course) {
+      const run = me && me.run, C = w.course;
+      setText('s0', run ? Math.max(0, Math.min(run.gate - 1, C.gates.length - 1)) + '/' + (C.gates.length - 1) : '-'); setText('f0', 'GATE');
+      setText('s1', run ? run.hits + '/' + C.targets.length : '-'); setText('f1', 'TARGETS');
+      $('f0').className = 'fl'; $('f1').className = 'fl';
+      document.querySelector('.t0 .tname').textContent = me && me.best >= 0 ? 'best ' + fmtT(me.best) : (prefs.best[w.courseKey] != null ? 'best ' + fmtT(prefs.best[w.courseKey]) : '');
+      document.querySelector('.t1 .tname').textContent = '+' + C.penalty + ' s each missed';
+      setText('clock', run && run.started ? fmtT(run.time) : '0.0');
+    } else
     for (let t = 0; t < 2; t++) {
       setText('s' + t, String(view.score[t]));
       const f = view.flags[t];
@@ -1426,9 +1517,11 @@
       setText('f' + t, st);
       el.className = 'fl' + (f.state !== 'home' ? ' away' : '');
     }
-    document.querySelector('.t0 .tname').textContent = TEAMS[0].name + (myTeam === 0 ? ' (you)' : '');
-    document.querySelector('.t1 .tname').textContent = TEAMS[1].name + (myTeam === 1 ? ' (you)' : '');
-    setText('clock', mmss(view.timeLeft));
+    if (!w.course) {
+      document.querySelector('.t0 .tname').textContent = TEAMS[0].name + (myTeam === 0 ? ' (you)' : '');
+      document.querySelector('.t1 .tname').textContent = TEAMS[1].name + (myTeam === 1 ? ' (you)' : '');
+      setText('clock', mmss(view.timeLeft));
+    }
     // bars
     if (me) {
       const A = ARMORS[me.armor];
@@ -1462,7 +1555,9 @@
         const ready = me.deadT >= JF.RESPAWN_S;
         $('dead').querySelector('b').textContent = replay ? 'Midair!' : deathInfo ? 'You died' : 'Get ready';
         let txt = replay ? 'Replay: ' + nameOf(replay.k.by) + '\u2019s disc' : deathInfo ? (deathInfo.by >= 0 && deathInfo.by !== myId ? 'by ' + nameOf(deathInfo.by) + ' (' + deathInfo.w + ')' : deathInfo.w) : '';
-        txt += ' · ' + (ready ? (isTouch ? 'tap FIRE to respawn' : 'click to respawn') : 'respawn in ' + Math.ceil(JF.RESPAWN_S - me.deadT));
+        const wait = w.course ? JF.COURSE_RESPAWN_S : JF.RESPAWN_S, ready2 = me.deadT >= wait, again = w.course ? 'start again' : 'respawn';
+        txt += ' · ' + (ready2 ? (isTouch ? 'tap FIRE to ' + again : 'click to ' + again) : again + ' in ' + Math.ceil(wait - me.deadT));
+        void ready;
         setText('deadtxt', ' ' + txt);
       }
     }
@@ -1491,7 +1586,7 @@
     chat = chat.filter(f => now() - f.t < 14);
     setHtml('chatlog', chat.map(f => '<div>' + f.html + '</div>').join(''));
     // room and network
-    setText('roomtag', S.room ? 'game ' + S.room + (S.isHost ? ' · you are hosting' : '') : 'practice with bots');
+    setText('roomtag', (S.room ? 'game ' + S.room + (S.isHost ? ' · you are hosting' : '') : w.course ? w.course.def.name : 'practice with bots') + (w.course ? ' · K starts over' : ''));
     const late = c.lastSnapAt && performance.now() - c.lastSnapAt > 1500;
     let net = late ? 'Waiting for the host…' : '';
     if (!S.isHost && S.link && !S.link.direct(0) && !late) net = 'via relay';
@@ -1507,7 +1602,13 @@
     if (tabDown) setHtml('scores', board(view));
     $('bigmap').hidden = !mapDown;
     if (mapDown) bigMap(view);
-    if (view.over > -2) {
+    if (courseDone && alive) {
+      $('over').hidden = false;
+      const d = courseDone;
+      setHtml('over', '<h2 style="color:#5ee0b0">' + (d.record ? 'New best!' : 'Finished') + '</h2><p>' + esc(fmtT(d.time)) + ' s, ' + d.hits + ' of ' + d.of + ' targets' + (d.pen ? ' (+' + d.pen + ' s)' : '') + '</p><p><b style="font-size:28px">' + esc(fmtT(d.total)) + '</b>' +
+        (d.record && d.was != null ? '<br><span class="dim">was ' + esc(fmtT(d.was)) + '</span>' : !d.record ? '<br><span class="dim">best ' + esc(fmtT(d.was)) + '</span>' : '') + '</p>' + board(view) + '<p class="dim">' + (isTouch ? 'Tap FIRE' : 'Press K') + ' to run again, Esc for the menu</p>');
+      overShown = true;
+    } else if (view.over > -2) {
       $('over').hidden = false;
       const win = view.over;
       const title = win < 0 ? 'A draw' : (win === myTeam ? 'You win!' : TEAMS[win].name + ' wins');
@@ -1519,6 +1620,12 @@
   function board(view) {
     const c = client();
     const myId = view.you;
+    if (c.world.course) {
+      const list = c.roster.slice().sort((a, b) => (a.r < 0 ? 1e9 : a.r) - (b.r < 0 ? 1e9 : b.r));
+      let h = '<div class="sc one"><div><h3 style="color:#5ee0b0">' + esc(c.world.course.def.name) + '</h3><table><tr><th>name</th><th>best</th><th>runs</th><th>ping</th></tr>';
+      for (const p of list) h += '<tr class="' + (p.id === myId ? 'me' : '') + '"><td>' + esc(p.name) + (p.bot ? ' <span class="dim">pacer</span>' : '') + '</td><td>' + (p.r < 0 ? '-' : esc(fmtT(p.r / 100))) + '</td><td>' + p.n + '</td><td>' + (p.bot ? '' : p.ping) + '</td></tr>';
+      return h + '</table></div></div>';
+    }
     let h = '<div class="sc">';
     for (let t = 0; t < 2; t++) {
       const list = c.roster.filter(p => p.team === t).sort((a, b) => b.s - a.s);
@@ -1537,11 +1644,27 @@
     const W = innerWidth, H = innerHeight;
     const dist = p => camPos ? Math.hypot(p[0] - camPos[0], p[1] - camPos[1], p[2] - camPos[2]) : 0;
     // flags
-    view.flags.forEach((f, i) => {
+    if (!w.course) view.flags.forEach((f, i) => {
       const pos = [f.pos[0], f.pos[1] + 3.2, f.pos[2]];
       const lbl = i === myTeam ? (f.state === 'home' ? 'our flag' : f.state === 'carried' ? 'OUR FLAG' : 'our flag (dropped)') : (f.state === 'carried' && f.carrier === myId ? '' : 'their flag');
       if (lbl) list.push({ pos, cls: 'mk flag', color: TEAMS[i].color, text: lbl + ' ' + Math.round(dist(pos)) + 'm', clamp: true });
     });
+    // a course: the gate due (always on screen), the one after it, and the targets I have not hit yet
+    if (w.course) {
+      const run = me && me.run, next = run && !run.done ? run.gate : -1;
+      w.course.gates.forEach((g, i) => {
+        if (i !== next && i !== next + 1) return;
+        const pos = [g.c[0], g.c[1] + g.r + 1.2, g.c[2]];
+        const lbl = i === 0 ? 'start' : i === w.course.gates.length - 1 ? 'finish' : 'gate ' + i;
+        list.push({ pos, cls: 'mk ' + (i === next ? 'gate' : 'gate soon'), color: i === next ? '#5ee0b0' : '#d9c27a', text: lbl + ' ' + Math.round(dist(pos)) + 'm', clamp: i === next });
+      });
+      for (const o of w.objects) {
+        if (o.kind !== 'target' || (run && run.hit[o.ti])) continue;
+        const d = dist(o.c);
+        if (d > 220 || w.blocked(camPos, o.c)) continue;
+        list.push({ pos: [o.c[0], o.c[1] + 1.8, o.c[2]], cls: 'mk tgt', color: '#ffe08a', text: 'target ' + Math.round(d) + 'm' });
+      }
+    }
     // teammates' names; enemies only near the crosshair and in sight
     for (const p of view.players) {
       if (!p.alive || p.id === myId) continue;
@@ -1558,7 +1681,7 @@
     }
     // base things near the crosshair or that I just hit: name and health
     for (const o of w.objects) {
-      const so = view.objects[o.id]; if (!so) continue;
+      const so = view.objects[o.id]; if (!so || o.kind === 'target') continue;
       const top = [o.c[0], o.b[4] + 0.9, o.c[2]];
       const d = dist(top);
       if (d > 160) continue;
@@ -1596,7 +1719,7 @@
       el.className = m.cls;
       el.style.left = x.toFixed(0) + 'px'; el.style.top = y.toFixed(0) + 'px';
       el.style.color = m.color || '';
-      const html = (m.tri ? '<div class="tri"></div>' : '') + (m.cls.includes('flag') || m.cls === 'mk' ? '<div class="ic"></div><br>' : '') + esc(m.text) + (m.bar != null ? '<div class="hb"><i style="width:' + Math.round(m.bar * 100) + '%;background:hsl(' + Math.round(m.bar * 120) + ',85%,52%)"></i></div>' : '');
+      const html = (m.tri ? '<div class="tri"></div>' : '') + (m.cls.includes('flag') || m.cls.includes('gate') || m.cls.includes('tgt') || m.cls === 'mk' ? '<div class="ic"></div><br>' : '') + esc(m.text) + (m.bar != null ? '<div class="hb"><i style="width:' + Math.round(m.bar * 100) + '%;background:hsl(' + Math.round(m.bar * 120) + ',85%,52%)"></i></div>' : '');
       if (el._h !== html) { el._h = html; el.innerHTML = html; }
     });
   }
@@ -1641,8 +1764,25 @@
       g.fillStyle = p.team === myTeam ? TEAMS[p.team].color : '#ff4a3a';
       g.beginPath(); g.arc(v[0], v[1], p.hasFlag ? 4.5 : 3, 0, Math.PI * 2); g.fill();
     }
+    // a course: gates as rings, the one due bright; targets as dots
+    if (w.course) {
+      const run = me && me.run, next = run && !run.done ? run.gate : -1;
+      w.course.gates.forEach((gt, i) => {
+        const v = toR(gt.c);
+        if (Math.hypot(v[0], v[1]) > R_ + 4 && i !== next) return;
+        const cv = i === next ? clampR(v) : v;
+        g.strokeStyle = i === next ? '#5ee0b0' : i === next + 1 ? '#d9c27a' : i < next || next < 0 ? 'rgba(150,160,180,0.3)' : 'rgba(200,210,230,0.6)'; g.lineWidth = i === next ? 2.5 : 1.5;
+        g.beginPath(); g.arc(cv[0], cv[1], i === next ? 6 : 4, 0, Math.PI * 2); g.stroke();
+      });
+      for (const o of w.objects) {
+        if (o.kind !== 'target') continue;
+        const v = toR(o.c); if (Math.hypot(v[0], v[1]) > R_) continue;
+        g.fillStyle = run && run.hit[o.ti] ? 'rgba(150,150,150,0.4)' : '#ffe08a';
+        g.beginPath(); g.arc(v[0], v[1], 2.5, 0, Math.PI * 2); g.fill();
+      }
+    }
     // flags
-    view.flags.forEach((f, i) => {
+    if (!w.course) view.flags.forEach((f, i) => {
       const v = clampR(toR(f.pos));
       g.fillStyle = TEAMS[i].color; g.strokeStyle = '#fff'; g.lineWidth = 1.5;
       g.beginPath(); g.moveTo(v[0] - 3, v[1] + 6); g.lineTo(v[0] - 3, v[1] - 7); g.lineTo(v[0] + 6, v[1] - 4); g.lineTo(v[0] - 3, v[1] - 1); g.closePath(); g.fill(); g.stroke();
@@ -1679,13 +1819,20 @@
     g.putImageData(mapImg, 0, 0);
     const toM = p => [p[0] / JF.SIZE * Wd, p[2] / JF.SIZE * Wd];
     const myTeam = client().me ? client().me.team : 0;
+    if (w.course) {
+      const run = client().me && client().me.run, next = run && !run.done ? run.gate : -1;
+      g.strokeStyle = 'rgba(94,224,176,0.5)'; g.lineWidth = 2; g.beginPath();
+      w.course.gates.forEach((gt, i) => { const v = toM(gt.c); if (i) g.lineTo(v[0], v[1]); else g.moveTo(v[0], v[1]); }); g.stroke();
+      w.course.gates.forEach((gt, i) => { const v = toM(gt.c); g.fillStyle = i === next ? '#5ee0b0' : i < next || next < 0 ? '#556' : '#dde'; g.beginPath(); g.arc(v[0], v[1], i === next ? 5 : 3, 0, Math.PI * 2); g.fill(); });
+      for (const o of w.objects) if (o.kind === 'target') { const v = toM(o.c); g.fillStyle = run && run.hit[o.ti] ? '#665' : '#ffe08a'; g.fillRect(v[0] - 2, v[1] - 2, 4, 4); }
+    }
     for (const b of w.bases) { const v = toM([b.o.x, 0, b.o.z]); g.strokeStyle = TEAMS[b.team].color; g.lineWidth = 3; g.strokeRect(v[0] - 8, v[1] - 8, 16, 16); }
     for (const p of view.players) {
       if (!p.alive || (p.team !== myTeam && !p.hasFlag)) continue;
       const v = toM(p.pos); g.fillStyle = p.id === view.you ? '#fff' : TEAMS[p.team].color;
       g.beginPath(); g.arc(v[0], v[1], p.id === view.you ? 5 : 3.5, 0, Math.PI * 2); g.fill();
     }
-    view.flags.forEach((f, i) => { const v = toM(f.pos); g.fillStyle = TEAMS[i].color; g.strokeStyle = '#fff'; g.beginPath(); g.moveTo(v[0], v[1]); g.lineTo(v[0], v[1] - 14); g.lineTo(v[0] + 10, v[1] - 10); g.lineTo(v[0], v[1] - 6); g.fill(); g.stroke(); });
+    if (!w.course) view.flags.forEach((f, i) => { const v = toM(f.pos); g.fillStyle = TEAMS[i].color; g.strokeStyle = '#fff'; g.beginPath(); g.moveTo(v[0], v[1]); g.lineTo(v[0], v[1] - 14); g.lineTo(v[0] + 10, v[1] - 10); g.lineTo(v[0], v[1] - 6); g.fill(); g.stroke(); });
     if (camPos) { const v = toM(camPos), f = JF.aimDir(yaw, 0); g.strokeStyle = '#fff'; g.lineWidth = 2; g.beginPath(); g.moveTo(v[0], v[1]); g.lineTo(v[0] + f[0] * 18, v[1] + f[2] * 18); g.stroke(); }
   }
 

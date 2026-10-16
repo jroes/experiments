@@ -161,6 +161,14 @@ host's copy is hidden. The host decides every hit.
   shapes with `kit()`. A part hanging at -y tips forward with a positive x rotation. `?relay=ws://127.0.0.1:8135/jetfall` points a page at a local server;
   `JFGame.cam = { follow: id }` in the console follows a player (handy for screenshots). `tools/jetfall-og.js` makes the preview picture.
 
+- **Ski courses** (`COURSES` in `sim.js`): a world with `course` set builds gates (a disc standing across the course, facing from the gate before to the one after) and
+  targets (objects of kind `target`, team -1, one solid box each). A run is per player (`p.run`): the gate due, the clock from the first gate, which targets were hit.
+  `touchGates` counts a gate when the path since the last tick crosses its disc, so speed cannot skip one; targets are hit through `hurtObj` like any object, but count
+  for the shooter only, during their run. Everyone is on one team (no shooting each other); flags, stations, turrets and the time limit are off. `COURSE_RESPAWN_S` is short
+  and `restart` (K) puts you back at the start. `Bots.courseThink` is the autopilot: pacer bots in the game, and `tests/jetfall-course.test.js` runs every course with it,
+  so a course only ships if it can be skied with the real `movePlayer`. Gates are map coordinates; `tools`-style scratch scripts that print height profiles along a
+  route are the way to lay a new one out (go downhill, 100 to 150 m between gates, an air gate where a jet is the point). The snapshot carries the run in the `me` block.
+
 **Two ways to host a game.** Browsers hold the rules (lockstep, `/kv`, Sector Dominion) when friends are playing and cheating does not matter. The server holds
 them (`/lab`, `elf-punch/src/lab/`) when players share one world or the score has to be real. A lab game is one `Game` impl (copy `clicker.rs`); the lab handles players, tokens, saving
 and limits. The client is only a screen: never decide anything in it. Lab games keep time-based state lazy (timestamps, brought up to date on access) so the machine can sleep.

@@ -81,6 +81,9 @@
       <button id="playBots">Practice offline</button>
     </div>
     <div class="join"><input id="code" maxlength="6" placeholder="CODE" autocapitalize="characters" autocomplete="off"><button id="joinBtn">Join by code</button></div>
+    <h3>Ski courses <span class="dim">solo, against the clock</span> <label class="pacers">pacers <select id="pacers"><option value="0">none</option><option value="1">1 bot</option><option value="2">2 bots</option><option value="3">3 bots</option></select></label></h3>
+    <div id="courses" class="courses"></div>
+    <p class="fine">Ski through the gates in order and shoot the targets on the way. The clock starts at the first gate. Every target you miss adds seconds. Best times are kept on this device. To race friends, start a server and pick a course as the map.</p>
     <div class="links"><button id="helpBtn" class="link">How to play</button> · <button id="settingsBtn" class="link">Settings</button> · <a href="../">more games</a></div>
   </div>
 </div>
@@ -111,6 +114,7 @@
     <button id="pSettings">Settings</button>
     <button id="pHelp">How to play</button>
     <button id="pHostSet" hidden>Game settings (host)</button>
+    <button id="pRestart" hidden>Start the run over (K)</button>
     <button id="pLeave" class="warn">Leave game</button>
   </div>
 </dialog>
@@ -168,6 +172,12 @@
     <li><b>Inventory stations</b> inside the bunker give you your loadout (I): armor, weapons, a pack, and refill everything.</li>
     <li>The <b>generator</b> in the middle of the bunker powers the stations and the turrets on the roof. If the enemy blows it up, fix it with a repair pack.</li>
     <li>Heavy armor is slow but tough and carries the mortar. Light armor is fast and carries the laser rifle.</li>
+  </ul>
+  <h3>Ski courses</h3>
+  <ul>
+    <li>Pick a course on the front page. Ski through the gates in order: the lit one is next, the yellow one after that. The first gate starts the clock, the last stops it.</li>
+    <li>Shoot the targets (bullseyes on posts) on the way. Each one you miss adds seconds to your time. Discs are easiest: the splash counts.</li>
+    <li>Everyone runs in light armor with the same kit, so times compare. K starts the run over. Pacer bots run the course too; beat them.</li>
   </ul>
   <h3>Keys</h3>
   <table class="keys">
