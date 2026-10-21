@@ -199,6 +199,14 @@ body.touch #chatlog { bottom: 250px; }
   body.course #clock { font-size: 18px; min-width: 72px; } body.course .tscore { padding: 3px 8px; } body.course .fl { min-width: 0; }
   #center { font-size: 18px; }
   .sc { grid-template-columns: 1fr; }
+  /* phones held upright: bars stay left of the buttons, the weapon in hand sits above them */
+  body.touch #bars { width: 140px; } body.touch .bar { margin-top: 3px; font-size: 9px; } body.touch .bar span { width: 44px; } body.touch .bar b { font-size: 11px; }
+  body.touch #speed { font-size: 10px; } body.touch #speed b { font-size: 14px; }
+  body.touch #weapons { bottom: calc(228px + env(safe-area-inset-bottom)); font-size: 11px; gap: 2px; }
+  body.touch #weapons div:not(.on):not(.pk) { display: none; }
+  body.touch #chatlog { bottom: calc(280px + env(safe-area-inset-bottom)); }
+  body.touch #roomtag { display: none; }
+  body.touch #radar { top: calc(56px + env(safe-area-inset-top)); width: 100px; height: 100px; }
 }
 /* phones held sideways: short screens need a tighter HUD */
 @media (max-height: 520px) {
