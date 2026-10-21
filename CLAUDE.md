@@ -22,12 +22,12 @@ key/value store. Live at https://jroes.github.io/experiments/. Written for whoev
 | `hollowmere/`, `gullrock/`, `starsweeper/` | Three adventures. Each is `game.js` (plain data: rooms, items, handlers) plus a page; the engine is in `shared/` |
 | `shared/` | `store.js` (KV client), `config.js` (`KV_URL`), `qrcode.js` (vendored, MIT), p2p and lobby code. `adventure.js` (engine, no DOM), `adventure-art.js` (EGA pixel helpers), `hd2d.js`, `hd2d-gl.js`, `hd2d-post.js`, `hd2d-worker.js` (HD-2D pictures, below), `adventure-ui.js`, `arcade.css` (look shared by Tank Wars and the adventures) |
 | `j/` | Invite landing page: OpenGraph tags for link previews, then hands `#<code>` to the game |
-| `jetfall/` | 3D jetpack capture the flag (Tribes-like). `sim.js` (rules and movement, no DOM), `bots.js`, `vgs.js` (quick chat lines), `net.js` (packets, host, client prediction), `host-worker.js`, `link.js` (relay + WebRTC), `render.js` (WebGL2), `models.js`, `audio.js`, `ui.js` |
+| `jetfall/` | 3D jetpack capture the flag (Tribes-like). `sim.js` (rules and movement, no DOM), `bots.js`, `vgs.js` (quick chat lines), `net.js` (packets, host, client prediction), `host-worker.js`, `link.js` (relay + WebRTC), `render.js` (WebGL2), `render-veg.js` (trees and foliage), `render-post.js` (occlusion and volumetric fog), `vegetation.js` (plant and rock shapes and where they go, no DOM), `models.js`, `tex/` (baked textures), `audio.js`, `ui.js` |
 | `elf-punch/` | Rust server: `/kv` store (`src/store.rs`), the lab for server-authoritative games (`src/lab/`), the Jetfall relay (`src/relay.rs`), the original elf toy (`src/elf.rs`). See its README |
 | `warptraders/universe/` | Client for the shared-universe Warp Traders (talks to `/lab/warptraders`) |
 | `tests/` | `node --test` suites. `fake-kv.js` is an in-memory stand-in for the server |
 | `verification/` | TLA+ models checked with TLC (`run-tlc.sh`) |
-| `tools/` | `make-og.js` renders the link-preview images. `video/` makes each game's intro video (below) |
+| `tools/` | `make-og.js` renders the link-preview images. `video/` makes each game's intro video (below). `jetfall-textures.py` bakes Jetfall's textures |
 
 ## Patterns that matter
 
@@ -158,7 +158,23 @@ host's copy is hidden. The host decides every hit.
   across (seams with a bevel, bolts, scratches, grime; extra 1 = a team stripe, 2 = hazard stripes), -1 stone blocks (courses, mortar, cracks, moss),
   -2 rock (3D noise bumps in world space), -3 cloth, -4 armour plating. `buildStatic` dresses the bunkers (pillars, girders, ribs, pipes, vents, antenna,
   screens, lockers, the mast's ladder, spawn pads) with boxes and cylinders that do not collide; `models.js` builds everything else from the same three
-  shapes with `kit()`. A part hanging at -y tips forward with a positive x rotation. `?relay=ws://127.0.0.1:8135/jetfall` points a page at a local server;
+  shapes with `kit()`. A part hanging at -y tips forward with a positive x rotation.
+- **Textures** are baked by `tools/jetfall-textures.py` (numpy, made from noise, so they are ours; about a second each) into `jetfall/tex/`: per material an
+  albedo, a normal (+ roughness in blue) and a half-size height JPEG, plus the foliage cards (PNG) and `manifest.json` (order, metres per tile, mean albedo).
+  The renderer packs them into two texture arrays (albedo + height, normal + roughness) and samples them triplanar with `matTri`, which returns the albedo
+  divided by its mean: the texture is detail, the map's `look` colours stay the tint, so a map keeps its palette. Ground: four materials per map
+  (`look.mats`: low, high/worn, cliff, snow) blended by texture height; cliffs and low ground also take a much larger copy of themselves so the repeat does
+  not show. Meshes map their material in their own space (so it rides on things that move): metal panels, concrete for stone, rock, bark.
+  Fast never downloads the ground textures (only the cards). Real photo-scanned CC0 sets (ambientCG, Poly Haven) would drop into the same manifest; the
+  environment's network policy blocked those hosts when this was written.
+- **Plants and rocks** (`vegetation.js`, drawn by `render-veg.js`): rocks are noise-pushed spheres with flat bottoms, trees are a trunk plus cards (firs in
+  whorls, broadleaf crowns in lumps, dead trees bare), bushes are balls of cards. Card normals point out of the crown so a tree lights like a soft ball.
+  Trees stand only outside the mission area and on the ring of hills (`landHeight` follows the ring's own triangles), so they never block a ski line or a
+  disc; inside there are bushes only, which you pass through like grass. Placement is deterministic per map (`look.veg`), bucketed in 256 m chunks culled by
+  frustum and distance, with lighter shapes past 230 m. Nothing here collides; adding trees people can hit would be a rules change in `sim.js`.
+- **Occlusion and volumetric fog** (`render-post.js`, Balanced and Sharp): depth is copied before the weapon clears it; occlusion is half size from depth;
+  the fog marches the ray through the sun's shadow map and, past it, the heightfield's sun texture, so light comes in shafts. The weapon writes 0.75 in alpha
+  so both leave it alone. `look.vol` can set `density` and `falloff`. `?relay=ws://127.0.0.1:8135/jetfall` points a page at a local server;
   `JFGame.cam = { follow: id }` in the console follows a player (handy for screenshots). `tools/jetfall-og.js` makes the preview picture.
 
 - **Ski courses** (`COURSES` in `sim.js`): a world with `course` set builds gates (a disc standing across the course, facing from the gate before to the one after) and
