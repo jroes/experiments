@@ -1001,6 +1001,10 @@
   function makeReplay(snaps, evs, k) {
     if (snaps.length < 10) return null;
     const first = snaps[0].tick, last = snaps[snaps.length - 1].tick;
+    if (k.cap) {
+      const t0 = Math.max(first, k.tick - 240), t1 = Math.min(last, k.tick + 40);
+      return t1 - t0 < 60 ? null : { snaps, evs, k, disc: -1, fired: t0, t0, t1, tick: t0, cam: null, look: null };
+    }
     // the disc that did it: the killer's disc closest to the victim in the last snapshot before the kill that has one
     let disc = -1;
     for (let i = snaps.length - 1; i >= 0 && disc < 0; i--) {
@@ -1042,7 +1046,12 @@
     const killer = v.players.find(p => p.id === k.by && p.alive);
     const d = r.disc >= 0 ? v.proj.find(q => q.id === r.disc) : null;
     let want = null;
-    if (d) {
+    if (k.cap) {
+      // a capture: chase the runner home
+      const sp = victim ? Math.hypot(victim.vel[0], victim.vel[2]) : 0;
+      if (sp > 3) want = [vp[0] - victim.vel[0] / sp * 8, vp[1] + 3, vp[2] - victim.vel[2] / sp * 8];
+      else if (!r.cam) want = [vp[0] + 8, vp[1] + 4, vp[2] + 8];
+    } else if (d) {
       const l = Math.hypot(d.vel[0], d.vel[1], d.vel[2]) || 1;
       want = [d.pos[0] - d.vel[0] / l * 4, d.pos[1] - d.vel[1] / l * 4 + 0.8, d.pos[2] - d.vel[2] / l * 4];
     } else if (r.tick < r.fired && killer) {
@@ -1086,7 +1095,7 @@
   // It runs on this page with no network. Natural midairs come about once a minute, so when there has not been one
   // for a while the director sets one up: a bot in the air gets a well-led disc from an enemy (and is low enough to die of it).
   let attract = null;
-  const ATTRACT_STAGE_S = 12;
+  const ATTRACT_STAGE_S = 12, ATTRACT_RUNNER_S = 5;
   function attractStart() {
     const cur = renderer.world && renderer.world.mapKey;
     const map = JF.MAP_KEYS.includes(cur) ? cur : JF.MAP_KEYS.includes(prefs.host.map) ? prefs.host.map : 'highland';
@@ -1102,6 +1111,11 @@
   }
   const attractTeam = id => { const p = attract && attract.w.players.get(id); return p ? p.team : -1; };
   const attractName = id => { const p = attract && attract.w.players.get(id); return p ? p.name : '?'; };
+  function replayCaption(k) {
+    if (k.cap) return 'Capture! ' + attractName(k.by);
+    const who = attractName(k.by) + ' \u25B8 ' + attractName(k.me);
+    return (k.carrier ? (k.mid ? 'Midair on the flag runner! ' : 'Flag runner down! ') : 'Midair! ') + who;
+  }
   function attractFrame(dt) {
     if (!attract) attractStart();
     const a = attract;
@@ -1121,13 +1135,23 @@
         if (e.k === 'boom' && e.w !== 'chain') explosion(e.x, e.y, e.z, e.w, e.dud);
         else if (e.k === 'kill') deathBurst(e.x, e.y, e.z, Math.max(0, attractTeam(e.id)));
       }
-      if (e.k === 'kill' && e.mid && e.by >= 0 && !a.replay && !a.want) { a.want = { tick: e.t, by: e.by, me: e.id, at: [e.x, e.y, e.z], start: now() + 0.4 }; a.lastMid = now(); }
+      if (a.replay || a.want) continue;
+      // worth a replay: any midair, a flag runner taken down by a disc, a capture
+      if (e.k === 'kill' && e.by >= 0) {
+        const carrier = a.evs.some(d => d.k === 'flag' && d.a === 'drop' && d.id === e.id && d.t === e.t);
+        if (e.mid || (carrier && e.w === 'disc')) { a.want = { tick: e.t, by: e.by, me: e.id, at: [e.x, e.y, e.z], carrier, mid: !!e.mid, start: now() + 0.4 }; a.lastMid = now(); }
+      } else if (e.k === 'flag' && e.a === 'cap') {
+        const p = w.players.get(e.id);
+        if (p) { a.want = { tick: e.t, by: e.id, me: e.id, at: p.pos.slice(), cap: true, start: now() + 0.6 }; a.lastMid = now(); }
+      }
     }
     while (a.evs.length && a.snaps.length && a.evs[0].t < a.snaps[0].tick) a.evs.shift();
-    if (!a.replay && !a.want && now() - a.lastMid > ATTRACT_STAGE_S && now() > a.stageAt) { a.stageAt = now() + 2.5; stageMidair(w); }
+    // a flag runner in the air is worth setting up sooner
+    const runnerUp = [...w.players.values()].some(p => p.alive && p.flag >= 0 && !p.ground);
+    if (!a.replay && !a.want && now() - a.lastMid > (runnerUp ? ATTRACT_RUNNER_S : ATTRACT_STAGE_S) && now() > a.stageAt) { a.stageAt = now() + (runnerUp ? 1 : 2.5); stageMidair(w); }
     if (a.want && now() >= a.want.start) {
       a.replay = makeReplay(a.snaps.slice(), a.evs.slice(), a.want);
-      if (a.replay) $('bgcap').textContent = 'Midair! ' + attractName(a.want.by) + ' \u25B8 ' + attractName(a.want.me);
+      if (a.replay) $('bgcap').textContent = replayCaption(a.want);
       a.want = null;
     }
     let view = null;
@@ -1153,11 +1177,11 @@
   // between replays: ride along with someone fast, in the air if possible, and cut to someone else now and then
   function followCam(a, v, dt) {
     let f = v.players.find(p => p.id === a.follow && p.alive);
-    if (!f || now() > a.cutAt) {
+    if (!f || now() > a.cutAt || (!f.hasFlag && v.players.some(p => p.alive && p.hasFlag))) {
       let best = null, bs = -1;
       for (const p of v.players) {
         if (!p.alive) continue;
-        const sc = Math.hypot(p.vel[0], p.vel[1], p.vel[2]) + (p.ground ? 0 : 15) + (p.id === a.follow ? -10 : 0);
+        const sc = Math.hypot(p.vel[0], p.vel[1], p.vel[2]) + (p.ground ? 0 : 15) + (p.hasFlag ? 60 : 0) + (p.id === a.follow && !p.hasFlag ? -10 : 0);
         if (sc > bs) { bs = sc; best = p; }
       }
       a.cutAt = now() + 7;
@@ -1184,7 +1208,7 @@
         const d = Math.hypot(t.pos[0] - s.pos[0], t.pos[1] - s.pos[1], t.pos[2] - s.pos[2]);
         if (d < 25 || d > 75) continue;
         if (w.blocked(JF.eye(s), [t.pos[0], t.pos[1] + 1, t.pos[2]])) continue;
-        const sc = Math.abs(d - 42);
+        const sc = Math.abs(d - 42) - (t.flag >= 0 ? 100 : 0);
         if (!best || sc < best.sc) best = { s, t, sc };
       }
     }
