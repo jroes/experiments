@@ -72,8 +72,7 @@
     <h1>JETFALL</h1>
     <p class="tag">Jetpacks, skiing, capture the flag.</p>
     <label class="name">Your name <input id="name" maxlength="20" autocomplete="nickname" placeholder="name"></label>
-    <h3>Servers <span class="dim" id="roomsNote"></span> <button id="refresh" class="small">refresh</button></h3>
-    <div class="srv-head"><span>name</span><span>map</span><span>players</span><span></span></div>
+    <h3>Servers <span class="dim" id="roomsNote"></span> <button id="roomsAll" class="small" hidden>all</button></h3>
     <div id="rooms" class="rooms"><span class="dim">Looking…</span></div>
     <div id="menuMsg" class="msg"></div>
     <div class="go">
@@ -81,9 +80,8 @@
       <button id="playBots">Practice offline</button>
     </div>
     <div class="join"><input id="code" maxlength="6" placeholder="CODE" autocapitalize="characters" autocomplete="off"><button id="joinBtn">Join by code</button></div>
-    <h3>Ski courses <span class="dim">solo, against the clock</span> <label class="pacers">pacers <select id="pacers"><option value="0">none</option><option value="1">1 bot</option><option value="2">2 bots</option><option value="3">3 bots</option></select></label></h3>
+    <h3>Ski courses <span class="dim">beat the clock</span> <label class="pacers">pacers <select id="pacers"><option value="0">none</option><option value="1">1</option><option value="2">2</option><option value="3">3</option></select></label></h3>
     <div id="courses" class="courses"></div>
-    <p class="fine">Ski through the gates in order and shoot the targets on the way. The clock starts at the first gate. Every target you miss adds seconds. Best times are kept on this device. To race friends, start a server and pick a course as the map.</p>
     <div class="links"><button id="helpBtn" class="link">How to play</button> · <button id="settingsBtn" class="link">Settings</button> · <a href="../">more games</a></div>
   </div>
 </div>
@@ -178,6 +176,7 @@
     <li>Pick a course on the front page. Ski through the gates in order: the lit one is next, the yellow one after that. The first gate starts the clock, the last stops it.</li>
     <li>Shoot the targets (bullseyes on posts) on the way. Each one you miss adds seconds to your time. Discs are easiest: the splash counts.</li>
     <li>Everyone runs in light armor with the same kit, so times compare. K starts the run over. Pacer bots run the course too; beat them.</li>
+    <li>Your best times stay on this device. To race friends, start a server and pick a course as the map.</li>
   </ul>
   <h3>Keys</h3>
   <table class="keys">
