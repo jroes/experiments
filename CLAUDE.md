@@ -138,7 +138,7 @@ host's copy is hidden. The host decides every hit.
 - The menu opens on the **server list** (refreshed every 5 s from the relay's room list over one kept connection, renewed every 25 s because the relay drops
   a connection that never hosts or joins; rows are updated in place). It shows live servers, or a few empty fixed ones when nobody is on ("all" shows every one).
   Players read `n/Link.SEATS`: people only, out of the host plus the relay's guest limit. "Start a server" hosts a listed game by default, "Practice offline"
-  runs one with no network. Behind the menu runs a bot match with midair replays (`attractFrame`); the panel sits left on wide screens, and on phones the
+  runs one with no network. Behind the menu runs a bot match (`attractFrame`) that replays midairs, flag runners killed by a disc and captures, follows flag runners between replays, and sets up a midair now and then (`stageMidair`, sooner on a flag runner in the air); the panel sits left on wide screens, and on phones the
   canvas shrinks to a band above the menu (style.css) so the match stays in view. **Fixed servers**: the relay always lists eight named slots (`JF_FIXED`, see its README). Picking an empty one makes your
   browser its host with the slot's map and bots (`playFixed`: claim, or join if the relay says `taken`); when that host leaves, the players still in it
   claim it again, so the game carries on (a fresh match). There is no server-side game: nobody in it means nothing runs.
