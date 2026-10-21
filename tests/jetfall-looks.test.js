@@ -87,3 +87,29 @@ test('every texture a map or the renderer asks for was baked', () => {
     for (const n of mats) assert.ok(names.includes(n), key + ' wants ' + n);
   }
 });
+
+test('no shader takes pow of something that can go below zero', () => {
+  // pow(x, y) with x < 0 is NaN on real graphics cards (SwiftShader, which the browser checks use, gives a number), and one NaN
+  // pixel became a black square through the bloom: discs turned into black boxes on Sharp. A dot product can land a hair over
+  // 1, so `pow(1.0 - dot(...), k)` is the classic trap. Bases must be clamped or max()ed, or be one of these, which cannot go negative.
+  const safe = ['dist / uFogDist', 'noise(vPos.xz * 23.0 + v.xz * 2.0)', 'up', 'sp', '1.0 + g2 - 2.0 * g * c'];
+  for (const f of ['render.js', 'render-veg.js', 'render-post.js']) {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'jetfall', f), 'utf8');
+    const re = /[^.\w]pow\(/g;
+    let m;
+    while ((m = re.exec(src))) {
+      // the first argument: up to the comma at depth 0
+      let i = m.index + m[0].length, depth = 0, a = '';
+      for (; i < src.length; i++) {
+        const ch = src[i];
+        if (ch === '(') depth++;
+        else if (ch === ')') depth--;
+        else if (ch === ',' && depth === 0) break;
+        a += ch;
+      }
+      a = a.trim();
+      assert.ok(/^(max|clamp|abs)\(/.test(a) || safe.includes(a), f + ': pow(' + a + ', ...) can be NaN on a GPU; clamp the base');
+    }
+    if (f === 'render.js') assert.ok(/vec3 clean\(vec3 c\)/.test(src), 'the post pass scrubs NaN before the bloom');
+  }
+});

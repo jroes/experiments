@@ -31,7 +31,9 @@
     vec3 px1 = viewPos(vUv + vec2(uTexel.x, 0.0)) - p, px2 = p - viewPos(vUv - vec2(uTexel.x, 0.0));
     vec3 py1 = viewPos(vUv + vec2(0.0, uTexel.y)) - p, py2 = p - viewPos(vUv - vec2(0.0, uTexel.y));
     vec3 dx = abs(px1.z) < abs(px2.z) ? px1 : px2, dy = abs(py1.z) < abs(py2.z) ? py1 : py2;
-    vec3 n = normalize(cross(dx, dy));
+    vec3 cr = cross(dx, dy);
+    if (dot(cr, cr) < 1e-14) { o = vec4(1.0); return; }
+    vec3 n = normalize(cr);
     float a = hash(gl_FragCoord.xy) * 6.2832;
     vec3 rv = vec3(cos(a), sin(a), 0.0);
     vec3 t = normalize(rv - n * dot(rv, n)), b = cross(n, t);
@@ -114,7 +116,7 @@
       inS += T * light * (1.0 - tr);
       T *= tr;
     }
-    o = vec4(inS, T);
+    o = (any(isnan(inS)) || isnan(T)) ? vec4(0.0, 0.0, 0.0, 1.0) : vec4(inS, T);
   }`;
 
   const P = R.Renderer.prototype;

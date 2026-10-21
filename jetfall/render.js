@@ -519,16 +519,17 @@
     float D = a2 / (PI * dd * dd);
     float k = (rough + 1.0) * (rough + 1.0) / 8.0;
     float G = (ndl / (ndl * (1.0 - k) + k)) * (ndv / (ndv * (1.0 - k) + k));
-    vec3 F = F0 + (1.0 - F0) * pow(1.0 - vdh, 5.0);
+    // pow of a negative number is NaN on real graphics cards (dot products can land a hair over 1): clamp every base
+    vec3 F = F0 + (1.0 - F0) * pow(clamp(1.0 - vdh, 0.0, 1.0), 5.0);
     vec3 spec = D * G * F / max(4.0 * ndl * ndv, 0.001) * ndl * sh * uSunCol;
     spec = min(spec, vec3(4.0));
     vec3 diff = col * (1.0 - metal * 0.7);
     vec3 amb = hemi(n);
     vec3 r = reflect(-v, n);
     vec3 skyR = mix(uSkyHor, uSkyTop, clamp(r.y, 0.0, 1.0)) * mix(0.5, 1.0, groundShade(vPos));
-    vec3 Fa = F0 + (1.0 - F0) * pow(1.0 - ndv, 5.0) * (1.0 - rough);
+    vec3 Fa = F0 + (1.0 - F0) * pow(clamp(1.0 - ndv, 0.0, 1.0), 5.0) * (1.0 - rough);
     vec3 ambSpec = skyR * Fa * (0.3 + 0.7 * metal) * (0.6 + 0.4 * n.y);
-    float rim = pow(1.0 - ndv, 3.0) * 0.3;
+    float rim = pow(clamp(1.0 - ndv, 0.0, 1.0), 3.0) * 0.3;
     vec3 lit = diff * (uSunCol * ndl * sh + amb + pointLights(vPos, n)) + spec + ambSpec + amb * rim + col * glow;
     lit = fogMix(lit, vPos);
     o = vec4(outc(lit), uMaskA > 0.0 ? uMaskA : vCol.a * uGlass);
@@ -617,7 +618,7 @@
     vec3 r = reflect(-v, n);
     float depth = max(vPos.y - hfAt(vPos.xz).x, 0.0);
     vec3 sky = mix(uSkyHor, uSkyTop, pow(max(r.y, 0.0), 0.6));
-    float fres = 0.04 + 0.96 * pow(1.0 - max(dot(n, v), 0.0), 5.0);
+    float fres = 0.04 + 0.96 * pow(clamp(1.0 - dot(n, v), 0.0, 1.0), 5.0);
     vec3 shallow = mix(uWater, uGround, 0.35) * 1.4, deep = uWater * 0.7;
     vec3 body = mix(shallow, deep, smoothstep(0.0, 9.0, depth)) * (hemi(vec3(0.0, 1.0, 0.0)) + uSunCol * 0.5 * groundShade(vPos));
     vec3 c = mix(body, sky, fres);
@@ -656,7 +657,7 @@
     if (d > 1.0) discard;
     float a;
     vec3 c = vCol.rgb;
-    if (vK.x < 0.5) { a = pow(1.0 - d, 2.2); }
+    if (vK.x < 0.5) { a = pow(clamp(1.0 - d, 0.0, 1.0), 2.2); }
     else if (vK.x < 1.5) {
       float n = noise(vQ * 2.5 + vK.z * 7.0) * 0.6 + noise(vQ * 5.0 - vK.z * 3.0) * 0.4;
       a = 1.0 - smoothstep(0.3, 1.0, d + (n - 0.5) * 0.6);
@@ -681,7 +682,8 @@
   void main() {
     vec3 p = mix(aA.xyz, aB.xyz, aQ.x);
     vec3 dir = normalize(aB.xyz - aA.xyz + vec3(1e-5));
-    vec3 side = normalize(cross(dir, uCam - p));
+    vec3 cr = cross(dir, uCam - p);
+    vec3 side = dot(cr, cr) > 1e-10 ? normalize(cr) : normalize(cross(dir, abs(dir.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
     float w = mix(aA.w, aB.w, aQ.x);
     p += side * aQ.y * w;
     vQ = aQ; vCol = aCol;
@@ -690,7 +692,7 @@
   const BEAM_FS = `#version 300 es
   precision highp float;
   in vec2 vQ; in vec4 vCol; out vec4 o;
-  void main() { float a = pow(1.0 - abs(vQ.y), 1.6) * vCol.a; o = vec4(vCol.rgb * a, 0.0); }`;
+  void main() { float a = pow(clamp(1.0 - abs(vQ.y), 0.0, 1.0), 1.6) * vCol.a; o = vec4(vCol.rgb * a, 0.0); }`;
 
   // grass: tufts on a grid that follows the camera. Each instance is one grid cell; the vertex shader decides where the
   // tuft stands (jittered by a hash of the cell), reads the ground from the heightfield, and hides it on rock, snow,
@@ -762,8 +764,10 @@
   float hash(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
   float noise(vec2 p) { vec2 i = floor(p), f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
     return mix(mix(hash(i), hash(i + vec2(1, 0)), u.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), u.x), u.y); }
+  // one bad pixel (NaN or infinity) must stay one pixel: the bloom's blurs would grow it into a black square
+  vec3 clean(vec3 c) { return any(isnan(c)) || any(isinf(c)) ? vec3(0.0) : c; }
   vec3 box4(sampler2D t, vec2 uv, vec2 px) {
-    return (texture(t, uv + px * vec2(-1.0, -1.0)).rgb + texture(t, uv + px * vec2(1.0, -1.0)).rgb + texture(t, uv + px * vec2(-1.0, 1.0)).rgb + texture(t, uv + px * vec2(1.0, 1.0)).rgb) * 0.25;
+    return (clean(texture(t, uv + px * vec2(-1.0, -1.0)).rgb) + clean(texture(t, uv + px * vec2(1.0, -1.0)).rgb) + clean(texture(t, uv + px * vec2(-1.0, 1.0)).rgb) + clean(texture(t, uv + px * vec2(1.0, 1.0)).rgb)) * 0.25;
   }`;
   // what is bright enough to bloom, taken down to half size
   const BRIGHT_FS = `#version 300 es
@@ -794,6 +798,7 @@
   uniform vec2 uSun; uniform float uAspect; uniform vec3 uSunCol;
   void main() {
     vec4 s = texture(uTex, vUv);
+    s.rgb = clean(s.rgb);
     float sky = smoothstep(0.6, 0.95, s.a);
     float d = length((vUv - uSun) * vec2(uAspect, 1.0));
     float w = exp(-d * d * 5.0);
@@ -838,11 +843,14 @@
     c.r = texture(uTex, uv + cv * rd).r;
     c.g = texture(uTex, uv).g;
     c.b = texture(uTex, uv - cv * rd).b;
+    c = clean(c);
     // occlusion on everything solid, fog over everything but the weapon (alpha marks the sky and the weapon)
     float mask = texture(uTex, uv).a;
     if (!(mask > 0.7 && mask < 0.8)) {
-      if (mask < 0.9) c *= mix(1.0, texture(uAO, uv).r, uAOK);
+      float ao = texture(uAO, uv).r;
+      if (mask < 0.9 && !isnan(ao)) c *= mix(1.0, ao, uAOK);
       vec4 fg = texture(uFog, uv);
+      if (any(isnan(fg)) || any(isinf(fg))) fg = vec4(0.0, 0.0, 0.0, 1.0);
       c = c * mix(1.0, fg.a, uFogK) + fg.rgb * uFogK;
     }
     vec3 bl = texture(uBloom0, uv).rgb * 0.45 + texture(uBloom1, uv).rgb * 0.35 + texture(uBloom2, uv).rgb * 0.3;
