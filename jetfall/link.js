@@ -168,5 +168,8 @@
     return ({ 'no-room': 'No game with that code. It may have ended.', full: 'That game is full.', taken: 'Someone just started that server.', idle: 'Nobody is on that server yet.', busy: 'The server is busy. Try again in a bit.', kicked: 'The host removed you.', already: 'Already in a game.', 'bad-info': 'Bad game info.' })[why] || 'The game server said no (' + String(why).slice(0, 30) + ').';
   }
 
-  root.JFLink = { connect, relayUrl, errorText };
+  // people a room holds: the host plus the relay's guest limit (JF_ROOM_MAX, 15 by default)
+  const SEATS = 16;
+
+  root.JFLink = { connect, relayUrl, errorText, SEATS };
 })(window);

@@ -103,12 +103,13 @@
     const box = $('courses'); box.innerHTML = '';
     for (const k of JF.COURSE_KEYS) {
       const c = JF.COURSES[k];
-      const div = document.createElement('div'); div.className = 'course';
+      const btn = document.createElement('button'); btn.className = 'course';
+      btn.title = c.blurb + ' (' + c.gates.length + ' gates, ' + c.targets.length + ' targets)';
       const cell = (cls, text) => { const e = document.createElement('span'); e.className = cls; e.textContent = text; return e; };
-      const btn = document.createElement('button'); btn.textContent = 'Run'; btn.className = 'primary';
-      div.append(cell('nm', c.name), cell('mp', JF.MAPS[c.map].name + ' · ' + c.gates.length + ' gates, ' + c.targets.length + ' targets'), cell('bl', c.blurb), cell('bt', prefs.best[k] != null ? 'best ' + fmtT(prefs.best[k]) : ''), btn);
-      div.onclick = () => { if (needName()) playCourse(k); };
-      box.appendChild(div);
+      btn.append(cell('nm', c.name), cell('bt', prefs.best[k] != null ? fmtT(prefs.best[k]) : JF.MAPS[c.map].name));
+      if (prefs.best[k] != null) btn.classList.add('done');
+      btn.onclick = () => { if (needName()) playCourse(k); };
+      box.appendChild(btn);
     }
     $('pacers').value = String(prefs.pacers);
   }
@@ -216,6 +217,7 @@
   }
 
   function enterGame() {
+    closeListLink();
     $('menu').hidden = true;
     $('hud').hidden = false;
     $('touch').hidden = !isTouch;
@@ -264,46 +266,72 @@
     hostOnline(opts);
   };
 
-  let roomsBusy = false;
   // The server list is the front page: it fills in on its own every few seconds while the menu is showing.
-  let roomsShown = false;
+  // One relay connection is kept for it (the relay drops a connection that never hosts or joins after 30 s, so it is renewed
+  // before that), and rows are updated in place, so the list does not blink and a click is never lost to a redraw.
+  // Live servers first; with nobody on, only a few empty ones unless "all" is picked.
+  const SHOW_IDLE = 3;
+  let roomsBusy = false, roomsAll = false, roomsLink = null;
+  const roomRows = new Map(); // room code -> row
+  function listLink() {
+    if (roomsLink && (roomsLink.closed || now() - roomsLink.born > 25)) { roomsLink.close(); roomsLink = null; }
+    if (!roomsLink) { roomsLink = Link.connect(); roomsLink.born = now(); }
+    return roomsLink;
+  }
+  function closeListLink() { if (roomsLink) roomsLink.close(); roomsLink = null; }
+  function roomRow(code) {
+    let row = roomRows.get(code);
+    if (row) return row;
+    row = { div: document.createElement('div'), r: null };
+    const cell = cls => { const c = document.createElement('span'); c.className = cls; row.div.appendChild(c); return c; };
+    row.div.className = 'room';
+    row.nm = cell('nm'); row.mp = cell('mp'); row.pl = cell('pl');
+    row.btn = document.createElement('button'); row.btn.className = 'primary'; row.div.appendChild(row.btn);
+    row.div.onclick = () => { const r = row.r; if (!r || !needName()) return; if (r.idle) playFixed(r.room); else join(r.room); };
+    roomRows.set(code, row);
+    return row;
+  }
   async function refreshRooms() {
     if (roomsBusy) return;
     roomsBusy = true;
     const box = $('rooms');
-    if (!roomsShown) box.innerHTML = '<span class="dim">Looking…</span>';
-    let link;
     try {
-      link = Link.connect();
-      const all = (await link.list()).filter(r => r && r.info && typeof r.info === 'object' && typeof r.room === 'string');
+      const all = (await listLink().list()).filter(r => r && r.info && typeof r.info === 'object' && typeof r.room === 'string');
       for (const r of all) if (r.fixed === true) fixedSlots.set(r.room, { name: String(r.name || r.room), info: r.info });
       const idle = r => r.fixed === true && r.info.idle === true;
-      const rooms = all.filter(r => idle(r) || r.info.v === Net.PROTO);
       const people = r => (idle(r) ? 0 : Number.isInteger(r.info.n) && r.info.n > 0 ? Math.min(r.info.n, 64) : (r.n | 0) + 1);
-      rooms.sort((a, b) => people(b) - people(a) || (b.fixed === true) - (a.fixed === true));
-      box.innerHTML = '';
-      roomsShown = true;
-      const live = rooms.filter(r => !idle(r)).length;
-      $('roomsNote').textContent = live ? live + ' with people' : '';
-      if (!rooms.length) box.innerHTML = '<span class="dim">No servers up right now. Start one: your browser runs it and bots play until people join. Or practice offline.</span>';
-      for (const r of rooms) {
-        const div = document.createElement('div'); div.className = 'room';
+      const rooms = all.filter(r => idle(r) || r.info.v === Net.PROTO).map((r, i) => ({ room: r.room, idle: idle(r), n: people(r), i, name: String(r.name || 'server').slice(0, 24), info: r.info }));
+      const live = rooms.filter(r => !r.idle).sort((a, b) => b.n - a.n || a.i - b.i);
+      const empty = rooms.filter(r => r.idle);
+      const shown = live.concat(roomsAll || !live.length ? empty.slice(0, roomsAll ? empty.length : SHOW_IDLE) : []);
+      $('roomsNote').textContent = live.length ? live.length + ' live' : 'nobody on right now';
+      $('roomsAll').hidden = shown.length >= rooms.length && !roomsAll;
+      $('roomsAll').textContent = roomsAll ? 'fewer' : 'all ' + rooms.length;
+      if (!rooms.length) { box.innerHTML = '<span class="dim">No servers up right now. Start one: your browser runs it and bots play until people join.</span>'; roomRows.clear(); return; }
+      const keep = new Set(shown.map(r => r.room));
+      for (const [code, row] of roomRows) if (!keep.has(code)) { row.div.remove(); roomRows.delete(code); }
+      if (!roomRows.size) box.innerHTML = '';
+      let prev = null;
+      for (const r of shown) {
+        const row = roomRow(r.room);
+        row.r = r;
         const map = JF.has(JF.COURSES, r.info.course) ? 'Course: ' + JF.COURSES[r.info.course].name : JF.has(JF.MAPS, r.info.map) ? JF.MAPS[r.info.map].name : '?';
-        const n = people(r), bots = Number.isInteger(r.info.bots) ? Math.max(0, Math.min(r.info.bots, 64)) : 0;
-        const sc = Array.isArray(r.info.score) ? (r.info.score[0] | 0) + ':' + (r.info.score[1] | 0) : '';
-        const cell = (cls, text) => { const c = document.createElement('span'); c.className = cls; c.textContent = text; return c; };
-        const btn = document.createElement('button'); btn.textContent = idle(r) ? 'Play' : 'Join'; btn.className = 'primary';
-        div.append(cell('nm', String(r.name || 'server').slice(0, 24)), cell('mp', map + (sc && !idle(r) ? ' ' + sc : '')), cell('pl', idle(r) ? (bots ? bots + ' bots a side' : 'empty') : n + (bots ? ' + ' + bots + ' bots' : '')), btn);
-        div.onclick = () => { if (!needName()) return; if (idle(r)) playFixed(r.room); else join(r.room); };
-        box.appendChild(div);
+        const sc = Array.isArray(r.info.score) && !r.info.course ? ' ' + (r.info.score[0] | 0) + ':' + (r.info.score[1] | 0) : '';
+        const set = (el, t) => { if (el.textContent !== t) el.textContent = t; };
+        set(row.nm, r.name); set(row.mp, map + (r.idle ? '' : sc)); set(row.pl, Math.min(r.n, Link.SEATS) + '/' + Link.SEATS);
+        set(row.btn, r.idle ? 'Play' : 'Join');
+        row.div.classList.toggle('live', !r.idle);
+        const at = prev ? prev.nextSibling : box.firstChild;
+        if (at !== row.div) box.insertBefore(row.div, at);
+        prev = row.div;
       }
     } catch (e) {
-      roomsShown = false;
-      box.innerHTML = '<span class="dim">Could not reach the server list. You can still practice offline.</span>';
-    } finally { if (link) link.close(); roomsBusy = false; }
+      closeListLink();
+      if (!roomRows.size) box.innerHTML = '<span class="dim">Could not reach the server list. You can still practice offline.</span>';
+    } finally { roomsBusy = false; }
   }
   setInterval(() => { if (!S && !$('menu').hidden && document.visibilityState === 'visible' && !document.querySelector('dialog[open]')) refreshRooms(); }, 5000);
-  $('refresh').onclick = refreshRooms;
+  $('roomsAll').onclick = () => { roomsAll = !roomsAll; refreshRooms(); };
 
   // ---------- dialogs ----------
   const anyDialog = () => !!document.querySelector('dialog[open]') || !$('chatbox').hidden;
@@ -1062,7 +1090,7 @@
   function attractStart() {
     const cur = renderer.world && renderer.world.mapKey;
     const map = JF.MAP_KEYS.includes(cur) ? cur : JF.MAP_KEYS.includes(prefs.host.map) ? prefs.host.map : 'highland';
-    const host = new Net.Host({ send() {}, settings: { map, bots: 4, skill: 0.85, caps: 99, minutes: 60 } });
+    const host = new Net.Host({ send() {}, settings: { map, bots: prefs.quality === 'low' ? 3 : 4, skill: 0.85, caps: 99, minutes: 60 } }); // fewer on the Fast picture: phones
     for (let i = 0; i < 60 * 30; i++) host.tickOnce(); // skip the walk out of the bases (about a tenth of a second of work)
     attract = { host, w: null, snaps: [], evs: [], lastEv: 0, snapTick: -99, replay: null, want: null, lastMid: now(), stageAt: now() + 5,
       follow: -1, cutAt: 0, cam: null, look: null, viewer: { world: null, me: null, myPos: () => null } };
@@ -1112,10 +1140,11 @@
       view.you = -1;
       camOverride = followCam(a, view, dt);
     }
-    // the menu panel sits in the middle of wide screens: turn the camera so what it watches is off to the left
+    // the menu panel sits on the left of wide screens: turn the camera so what it watches is off to the right
+    // (on phones the picture is a band above the menu instead, see style.css)
     if (camOverride && innerWidth > 900) {
       const hf = Math.atan(Math.tan(vfov() / 2) * innerWidth / innerHeight);
-      camOverride = Object.assign({}, camOverride, { yaw: camOverride.yaw - Math.atan(Math.tan(hf) * 0.5) });
+      camOverride = Object.assign({}, camOverride, { yaw: camOverride.yaw + Math.atan(Math.tan(hf) * 0.4) });
     }
     stepFx(dt);
     buildScene(view, dt);
@@ -1181,7 +1210,7 @@
     const t = performance.now();
     const dt = Math.min(0.1, (t - lastFrame) / 1000);
     lastFrame = t;
-    if (!S || !renderer) { if (renderer && renderer.terrain && !S) { if (prefs.quality === 'low') idleScene(dt); else attractFrame(dt); } return; }
+    if (!S || !renderer) { if (renderer && renderer.terrain && !S) { attractFrame(dt); } return; }
     if (attract) { attract = null; $('bgcap').hidden = true; }
     const c = S.client;
     const ctl = controls();
@@ -1226,17 +1255,6 @@
   let frameMs = 0;
 
   // the menu shows the last map, slowly turning
-  let idleYaw = 0;
-  function idleScene(dt) {
-    idleYaw += dt * 0.05;
-    const w = renderer.world, b = w.bases[0].o;
-    const d = 140, pos = [b.x + Math.sin(idleYaw) * d, w.terrain.padH + 50, b.z + Math.cos(idleYaw) * d];
-    renderer.beginInstances();
-    for (const o of w.objects) Models.object(renderer, o, null, performance.now() / 1000);
-    for (const f of w.flags) Models.flag(renderer, f, performance.now() / 1000);
-    renderer.frame({ cam: { pos, yaw: idleYaw, pitch: -0.25, fov: 1.3 }, time: performance.now() / 1000 });
-  }
-
   function animFor(p, dt) {
     let a = anims.get(p.id);
     if (!a) { a = { phase: 0, last: p.pos.slice(), speed: 0 }; anims.set(p.id, a); }
@@ -1446,7 +1464,7 @@
 
   // the setting is the side-to-side angle; the camera wants the up-and-down one
   function vfov() {
-    const h = prefs.fov * Math.PI / 180, asp = Math.max(0.4, innerWidth / Math.max(1, innerHeight));
+    const c = $('view'), h = prefs.fov * Math.PI / 180, asp = Math.max(0.4, c.clientWidth / Math.max(1, c.clientHeight));
     return Math.min(1.75, Math.max(0.8, 2 * Math.atan(Math.tan(h / 2) / asp)));
   }
 
