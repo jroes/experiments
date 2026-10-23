@@ -135,3 +135,15 @@ dialog li { margin: 6px 0; }
 #t-meter { position: relative; height: 34px; border-radius: 8px; background: linear-gradient(90deg, #ff6b6b, #ffd23f 40%, #5ef09a 50%, #ffd23f 60%, #ff6b6b); margin: 8px 0; }
 #t-needle { position: absolute; top: -4px; bottom: -4px; width: 4px; left: calc(50% - 2px); background: #fff; border-radius: 2px; box-shadow: 0 0 6px #000; transition: left 0.08s; }
 #t-hz { text-align: center; }
+
+/* your music */
+#live-box { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin: 8px 0; }
+#sp-chosen { font-size: 14px; overflow: hidden; text-overflow: ellipsis; }
+#sp-results { list-style: none; padding: 0; margin: 10px 0; }
+#sp-results button { width: 100%; text-align: left; margin: 4px 0; display: block; }
+#sp-results button small { display: block; color: var(--dim); font-size: 12px; }
+#sp-results button.on { border-color: var(--accent); background: #2a1335; }
+#sp-device { display: block; width: 100%; margin-top: 4px; }
+#sp-search input { flex: 1; text-transform: none; letter-spacing: normal; text-align: left; }
+#sp-search button { flex: 0 0 auto; width: auto; padding: 0 18px; }
+[hidden] { display: none !important; }

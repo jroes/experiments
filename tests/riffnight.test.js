@@ -390,3 +390,140 @@ test('saved settings: junk in storage is safe, old best scores stay readable', (
   assert.deepEqual(s.best[key], { score: 1234, stars: 3, acc: 0.8 });
   assert.equal(Object.getPrototypeOf(s.best), null);
 });
+
+// ---------- your music: the beat, notes made on the fly, Spotify ----------
+
+const SPOT = require('../riffnight/spotify.js');
+
+// pretend music as the mic would hear it: kick on 1 and 3, snare on 2 and 4, hats on eighths, a new chord each bar
+function music(bpm, off, secs, onFrame, opts) {
+  opts = opts || {};
+  const P = 60 / bpm;
+  let seed = 11;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+  for (let t = 0; t < secs; t += (1 / 60) * (0.8 + 0.4 * rnd())) {
+    const ph = ((t - off) % P + P) % P, ph8 = ((t - off) % (P / 2) + P / 2) % (P / 2), beat = Math.floor((t - off) / P);
+    const hit = ph < 0.03, hit8 = ph8 < 0.03, j = () => opts.noise ? rnd() * opts.noise : 0;
+    const fr = { t, low: (hit && beat % 2 === 0 ? 1 : 0.02) + j(), mid: (hit && beat % 2 === 1 ? 1 : 0.03) + j(), high: (hit8 ? 0.8 : 0.05) + j(), chroma: new Float64Array(12), level: 0.05 };
+    fr.flux = fr.low + fr.mid + fr.high;
+    fr.chroma[[0, 7, 9, 5][((Math.floor(beat / 4) % 4) + 4) % 4]] = 1;
+    onFrame(fr, t);
+  }
+}
+
+test('the beat tracker finds tempo and beats in music it only hears', () => {
+  for (const bpm of [72, 90, 100, 120, 128, 140, 150]) {
+    const bt = new D.BeatTracker(), off = 0.123, P = 60 / bpm;
+    music(bpm, off, 10, fr => bt.push(fr.t, fr.flux), { noise: 0.15 });
+    const e = bt.estimate();
+    // double or half time is a fair hearing too (slow songs with busy hats are often counted double)
+    const ratio = [1, 2, 0.5].find(r => Math.abs(e.bpm - bpm * r) < r);
+    assert.ok(ratio, bpm + ' heard as ' + e.bpm);
+    if (bpm >= 90 && bpm <= 150) assert.equal(ratio, 1, bpm + ' heard as ' + e.bpm);
+    const g = Math.min(P, e.period), ph = ((e.beat - off) % g + g) % g;
+    assert.ok(Math.min(ph, g - ph) < 0.035, bpm + ' bpm beat off by ' + Math.min(ph, g - ph));
+    assert.ok(e.conf > 0.3);
+  }
+  const quiet = new D.BeatTracker();
+  for (let t = 0; t < 10; t += 1 / 60) quiet.push(t, 0);
+  assert.equal(quiet.estimate(), null, 'silence has no beat');
+  const short = new D.BeatTracker();
+  music(120, 0, 2, fr => short.push(fr.t, fr.flux));
+  assert.equal(short.estimate(), null, 'not enough heard yet');
+  // a new song at a new tempo takes over
+  const bt = new D.BeatTracker();
+  music(100, 0, 10, fr => bt.push(fr.t, fr.flux));
+  bt.estimate();
+  music(140, 0.2, 10, fr => { bt.push(10 + fr.t, fr.flux); if (Math.round(fr.t * 60) % 15 === 0) bt.estimate(); });
+  assert.ok(Math.abs(bt.estimate().bpm - 140) < 1);
+});
+
+test('flux sees a sound starting, not one holding', () => {
+  const n = 512, prev = new Float32Array(n), quiet = new Float32Array(n).fill(-120), loud = new Float32Array(n).fill(-120);
+  for (let k = 2; k < 6; k++) loud[k] = -20;   // a kick: low bins
+  D.bands(quiet, 48000, 1024, prev);
+  const on = D.bands(loud, 48000, 1024, prev), held = D.bands(loud, 48000, 1024, prev);
+  assert.ok(on.low > 0 && on.flux >= on.low && on.high === 0);
+  assert.ok(held.flux < 1e-3, 'a held sound has no flux: ' + held.flux);
+});
+
+// plays along like the page does: hear, track the beat, plan notes ahead, press each note on time
+function jamAlong(part, diff, bpm, secs) {
+  const jam = new RN.Jam(part, diff), bt = new D.BeatTracker(), play = new RN.TapPlay(jam.chart, { noFail: true });
+  let beat = null, est = 0, lastT = -Infinity;
+  music(bpm, 0.21, secs, (fr, t) => {
+    jam.hear(fr); bt.push(t, fr.flux);
+    if (t - est > 0.25) { est = t; const e = bt.estimate(); if (e && e.conf > 0.25) beat = e; }
+    if (beat) {
+      const add = jam.plan(beat, t + 1.5, t);
+      for (const n of add) { assert.ok(n.t > t, 'never planned in the past'); assert.ok(n.t >= lastT, 'in order'); lastT = n.t; }
+      play.add(add);
+    }
+    for (const n of play.notes) if (!n.done && n.t <= t) play.press(n.lane, n.t);
+    play.update(t);
+  });
+  play.notes = play.notes.filter(n => n.t < secs - 0.2); // notes planned past the end of the music
+  return { jam, play };
+}
+
+test('your music: notes land on the beat, follow the drums, and can all be hit', () => {
+  const P = 60 / 120, counts = {};
+  for (const part of ['guitar', 'bass', 'drums']) for (const diff of RN.DIFFS) {
+    const { jam, play } = jamAlong(part, diff, 120, 40);
+    const tag = part + ' ' + diff;
+    counts[tag] = play.notes.length;
+    assert.ok(play.notes.length > 30, tag + ' made notes');
+    assert.ok(play.hits >= play.notes.length - 2, tag + ' hit ' + play.hits + ' of ' + play.notes.length);
+    assert.ok(play.notes[0].t > 4, tag + ' no notes before the beat is known');
+    for (const n of play.notes) {
+      const e = ((n.t - 0.21) % (P / 2) + P / 2) % (P / 2);
+      assert.ok(Math.min(e, P / 2 - e) < 0.035, tag + ' note off the grid at ' + n.t);
+      assert.ok(n.lane >= 0 && n.lane < jam.chart.lanes);
+    }
+    if (part === 'drums') {
+      // kicks on beats 1 and 3, snares on 2 and 4
+      for (const n of play.notes.filter(x => x.lane < 2)) {
+        const beat = Math.round((n.t - 0.21) / P);
+        assert.equal(n.lane, beat % 2 === 0 ? 0 : 1, 'drum at ' + n.t);
+      }
+    } else {
+      assert.ok(new Set(play.notes.map(n => n.lane)).size >= 3, tag + ' moves around with the chords');
+    }
+  }
+  for (const part of ['guitar', 'drums']) assert.ok(counts[part + ' easy'] < counts[part + ' expert'], part + ' easy is easier');
+  assert.ok(counts['guitar easy'] < counts['guitar medium'], 'easy plays every other beat');
+});
+
+test('your music is a song choice that saves, and vocals or junk do not break it', () => {
+  assert.equal(RN.validSong(RN.LIVE), true);
+  assert.equal(RN.validSong('nope'), false);
+  assert.equal(RN.cleanSaved({ song: RN.LIVE }).song, RN.LIVE);
+  const j = new RN.Jam('vocals', 'bogus');
+  assert.equal(j.part, 'guitar');
+  assert.equal(j.diff, 'medium');
+  assert.deepEqual(j.plan({ beat: 0, period: 0.5 }, 5, 1), [], 'nothing heard, nothing planned');
+  assert.deepEqual(j.plan({ beat: 0, period: NaN }, 5, 1), []);
+});
+
+test('what Spotify sends back is cleaned', () => {
+  const good = { uri: 'spotify:track:4uLU6hMCjMI75M1A2tKUQC', name: 'A\u0000 Song', artists: [{ name: 'One' }, { name: 'Two' }, null], duration_ms: 200000 };
+  assert.deepEqual(SPOT.cleanTrack(good), { uri: good.uri, name: 'A Song', artists: 'One, Two', ms: 200000 });
+  for (const bad of [null, 'x', {}, { uri: 'javascript:alert(1)' }, { uri: 'spotify:track:../../x' }, { uri: 'spotify:album:abc' }]) assert.equal(SPOT.cleanTrack(bad), null);
+  assert.equal(SPOT.cleanTrack({ ...good, name: 'x'.repeat(999), duration_ms: -5 }).name.length, 120);
+  assert.equal(SPOT.cleanTrack({ ...good, duration_ms: NaN }).ms, 0);
+  assert.deepEqual(SPOT.cleanDevices({ devices: [{ id: 'abc', name: 'Speaker', is_active: true }, { id: 'a b' }, null, { id: 5 }] }),
+    [{ id: 'abc', name: 'Speaker', type: '', active: true, restricted: false }]);
+  assert.deepEqual(SPOT.cleanDevices('nope'), []);
+  assert.deepEqual(SPOT.cleanState(null), { playing: false, track: null, progress: 0 });
+  assert.equal(SPOT.cleanTokens('{"access":""}'), null);
+  assert.equal(SPOT.cleanTokens('junk'), null);
+  assert.equal(SPOT.cleanTokens({ access: 'a', refresh: 'b', exp: 'soon' }).exp, 0);
+  // when is the song over
+  const st = (uri, progress, playing) => ({ playing, progress, track: { uri, name: 'x', artists: '', ms: 200000 } });
+  assert.equal(SPOT.trackOver(st(good.uri, 50000, true), good.uri, 200000), false);
+  assert.equal(SPOT.trackOver(st(good.uri, 199000, true), good.uri, 200000), true, 'at the end');
+  assert.equal(SPOT.trackOver(st('spotify:track:other', 1000, true), good.uri, 200000), true, 'another song is on');
+  assert.equal(SPOT.trackOver({ playing: false, progress: 0, track: null }, good.uri, 200000), true, 'nothing playing');
+  assert.equal(SPOT.trackOver(st(good.uri, 50000, false), good.uri, 200000), false, 'paused midway is not over');
+  assert.equal(SPOT.CLIENT_ID, '', 'no client ID is committed until the owner makes the app');
+});

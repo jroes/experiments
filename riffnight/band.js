@@ -13,7 +13,7 @@
 (function (root) {
   'use strict';
   const RN = root.RN;
-  const PROTO = 1, MAX = 6, ALL = 0xFFFF;
+  const PROTO = 2, MAX = 6, ALL = 0xFFFF;
   const enc = new TextEncoder(), dec = new TextDecoder();
 
   function emitter() {
@@ -103,7 +103,7 @@
       this.send({ t: 'roster', m: this.rosterList(), song: this.song, same: this.same, state: this.state });
       this.emit('roster');
     }
-    setSong(id) { if (this.leader && RN.songById(id) && this.state === 'lobby') { this.song = id; this.roster(); } }
+    setSong(id) { if (this.leader && RN.validSong(id) && this.state === 'lobby') { this.song = id; this.roster(); } }
     setSame(v) { if (this.leader) { this.same = !!v; this.roster(); } }
 
     // everybody plays from the leader's time `at`, a few seconds from now so every phone can get ready
@@ -115,6 +115,11 @@
       this.send({ t: 'go', song: this.song, at, same: this.same, m: this.rosterList() });
       this.emit('roster');
       this.emit('go', { song: this.song, at, same: this.same });
+    }
+    // your music has no end the phones know of: the leader's set ending ends everyone's
+    endLive() {
+      if (!this.leader || this.state !== 'playing') return;
+      this.send({ t: 'end' });
     }
     stop() {
       if (!this.leader || this.state !== 'playing') return;
@@ -165,12 +170,12 @@
         this.offset = best.off; this.rtt = best.rtt;
       } else if (m.t === 'roster') {
         this.readRoster(m.m);
-        if (RN.songById(m.song)) this.song = m.song;
+        if (RN.validSong(m.song)) this.song = m.song;
         this.same = m.same === true;
         if (m.state === 'lobby' || m.state === 'playing') this.state = m.state;
         this.emit('roster');
       } else if (m.t === 'go') {
-        if (!RN.songById(m.song) || typeof m.at !== 'number' || !Number.isFinite(m.at)) return;
+        if (!RN.validSong(m.song) || typeof m.at !== 'number' || !Number.isFinite(m.at)) return;
         this.song = m.song; this.same = m.same === true; this.state = 'playing';
         this.readRoster(m.m);
         const mine = this.members.get(this.id);
@@ -191,6 +196,8 @@
         this.state = 'lobby'; this.emit('stop');
       } else if (m.t === 'out') {
         this.emit('out');
+      } else if (m.t === 'end') {
+        this.emit('end');
       } else if (m.t === 'bye') {
         this.why = m.why === 'full' ? 'full' : m.why === 'refresh' ? 'refresh' : 'bye';
       }

@@ -48,7 +48,7 @@
   const tiersOf = id => { if (!TIERS.has(id)) TIERS.set(id, RN.PARTS.map(p => RN.tier(arrOf(id), p))); return TIERS.get(id); };
 
   // ---------- screens ----------
-  const S = { band: null, pick: save.pick, song: save.song, ready: false };
+  const S = { band: null, pick: save.pick, song: save.song, ready: false, spotify: { track: null, device: null, deviceName: '' } };
   let G = null; // the song being played
   function show(id) {
     for (const s of document.querySelectorAll('.screen')) s.hidden = s.id !== id;
@@ -65,6 +65,9 @@
   const INPUT_NAME = { tap: 'Tap the screen', real: 'Real one, through the mic', mic: 'Sing into the mic' };
   const DIFF_NAME = { easy: 'Easy', medium: 'Medium', hard: 'Hard', expert: 'Expert' };
   const myName = () => save.name || 'You';
+  // with your own music there is no singing or real instrument (nothing says which notes the song has): vocals play guitar
+  const eff = () => S.song === RN.LIVE ? RN.cleanPick({ ...S.pick, part: S.pick.part === 'vocals' ? 'guitar' : S.pick.part, input: 'tap' }) : S.pick;
+  const songTitle = id => id === RN.LIVE ? 'Your music' : RN.songById(id).title;
 
   // ---------- home ----------
   $('name').value = save.name;
@@ -119,7 +122,7 @@
     if (b) S.song = b.song;
     $('setup-title').textContent = !b ? 'Pick a song' : b.leader ? 'Your band' : 'In a band';
     $('band-box').hidden = !b;
-    $('same-row').hidden = !b;
+    $('same-row').hidden = !b || S.song === RN.LIVE;
     if (b) {
       $('band-code').textContent = b.code;
       $('same').checked = b.same; $('same').disabled = !b.leader;
@@ -149,7 +152,7 @@
       const tr = el('span', 'tiers');
       RN.PARTS.forEach((p, i) => { const s = el('span', '', RN.PART_NAME[p] + ' '); s.append(el('b', '', dots(tiers[i]))); tr.append(s); });
       card.append(tr);
-      const best = save.best[RN.bestKey(song.id, S.pick)];
+      const best = save.best[RN.bestKey(song.id, eff())];
       if (best) card.append(el('span', 'best', 'Best ' + best.score.toLocaleString() + ' ' + starText(best.stars)));
       card.onclick = () => {
         if (!leader) return;
@@ -159,6 +162,26 @@
       };
       box.append(card);
     }
+    const live = el('button', 'song' + (S.song === RN.LIVE ? ' on' : ''));
+    live.type = 'button';
+    live.disabled = !leader && S.song !== RN.LIVE;
+    live.append(el('span', 't', 'Your music'), el('span', 'm', 'any song'));
+    live.append(el('span', 'b', 'Play music out loud near the phone: Spotify on a speaker, a record, a band. The phone hears the beat and makes notes for guitar, bass or drums.'));
+    live.onclick = () => {
+      if (!leader) return;
+      S.song = RN.LIVE; save.song = RN.LIVE; persist();
+      if (b) b.setSong(RN.LIVE);
+      renderSetup();
+    };
+    box.append(live);
+    $('live-box').hidden = S.song !== RN.LIVE;
+    const sp = S.spotify.track;
+    $('sp-chosen').textContent = sp ? sp.name + ' \u00b7 ' + sp.artists : '';
+    $('b-spotify').hidden = !leader;
+    $('b-spotify').textContent = sp ? 'Change Spotify song' : 'Pick from Spotify';
+    $('live-note').textContent = !leader ? 'The band leader picks what plays. Everyone listens to the same speaker.'
+      : sp ? 'Starts on ' + (S.spotify.deviceName || 'your active Spotify device') + ' when you press ' + (b ? 'Start' : 'Play') + '. The song ends the set.'
+      : 'Or just start the music yourself, then press ' + (b ? 'Start' : 'Play') + '. Tap the pause button to stop.';
     // part, input, level
     const seg = (id, items, cur, fn) => {
       const e = $(id); e.textContent = '';
@@ -170,10 +193,12 @@
         e.append(btn);
       }
     };
-    seg('parts', RN.PARTS.map(p => [p, RN.PART_NAME[p]]), S.pick.part, v => setPick({ part: v, input: RN.INPUTS[v][0] }));
-    seg('inputs', RN.INPUTS[S.pick.part].map(i => [i, i === 'real' ? 'Real ' + S.pick.part : i === 'mic' ? 'Microphone' : 'Tap', INPUT_NAME[i]]), S.pick.input, v => setPick({ input: v }));
-    seg('diffs', RN.DIFFS.map(d => [d, DIFF_NAME[d]]), S.pick.diff, v => setPick({ diff: v }));
+    const pk = eff(), liveSong = S.song === RN.LIVE;
+    seg('parts', RN.PARTS.filter(p => !liveSong || p !== 'vocals').map(p => [p, RN.PART_NAME[p]]), pk.part, v => setPick({ part: v, input: RN.INPUTS[v][0] }));
+    seg('inputs', (liveSong ? ['tap'] : RN.INPUTS[pk.part]).map(i => [i, i === 'real' ? 'Real ' + pk.part : i === 'mic' ? 'Microphone' : 'Tap', INPUT_NAME[i]]), pk.input, v => setPick({ input: v }));
+    seg('diffs', RN.DIFFS.map(d => [d, DIFF_NAME[d]]), pk.diff, v => setPick({ diff: v }));
     $('nofail').checked = save.noFail;
+    $('nofail-row').hidden = liveSong;
     const go = $('b-go');
     if (!b) { go.textContent = 'Play'; go.disabled = false; }
     else if (b.leader) { go.textContent = b.state === 'playing' ? 'Song is on...' : 'Start the song'; go.disabled = b.state === 'playing'; }
@@ -222,8 +247,9 @@
     audio();
     const b = S.band;
     // ask for the mic now, while there is a tap, so the song does not wait on the question
-    if (S.pick.input !== 'tap') {
-      try { await getMic(micKind(S.pick)); } catch (e) { message('No mic', micError(e)); return; }
+    const kind = S.song === RN.LIVE ? 'listen' : eff().input !== 'tap' ? micKind(eff()) : null;
+    if (kind) {
+      try { await getMic(kind); } catch (e) { message('No mic', micError(e)); return; }
     }
     if (!b) { startSong({ song: S.song, at: null, same: false }); return; }
     if (b.leader) b.start();
@@ -250,6 +276,7 @@
       else if (S.screen === 'setup') renderSetup();
     });
     b.on('out', () => { if (G && !G.ended) finish('out'); });
+    b.on('end', () => { if (G && !G.ended && G.live) finish('end'); });
     b.on('closed', why => {
       if (S.band !== b) return;
       S.band = null;
@@ -267,7 +294,8 @@
     const c = audio();
     if (!c) { message('No sound', 'This browser cannot play sound.'); return; }
     S.song = o.song;
-    const arr = arrOf(o.song), pick = S.pick, ch = RN.chart(arr, pick.part, pick.diff, pick.input);
+    if (o.song === RN.LIVE) { startLive(); return; }
+    const arr = arrOf(o.song), pick = eff(), ch = RN.chart(arr, pick.part, pick.diff, pick.input);
     let mic = null;
     if (pick.input !== 'tap') {
       try { mic = await getMic(micKind(pick)); } catch (e) { message('No mic', micError(e)); openSetup(); return; }
@@ -290,6 +318,63 @@
     requestAnimationFrame(loop);
   }
 
+  // Your music: no chart and no band sound. The mic hears the beat, notes are made a moment ahead, and the set runs until you
+  // stop it or the Spotify song ends.
+  async function startLive() {
+    const c = audio(), pick = eff();
+    let mic;
+    try { mic = await getMic('listen'); } catch (e) { message('No mic', micError(e)); openSetup(); return; }
+    let sp = null;
+    if (S.spotify.track && (!S.band || S.band.leader)) {
+      try { await window.RNSpotify.play(S.spotify.track.uri, S.spotify.device); sp = { track: S.spotify.track, polled: 0, from: performance.now() }; }
+      catch (e) { message('Spotify', e.message); openSetup(); return; }
+    }
+    const jam = new RN.Jam(pick.part, pick.diff);
+    clock.reset(); clock.sample();
+    G = {
+      live: true, jam, tracker: new window.RNDSP.BeatTracker(), beat: null, estAt: 0, heardAt: clock.now(), sp,
+      arr: null, ch: jam.chart, pick: { ...pick, part: jam.part }, song: RN.LIVE, play: new RN.TapPlay(jam.chart, { noFail: true }), mixer: new A.Mixer(c, master),
+      start: 0, mic, band: S.band, same: false, t: clock.now(), ended: false, paused: false, down: [0, 0, 0, 0, 0, 0], touches: new Map(), flames: [], misses: [],
+      pops: [], trail: [], demoHold: [], look: ({ easy: 2.0, medium: 1.75, hard: 1.5, expert: 1.3 })[pick.diff] / save.speed, section: -1, outAt: null,
+    };
+    show('stage');
+    resize();
+    $('b-boost').hidden = true;
+    try { if (navigator.wakeLock) wake = await navigator.wakeLock.request('screen'); } catch (e) { wake = null; }
+    requestAnimationFrame(loop);
+  }
+
+  function liveFrame() {
+    clock.sample();
+    const t = clock.now(), play = G.play;
+    G.t = t;
+    const ft = t - save.micOffset - G.mic.lag;
+    const fr = DEMO ? demoListen(ft) : G.mic.listen(ft);
+    G.jam.hear(fr);
+    G.tracker.push(ft, fr.flux);
+    if (fr.level > 0.002) G.heardAt = t;
+    if (t - G.heardAt > 6) G.beat = null; // the music stopped
+    else if (t - G.estAt > 0.25) {
+      G.estAt = t;
+      const e = G.tracker.estimate();
+      if (e && e.conf > 0.25) G.beat = e;
+    }
+    if (G.beat) play.add(G.jam.plan(G.beat, t + G.look, ft));
+    if (DEMO) demoTaps(t);
+    play.update(t - save.tapOffset);
+    effects(t);
+    if (G.band) G.band.status(status());
+    draw(t);
+    // the Spotify song is over: the set is too
+    const sp = G.sp;
+    if (sp && performance.now() - sp.from > 6000 && t - sp.polled > 4) {
+      sp.polled = t;
+      window.RNSpotify.state().then(st => {
+        if (G && G.sp === sp && !G.ended && window.RNSpotify.trackOver(st, sp.track.uri, sp.track.ms)) finish('end');
+      }).catch(() => { /* try again next time */ });
+    }
+  }
+
   // stop the sound and the clock, keep nothing running
   function endSong() {
     if (!G) return;
@@ -307,6 +392,7 @@
     if (!G || G.ended) return;
     requestAnimationFrame(loop);
     if (G.paused) { draw(G.t); return; }
+    if (G.live) { liveFrame(); return; }
     clock.sample();
     G.player.pump(ctx.currentTime);
     const t = clock.now() - G.start;
@@ -389,9 +475,11 @@
     const st = { ...G.play.status(), done: true };
     endSong();
     if (G.band) G.band.status(st, true);
+    if (G.live && G.band && G.band.leader) G.band.endLive();
+    if (G.live && G.sp && why === 'stop') window.RNSpotify.pause();
     const key = RN.bestKey(G.song, G.pick), old = save.best[key];
     G.newBest = false;
-    if (!old || st.score > old.score) {
+    if (!G.live && (!old || st.score > old.score)) {
       save.best[key] = { score: st.score, stars: st.stars, acc: st.total ? st.hits / st.total : 0 };
       persist(); G.newBest = st.score > 0;
     }
@@ -402,15 +490,14 @@
 
   function renderResults() {
     if (!G || !G.final) return;
-    const song = RN.songById(G.song);
     const list = G.band || G.bandWas ? members() : null;
     if (G.band) G.bandWas = true;
     const rows = list ? list.filter(m => m.st).map(m => ({ ...m, st: m.id === (G.band ? G.band.id : -1) ? G.final : m.st })) : [{ name: myName(), part: G.pick.part, input: G.pick.input, diff: G.pick.diff, st: G.final }];
     rows.sort((a, b) => b.st.score - a.st.score);
     const total = rows.reduce((s, r) => s + r.st.score, 0);
     const failed = G.why === 'out';
-    $('res-title').textContent = failed ? (rows.length > 1 ? 'Booed off stage' : 'The crowd booed you off') : G.final.stars >= 5 ? 'What a show!' : G.final.stars >= 3 ? 'Nice set' : 'Song over';
-    $('res-song').textContent = song.title + (G.newBest ? ' · new best!' : '');
+    $('res-title').textContent = G.live ? (G.final.stars >= 3 ? 'Nice set' : 'Set over') : failed ? (rows.length > 1 ? 'Booed off stage' : 'The crowd booed you off') : G.final.stars >= 5 ? 'What a show!' : G.final.stars >= 3 ? 'Nice set' : 'Song over';
+    $('res-song').textContent = (G.sp ? G.sp.track.name + ' \u00b7 ' + G.sp.track.artists : songTitle(G.song)) + (G.newBest ? ' \u00b7 new best!' : '');
     $('res-band').textContent = rows.length > 1 ? 'Band score ' + total.toLocaleString() : '';
     const ul = $('res-list'); ul.textContent = '';
     for (const r of rows) {
@@ -442,6 +529,7 @@
   $('b-pause').onclick = () => {
     if (!G || G.ended) return;
     if (G.band) { $('l-leave').textContent = G.band.leader ? 'Stop for everyone' : 'Leave'; $('d-leave').showModal(); return; }
+    if (G.live) { finish('stop'); return; }
     pause();
   };
   function pause() {
@@ -465,7 +553,7 @@
   $('l-leave').onclick = () => {
     $('d-leave').close();
     if (!G || !G.band) return;
-    if (G.band.leader) { G.band.stop(); return; }
+    if (G.band.leader) { if (G.live) finish('stop'); else G.band.stop(); return; }
     G.play.failed = true;
     finish('left');
   };
@@ -532,6 +620,16 @@
     G.demoHold = G.demoHold.filter(n => !n.released);
     if (p.canBoost()) boost();
   }
+  // pretend music for ?demo: 120 bpm, kick on 1 and 3, snare on 2 and 4, hats on eighths, a chord a bar
+  function demoListen(t) {
+    const P = 0.5, ph = ((t % P) + P) % P, ph8 = ((t % (P / 2)) + P / 2) % (P / 2), beat = Math.floor(t / P);
+    const hit = ph < 0.03, hit8 = ph8 < 0.03;
+    const fr = { t, low: hit && beat % 2 === 0 ? 1 : 0.02, mid: hit && beat % 2 === 1 ? 1 : 0.03, high: hit8 ? 0.8 : 0.05, level: 0.05 };
+    fr.flux = fr.low + fr.mid + fr.high;
+    fr.chroma = new Float32Array(12);
+    fr.chroma[[0, 7, 9, 5][Math.floor(beat / 4) % 4]] = 1;
+    return fr;
+  }
   function demoFrame(t) {
     const p = G.play, ns = G.ch.notes;
     let n = null;
@@ -582,6 +680,9 @@
   const STRING_COLORS = ['#ff4d5e', '#ffd23f', '#3fa7ff', '#ff9a3c', '#3ee07a', '#c36bff'];
   const laneColor = lane => G.pick.part === 'drums' ? DRUM_COLORS[lane] : G.ch.input === 'real' ? STRING_COLORS[lane] : COLORS5[lane];
 
+  // where the beats fall: a written song's tempo, or the beat heard in your music (none yet while listening)
+  const beatGrid = () => G.live ? (G.beat ? { at: G.beat.beat, period: G.beat.period } : null) : { at: 0, period: G.arr.spb };
+
   function draw(t) {
     if (!W) resize();
     g2.clearRect(0, 0, W, H);
@@ -595,10 +696,11 @@
     bg.addColorStop(0, p.boosting ? '#06233a' : '#170a26'); bg.addColorStop(1, '#05030a');
     g2.fillStyle = bg; g2.fillRect(0, 0, W, H);
     // stage lights that pulse on the beat
-    const beat = Math.max(0, t) / G.arr.spb, pulse = 0.5 + 0.5 * Math.cos((beat % 1) * Math.PI * 2);
+    const bi = beatGrid(), on = bi && (G.live || t > 0);
+    const beat = bi ? (t - bi.at) / bi.period : 0, pulse = 0.5 + 0.5 * Math.cos((((beat % 1) + 1) % 1) * Math.PI * 2);
     for (const [x, c] of [[W * 0.1, p.boosting ? '63,215,255' : '255,79,163'], [W * 0.9, '63,215,255']]) {
       const r = g2.createRadialGradient(x, 0, 0, x, 0, H * 0.7);
-      r.addColorStop(0, 'rgba(' + c + ',' + (0.14 + 0.1 * pulse * (t > 0 ? 1 : 0)) + ')');
+      r.addColorStop(0, 'rgba(' + c + ',' + (0.14 + 0.1 * pulse * (on ? 1 : 0)) + ')');
       r.addColorStop(1, 'rgba(' + c + ',0)');
       g2.fillStyle = r; g2.fillRect(0, 0, W, H);
     }
@@ -629,12 +731,12 @@
       g2.globalAlpha = 1;
     }
     // beat lines
-    const spb = G.arr.spb;
-    for (let b = Math.floor((t - 0.4) / spb); b * spb < t + look; b++) {
-      const z = (b * spb - t) / look;
+    const grid = beatGrid();
+    if (grid) for (let b = Math.floor((t - 0.4 - grid.at) / grid.period); grid.at + b * grid.period < t + look; b++) {
+      const z = (grid.at + b * grid.period - t) / look, bar = !G.live && b % 4 === 0;
       if (z < zLo || z > 1) continue;
-      g2.strokeStyle = b % 4 === 0 ? 'rgba(255,255,255,0.32)' : 'rgba(255,255,255,0.1)';
-      g2.lineWidth = b % 4 === 0 ? 2 : 1;
+      g2.strokeStyle = bar ? 'rgba(255,255,255,0.32)' : G.live ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.1)';
+      g2.lineWidth = bar ? 2 : 1;
       g2.beginPath(); g2.moveTo(L.cx - wOf(z) / 2, yOf(z)); g2.lineTo(L.cx + wOf(z) / 2, yOf(z)); g2.stroke();
     }
     // the strike line and its targets
@@ -845,7 +947,7 @@
     g2.font = '900 28px Impact, "Arial Black", system-ui';
     g2.fillText(st.score.toLocaleString(), 62, safe.t + 34);
     g2.font = '13px system-ui'; g2.fillStyle = 'rgba(241,234,255,0.7)';
-    g2.fillText(p.streak > 1 ? p.streak + (G.pick.part === 'vocals' ? ' line streak' : ' note streak') : RN.songById(G.song).title, 62, safe.t + 52);
+    g2.fillText(p.streak > 1 ? p.streak + (G.pick.part === 'vocals' ? ' line streak' : ' note streak') : G.live ? (G.sp ? G.sp.track.name : G.beat ? Math.round(G.beat.bpm) + ' bpm' : 'Your music') : songTitle(G.song), 62, safe.t + 52);
     const mx = W - 40, my = safe.t + 32, mult = p.mult;
     g2.beginPath(); g2.arc(mx, my, 22, 0, Math.PI * 2);
     g2.fillStyle = p.boosting ? '#1d8fd6' : ['#2a2040', '#2a2040', '#c76b1f', '#2a9a52', '#8a3fd1', '#c22f6b', '#d9a400'][mult] || '#2a2040'; g2.fill();
@@ -879,7 +981,16 @@
     // count-in, section names, popups
     g2.textAlign = 'center'; g2.textBaseline = 'middle';
     const mid = (L.top + L.strike) / 2;
-    if (t < 0) {
+    if (G.live && !G.beat) {
+      g2.font = 'bold 22px system-ui'; g2.fillStyle = 'rgba(255,255,255,0.9)';
+      g2.fillText(t - G.heardAt > 2 ? 'Play some music' : 'Listening for the beat...', W / 2, mid - 14);
+      g2.font = '14px system-ui'; g2.fillStyle = 'rgba(255,255,255,0.6)';
+      g2.fillText('Out loud, near the phone', W / 2, mid + 16);
+      const lvl = Math.min(1, G.mic.level * 14);
+      g2.fillStyle = 'rgba(255,255,255,0.15)'; g2.fillRect(W / 2 - 60, mid + 36, 120, 5);
+      g2.fillStyle = '#5ef09a'; g2.fillRect(W / 2 - 60, mid + 36, 120 * lvl, 5);
+    }
+    if (!G.live && t < 0) {
       const beats = Math.ceil(-t / G.arr.spb);
       g2.font = '900 ' + (beats <= 4 ? 84 : 30) + 'px Impact, "Arial Black", system-ui';
       g2.fillStyle = 'rgba(255,255,255,0.9)';
@@ -1016,6 +1127,69 @@
       tunerStart();
     };
   }
+
+  // ---------- Spotify: pick a song and a speaker ----------
+  const SPM = window.RNSpotify;
+  function spPaint() {
+    $('sp-out').hidden = SPM.loggedIn; $('sp-in').hidden = !SPM.loggedIn;
+    $('sp-login').disabled = !SPM.configured || !!S.band;
+    $('sp-msg').textContent = !SPM.configured ? 'Spotify is not set up yet. See Help for how, then paste the client ID in Settings.'
+      : S.band && !SPM.loggedIn ? 'Logging in leaves this page and would end the band. Log in before you start a band.' : '';
+  }
+  async function spDevices() {
+    try {
+      const list = await SPM.devices(), sel = $('sp-device');
+      sel.textContent = '';
+      for (const d of list.filter(x => !x.restricted)) {
+        const o = el('option', '', d.name + (d.active ? ' (playing now)' : ''));
+        o.value = d.id;
+        sel.append(o);
+      }
+      if (!sel.options.length) { const o = el('option', '', 'No devices: open Spotify somewhere'); o.value = ''; sel.append(o); }
+      const want = S.spotify.device && list.find(d => d.id === S.spotify.device) ? S.spotify.device : (list.find(d => d.active) || list[0] || {}).id;
+      if (want) sel.value = want;
+      spPickDevice();
+    } catch (e) { $('sp-msg').textContent = e.message; }
+  }
+  function spPickDevice() {
+    const sel = $('sp-device'), o = sel.options[sel.selectedIndex];
+    S.spotify.device = sel.value || null;
+    S.spotify.deviceName = S.spotify.device && o ? o.textContent.replace(/ \(playing now\)$/, '') : '';
+  }
+  $('sp-device').onchange = () => { spPickDevice(); renderSetup(); };
+  $('b-spotify').onclick = () => { spPaint(); $('d-spotify').showModal(); if (SPM.loggedIn) spDevices(); };
+  $('sp-login').onclick = () => SPM.login().catch(e => { $('sp-msg').textContent = e.message; });
+  $('sp-logout').onclick = () => { SPM.logout(); S.spotify.track = null; spPaint(); renderSetup(); };
+  $('sp-refresh').onclick = spDevices;
+  $('sp-done').onclick = () => { $('d-spotify').close(); renderSetup(); };
+  $('sp-search').addEventListener('submit', async e => {
+    e.preventDefault();
+    const q = $('sp-q').value.trim();
+    if (!q) return;
+    $('sp-msg').textContent = '';
+    const ul = $('sp-results');
+    ul.textContent = '';
+    try {
+      const tracks = await SPM.search(q);
+      if (!tracks.length) ul.append(el('li', 'dim', 'Nothing found.'));
+      for (const tr of tracks) {
+        const btn = el('button', S.spotify.track && S.spotify.track.uri === tr.uri ? 'on' : '', tr.name);
+        btn.type = 'button';
+        btn.append(el('small', '', tr.artists + (tr.ms ? ' \u00b7 ' + Math.floor(tr.ms / 60000) + ':' + String(Math.round(tr.ms / 1000) % 60).padStart(2, '0') : '')));
+        btn.onclick = () => { S.spotify.track = tr; for (const x of ul.querySelectorAll('button')) x.classList.toggle('on', x === btn); renderSetup(); };
+        const li = el('li'); li.append(btn); ul.append(li);
+      }
+    } catch (err) { $('sp-msg').textContent = err.message; }
+  });
+  $('s-spotify-id').value = (() => { try { return localStorage.getItem('riffnight-spotify-v1-client') || ''; } catch (e) { return ''; } })();
+  $('s-spotify-id').onchange = () => { SPM.setClientId($('s-spotify-id').value.trim()); };
+  // back from Spotify's login page
+  SPM.finish().then(did => {
+    if (!did) return;
+    S.song = RN.LIVE; save.song = RN.LIVE; persist();
+    openSetup();
+    spPaint(); $('d-spotify').showModal(); spDevices();
+  }).catch(e => message('Spotify', e.message));
 
   if (window.Updater) window.Updater.start({ url: '../version.json' });
   window.RNPage = { get G() { return G; }, get S() { return S; }, save: () => save, startSong, finish };
