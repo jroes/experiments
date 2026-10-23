@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#0a0612">
+<meta name="description" content="A band game for phones. Tap guitar, bass or drums, sing into the mic, or plug in a real guitar. One phone each.">
+<meta property="og:title" content="Riff Night">
+<meta property="og:description" content="Join my band. Tap guitar, bass or drums, or sing. One phone each.">
+<title>Riff Night</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main id="app">
+
+<section id="home" class="screen">
+  <div class="logo">RIFF<span>NIGHT</span></div>
+  <p class="tag">Guitar, bass, drums and vocals. Tap the screen, sing, or play a real guitar into the mic. Alone or as a band, one phone each.</p>
+  <label class="field">Your name <input id="name" maxlength="16" autocomplete="nickname" enterkeyhint="done" placeholder="Name"></label>
+  <button id="b-solo" class="big primary">Play</button>
+  <button id="b-lead" class="big">Start a band</button>
+  <form id="f-join" class="joinrow">
+    <input id="join-code" placeholder="CODE" maxlength="6" autocapitalize="characters" autocomplete="off" spellcheck="false" aria-label="Band code">
+    <button id="b-join" class="big">Join a band</button>
+  </form>
+  <p id="home-msg" class="bad"></p>
+  <div class="row small">
+    <button id="b-tuner" type="button">Tuner</button>
+    <button id="b-settings" type="button">Settings</button>
+    <button id="b-help" type="button">Help</button>
+  </div>
+  <p class="fine">Singing or playing into the mic works best with headphones, so the mic does not hear the song.</p>
+</section>
+
+<section id="setup" class="screen" hidden>
+  <header class="bar">
+    <button id="b-back" type="button">Back</button>
+    <h2 id="setup-title">Pick a song</h2>
+  </header>
+  <div id="band-box" hidden>
+    <div class="code-row">
+      <div><span class="dim">Band code</span> <b id="band-code"></b></div>
+      <button id="b-copy" type="button">Copy link</button>
+      <button id="b-qr" type="button">QR</button>
+    </div>
+    <div id="qr" hidden></div>
+    <ul id="members"></ul>
+    <p id="band-msg" class="dim"></p>
+  </div>
+  <h3>Song</h3>
+  <div id="songs" class="songs"></div>
+  <h3>You play</h3>
+  <div id="parts" class="seg four"></div>
+  <div id="inputs" class="seg"></div>
+  <h3>Level</h3>
+  <div id="diffs" class="seg four"></div>
+  <label class="check"><input type="checkbox" id="nofail"><span>No fail<span class="fine">Keep playing even when the crowd turns on you.</span></span></label>
+  <label class="check" id="same-row" hidden><input type="checkbox" id="same"><span>Same room<span class="fine">Each phone plays only its own part and the leader's phone plays the rest, like a real band. Turn it off when you are in different places.</span></span></label>
+  <div class="go"><button id="b-go" class="big primary">Play</button></div>
+</section>
+
+<section id="stage" class="screen" hidden>
+  <canvas id="cv"></canvas>
+  <button id="b-pause" class="corner" type="button" aria-label="Pause">II</button>
+  <button id="b-boost" type="button" hidden>BOOST</button>
+</section>
+
+<section id="results" class="screen" hidden>
+  <h2 id="res-title">Song over</h2>
+  <p id="res-song" class="dim"></p>
+  <div id="res-band"></div>
+  <ul id="res-list"></ul>
+  <p id="res-msg" class="dim"></p>
+  <div class="go">
+    <button id="b-again" class="big primary">Play again</button>
+    <button id="b-menu" class="big">Done</button>
+  </div>
+</section>
+
+</main>
+
+<dialog id="d-pause">
+  <h2>Paused</h2>
+  <div class="col">
+    <button id="p-resume" class="big primary" type="button">Resume</button>
+    <button id="p-restart" class="big" type="button">Start over</button>
+    <button id="p-quit" class="big" type="button">Quit song</button>
+  </div>
+</dialog>
+
+<dialog id="d-leave">
+  <h2>Leave the song?</h2>
+  <p class="dim">The band keeps playing without you.</p>
+  <div class="row">
+    <button id="l-stay" class="primary" type="button">Keep playing</button>
+    <button id="l-leave" type="button">Leave</button>
+  </div>
+</dialog>
+
+<dialog id="d-settings">
+  <h2>Settings</h2>
+  <label>Note speed <input type="range" id="s-speed" min="60" max="160" step="10"></label>
+  <label>Volume <input type="range" id="s-vol" min="0" max="100" step="5"></label>
+  <h3>Timing</h3>
+  <p class="fine">Phones and Bluetooth headphones are a bit late with sound. If notes feel early or late, test it here.</p>
+  <div class="cal">
+    <div><b>Taps</b> <span id="s-tap"></span></div>
+    <button id="s-tap-test" type="button">Tap test</button>
+  </div>
+  <div class="cal">
+    <div><b>Mic</b> <span id="s-mic"></span></div>
+    <button id="s-mic-test" type="button">Mic test</button>
+  </div>
+  <div id="cal-box" hidden>
+    <p id="cal-text"></p>
+    <button id="cal-pad" class="big" type="button">Tap</button>
+  </div>
+  <div class="row">
+    <button id="s-reset" type="button">Reset timing</button>
+    <button id="s-done" class="primary" type="button">Done</button>
+  </div>
+</dialog>
+
+<dialog id="d-tuner">
+  <h2>Tuner</h2>
+  <div class="seg" id="t-kind"><button type="button" data-k="guitar" class="on">Guitar</button><button type="button" data-k="bass">Bass</button></div>
+  <div id="t-note">-</div>
+  <div id="t-meter"><div id="t-needle"></div></div>
+  <p id="t-hz" class="dim">Play one string at a time.</p>
+  <p id="t-strings" class="fine"></p>
+  <div class="row"><button id="t-done" class="primary" type="button">Done</button></div>
+</dialog>
+
+<dialog id="d-help">
+  <h2>How to play</h2>
+  <p>Pick a song and a part. Notes slide down toward the line at the bottom. Hit them as they cross it.</p>
+  <ul>
+    <li><b>Guitar, bass, drums by tapping.</b> Tap the lane when its note reaches the line. Hold your finger down on long notes. On a keyboard use <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> <kbd>F</kbd> <kbd>G</kbd>.</li>
+    <li><b>Real guitar or bass.</b> The phone listens through the mic. Each string has a lane and the number is the fret. Chords show their name. Tune up first with the Tuner. Headphones keep the song out of the mic, or play it quietly.</li>
+    <li><b>Vocals.</b> Sing into the phone. The bars are the notes, your voice is the arrow. Any octave counts, so sing where it is comfortable. Each line gets a rating.</li>
+  </ul>
+  <p>Hit notes in a row to raise your multiplier. Miss and your part goes quiet, and the crowd meter on the left drops. If it runs out you are out of the song.</p>
+  <p><b>Boost.</b> Glowing notes fill the blue bar on the right when you hit all of them. Once it is half full, press Boost (or <kbd>Space</kbd>) for double points. In a band, boosting also brings back anyone who dropped out.</p>
+  <p><b>Band.</b> One person starts a band and sends the code or link. Everyone picks a part on their own phone and the leader starts the song. All phones start together. Same room: tick "Same room" so each phone plays only its own part. Anyone with the code can join, so only share it with friends. Scores come from each phone and are not checked.</p>
+  <p><b>Timing.</b> If notes feel early or late, run the tap test in Settings. For the mic, run the mic test without headphones.</p>
+  <p class="fine">All songs, words and sounds are original and made in the browser. Inspired by the band games where you play along with plastic instruments.</p>
+  <form method="dialog"><button class="primary">Got it</button></form>
+</dialog>
+
+<dialog id="d-msg">
+  <h2 id="msg-title"></h2>
+  <p id="msg-text"></p>
+  <form method="dialog"><button class="primary">OK</button></form>
+</dialog>
+
+<script src="../shared/config.js"></script>
+<script src="../shared/version.js"></script>
+<script src="../shared/update.js"></script>
+<script src="../shared/qrcode.js"></script>
+<script src="../jetfall/link.js"></script>
+<script src="songs.js"></script>
+<script src="game.js"></script>
+<script src="dsp.js"></script>
+<script src="audio.js"></script>
+<script src="band.js"></script>
+<script src="ui.js"></script>
+</body>
+</html>

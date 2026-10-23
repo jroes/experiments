@@ -19,6 +19,7 @@ key/value store. Live at https://jroes.github.io/experiments/. Written for whoev
 | `sectordominion/` | Space-empire game. `game.js` (rules, AI, no DOM), `online.js` (play with friends), `ui.js`, `index.html`, `style.css` |
 | `warptraders/` | Space trading game. Challenge seeds, plus a live race over WebRTC (`shared/p2p.js`, `lobby.js`) |
 | `tankwars/` | Artillery game. `game.js` (rules, AI, no DOM), `online.js` (play with friends, lockstep through the `/kv` store), `ui.js`, `index.html`, `style.css` |
+| `riffnight/` | Band game for phones. `songs.js` (songs as data), `game.js` (charts and scoring, no DOM), `dsp.js` (pitch, chords, strums, no DOM), `audio.js` (synth, clock, mic), `band.js` (bands over the relay), `ui.js` |
 | `hollowmere/`, `gullrock/`, `starsweeper/` | Three adventures. Each is `game.js` (plain data: rooms, items, handlers) plus a page; the engine is in `shared/` |
 | `shared/` | `store.js` (KV client), `config.js` (`KV_URL`), `qrcode.js` (vendored, MIT), p2p and lobby code. `adventure.js` (engine, no DOM), `adventure-art.js` (EGA pixel helpers), `hd2d.js`, `hd2d-gl.js`, `hd2d-post.js`, `hd2d-worker.js` (HD-2D pictures, below), `adventure-ui.js`, `arcade.css` (look shared by Tank Wars and the adventures) |
 | `j/` | Invite landing page: OpenGraph tags for link previews, then hands `#<code>` to the game |
@@ -113,6 +114,30 @@ Seats are 1-based in keys and invites and 0-based in the game. If a change would
   (any clear line is taken), and facing only swaps between sideways and up/down with a clear lead, so a diagonal walk does not flicker. `g.step` is distance walked, so the walking legs
   keep the same pace at any frame rate. The HD background is only redrawn when something it shows changes (`HD2D.backKey`: room, points, inventory, drops, flags; not the move count).
 - Phone: the verb buttons plus the inventory do everything the keyboard does. Tapping a thing looks at it; pick Use or Give, then tap what you carry, then the target.
+
+## Riff Night
+
+A band game in the spirit of the plastic-guitar games, built for phones. Guitar, bass and drums by tapping lanes; vocals by singing into the mic; guitar and bass
+also with a real instrument into the mic.
+- **Songs are data** (`songs.js`): sections with chords, a style per part (`chug`, `drive`, `riff:<name>`, drum grooves...), riffs and tunes as `pitch/beats` tokens,
+  words split into syllables. `arrange()` turns a song into every note each part plays; the synth plays exactly that and `chart()` thins it per level, so what you
+  hear is what you play. `arrange` throws when a song does not add up (syllables vs notes, a tune longer than its section) and the tests arrange every song.
+  When adding a song, check the counts and run the tests; `tier()` (the dots in the song list) is calibrated on the current songs.
+- **Timing.** Everything runs on the AudioContext clock. `Clock` maps `performance.now()` to the context time being *heard* (`getOutputTimestamp`), so a tap
+  (its `event.timeStamp`) is judged against the note you heard. Settings has a tap test and a mic test (clicks from the speaker into the mic) that store offsets.
+  Mic frames are dated back by half the analyser window plus the mic offset.
+- **Listening** (`dsp.js`): YIN for one note (voices, single guitar notes, bass), chroma from the analyser's spectrum for chords (a power chord's root is often
+  heard an octave low, so chords count by pitch class), and onsets so a repeated chord needs a fresh strum. Singing counts in any octave. A real guitar needs
+  echo cancelling off (it eats long notes), a voice gets it on. Chromium's `--use-file-for-fake-audio-capture=<wav>` feeds a file to the mic for checks.
+- **Bands** use the Jetfall relay (`/jetfall`, rooms with six-letter codes, packets passed along or over WebRTC; `jetfall/link.js` is loaded as is). Rooms are not
+  public, so they never show in Jetfall's list. Every phone plays the whole song itself; only the start is shared: guests measure the leader's clock by round
+  trips (the fastest wins), the leader says "start at my time T", and each phone turns T into its own heard context time. Two local browsers start within about
+  10 ms. During a song each phone sends its status 5 times a second and the leader passes the band's state on. Bump `PROTO` in `band.js` when a message
+  changes. Scores are self-reported: friends only.
+- **The mix** (`partGains`): your own mic part is silent (you are it), a part goes quiet while its player misses, the guide voice only sings when nobody
+  does, and in "same room" each phone plays only its own part plus the leader's phone the rest. Levels in `audio.js` `LEVEL` were set by rendering songs in an
+  `OfflineAudioContext` in Chromium: full mix peak under 0.9 (the compressor adds makeup gain), drums, bass and guitar within a few dB of each other.
+- `?demo` makes the page play itself (screenshots, checks). `?relay=ws://127.0.0.1:8135/jetfall` points it at a local server.
 
 ## Jetfall
 
