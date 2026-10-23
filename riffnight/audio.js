@@ -242,7 +242,7 @@
   }
 
   // The mic, for singing or a real instrument. Echo cancelling helps a voice over a speaker but eats a guitar's long notes.
-  const MIC_RANGE = { vocals: [75, 1000], guitar: [72, 1400], bass: [36, 420] };
+  const MIC_RANGE = { vocals: [75, 1000], guitar: [72, 1400], bass: [36, 420], listen: [72, 1400] };
   class Mic {
     static async open(ctx, kind) {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('This browser cannot use the mic here.');
@@ -254,7 +254,7 @@
       this.ctx = ctx; this.stream = stream; this.kind = kind;
       const src = this.src = ctx.createMediaStreamSource(stream);
       const an = this.an = ctx.createAnalyser();
-      an.fftSize = kind === 'bass' ? 4096 : 2048; an.smoothingTimeConstant = 0;
+      an.fftSize = kind === 'bass' ? 4096 : kind === 'listen' ? 1024 : 2048; an.smoothingTimeConstant = 0;
       src.connect(an);
       this.sink = ctx.createGain(); this.sink.gain.value = 0; this.sink.connect(ctx.destination);
       an.connect(this.sink);
@@ -283,6 +283,21 @@
         chroma = D.chroma(this.db, sr, this.spec.fftSize, this.kind === 'bass' ? { lo: 38, hi: 700 } : {});
       }
       return { t, f: p.f, conf: p.conf, chroma, onset: this.onsets.push(level, t), level };
+    }
+    // music played out loud: how much got louder, by band, and (every few frames) which notes are sounding
+    listen(t) {
+      const D = root.RNDSP, sr = this.ctx.sampleRate;
+      if (!this.fdb) { this.fdb = new Float32Array(this.an.frequencyBinCount); this.prevMag = new Float32Array(this.an.frequencyBinCount); this.n = 0; }
+      this.an.getFloatFrequencyData(this.fdb);
+      const b = D.bands(this.fdb, sr, this.an.fftSize, this.prevMag);
+      this.an.getFloatTimeDomainData(this.buf);
+      this.level = D.rms(this.buf);
+      let chroma = null;
+      if (this.spec && this.level > 0.002 && ++this.n % 3 === 0) {
+        this.spec.getFloatFrequencyData(this.db);
+        chroma = D.chroma(this.db, sr, this.spec.fftSize, { lo: 60, hi: 1000 });
+      }
+      return { t, flux: b.flux, low: b.low, mid: b.mid, high: b.high, chroma, level: this.level };
     }
     close() {
       try { this.stream.getTracks().forEach(tr => tr.stop()); } catch (e) { /* gone */ }

@@ -19,7 +19,7 @@ key/value store. Live at https://jroes.github.io/experiments/. Written for whoev
 | `sectordominion/` | Space-empire game. `game.js` (rules, AI, no DOM), `online.js` (play with friends), `ui.js`, `index.html`, `style.css` |
 | `warptraders/` | Space trading game. Challenge seeds, plus a live race over WebRTC (`shared/p2p.js`, `lobby.js`) |
 | `tankwars/` | Artillery game. `game.js` (rules, AI, no DOM), `online.js` (play with friends, lockstep through the `/kv` store), `ui.js`, `index.html`, `style.css` |
-| `riffnight/` | Band game for phones. `songs.js` (songs as data), `game.js` (charts and scoring, no DOM), `dsp.js` (pitch, chords, strums, no DOM), `audio.js` (synth, clock, mic), `band.js` (bands over the relay), `ui.js` |
+| `riffnight/` | Band game for phones. `songs.js` (songs as data), `game.js` (charts and scoring, no DOM), `dsp.js` (pitch, chords, strums, beat tracking, no DOM), `audio.js` (synth, clock, mic), `band.js` (bands over the relay), `spotify.js` (Spotify as a remote), `ui.js` |
 | `hollowmere/`, `gullrock/`, `starsweeper/` | Three adventures. Each is `game.js` (plain data: rooms, items, handlers) plus a page; the engine is in `shared/` |
 | `shared/` | `store.js` (KV client), `config.js` (`KV_URL`), `qrcode.js` (vendored, MIT), p2p and lobby code. `adventure.js` (engine, no DOM), `adventure-art.js` (EGA pixel helpers), `hd2d.js`, `hd2d-gl.js`, `hd2d-post.js`, `hd2d-worker.js` (HD-2D pictures, below), `adventure-ui.js`, `arcade.css` (look shared by Tank Wars and the adventures) |
 | `j/` | Invite landing page: OpenGraph tags for link previews, then hands `#<code>` to the game |
@@ -137,7 +137,17 @@ also with a real instrument into the mic.
 - **The mix** (`partGains`): your own mic part is silent (you are it), a part goes quiet while its player misses, the guide voice only sings when nobody
   does, and in "same room" each phone plays only its own part plus the leader's phone the rest. Levels in `audio.js` `LEVEL` were set by rendering songs in an
   `OfflineAudioContext` in Chromium: full mix peak under 0.9 (the compressor adds makeup gain), drums, bass and guitar within a few dB of each other.
-- `?demo` makes the page play itself (screenshots, checks). `?relay=ws://127.0.0.1:8135/jetfall` points it at a local server.
+- **Your music** (`RN.LIVE`): any song played out loud. The mic gives band flux per frame (`dsp.bands`), `BeatTracker` finds tempo and beats
+  (autocorrelation leaning to 120 bpm, then a comb; slow songs with busy hats may lock at double time, fast ones at half), and `Jam` makes notes a moment
+  ahead on that grid, each copying what the music did a bar or more earlier (loudness picks whether, the strongest pitch class picks the lane, kick/snare/hat
+  bands pick drum lanes). Notes are appended as they are made (`NotePlay.add`). Guitar, bass and drums only, no fail, no best scores. In a band every phone
+  listens to the same speaker; the leader stopping sends `end`.
+- **Spotify** (`spotify.js`) is only a remote: PKCE login (no secret; the client ID is public), search, devices, play on a device, poll `/me/player` to end
+  the set with the track. Spotify gives no beats or audio to new apps (audio-analysis and audio-features are gone) and its web player does not run on
+  phones, so the notes always come from listening. Development-mode apps need the owner on Premium and allow five people they add by email. Set
+  `CLIENT_ID` in `spotify.js` (or paste it in Settings, saved per device) and register `https://jroes.github.io/experiments/riffnight/` as a redirect URI.
+  Responses go through `cleanTrack`, `cleanDevices`, `cleanState`. Browser checks fake Spotify with Playwright `route()`.
+- `?demo` makes the page play itself (screenshots, checks), including pretend music in Your music. `?relay=ws://127.0.0.1:8135/jetfall` points it at a local server.
 
 ## Jetfall
 

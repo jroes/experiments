@@ -481,6 +481,13 @@
       this.glows = markGlows(this.notes);
       this.next = 0;
     }
+    // notes made while playing (music you play out loud): they arrive in time order, after everything already there
+    add(list) {
+      for (const n of list) {
+        this.notes.push({ ...n, hit: false, done: false });
+        this.chart.total++; this.chart.base += 50;
+      }
+    }
     settle(n, ok, t) {
       n.done = true;
       if (n.g === undefined) return;
@@ -661,6 +668,117 @@
     skipTo(t) { for (const p of this.phrases) if (!p.done && p.t < t) p.done = true; while (this.next < this.phrases.length && this.phrases[this.next].done) this.next++; }
   }
 
+  // ---------- playing along to any music ----------
+
+  // Music you play out loud (Spotify on a speaker, a record, a band): no chart exists, so notes are made a moment ahead
+  // on the beat the BeatTracker hears, each one copying what the music did a bar or two earlier (songs repeat). Loud
+  // spots get notes, the strongest pitch class picks the lane (higher notes further right), kick and snare and
+  // cymbals pick the drum lanes.
+  const LIVE = 'your-music';
+  const JAM = {
+    easy: { every: 2, eighths: 0, beat: 0.12 },
+    medium: { every: 1, eighths: 0, beat: 0.12 },
+    hard: { every: 1, eighths: 0.45, beat: 0.1 },
+    expert: { every: 1, eighths: 0.3, beat: 0.08 },
+  };
+  class Jam {
+    constructor(part, diff) {
+      if (!['guitar', 'bass', 'drums'].includes(part)) part = 'guitar';
+      if (!DIFFS.includes(diff)) diff = 'medium';
+      this.part = part; this.diff = diff; this.cfg = JAM[diff];
+      const cfg = part === 'drums' ? DRUM[diff] : TAP[diff];
+      this.chart = { part, diff, input: 'tap', live: true, lanes: part === 'drums' ? 4 : cfg.lanes, notes: [], cfg, spb: 0.5, bpm: 120, total: 0, base: 0, len: Infinity, sections: [] };
+      this.frames = [];        // what was heard: { t, flux, low, mid, high, chroma }
+      this.planned = -Infinity;
+      this.lastNote = -Infinity;
+    }
+    hear(fr) {
+      this.frames.push(fr);
+      while (this.frames.length && this.frames[0].t < fr.t - 16) this.frames.shift();
+    }
+    // what counts as loud: most of the loudest moment of the last few seconds (0 to 1 after dividing)
+    scale(key, now) {
+      let max = 0, n = 0;
+      for (const f of this.frames) if (f.t > now - 8) { n++; if (f[key] > max) max = f[key]; }
+      return n < 30 ? 0 : max * 0.8;
+    }
+    window(t0, t1) {
+      const o = { flux: 0, low: 0, mid: 0, high: 0, chroma: new Float64Array(12), n: 0 };
+      for (const f of this.frames) {
+        if (f.t < t0 || f.t > t1) continue;
+        o.n++;
+        for (const k of ['flux', 'low', 'mid', 'high']) o[k] = Math.max(o[k], f[k]);
+        if (f.chroma) for (let i = 0; i < 12; i++) o.chroma[i] += f.chroma[i];
+      }
+      return o;
+    }
+    // lanes for pitch classes: the strongest ones lately, in order up from the strongest (the key's home note)
+    pcLanes(now) {
+      const w = new Float64Array(12);
+      for (const f of this.frames) if (f.t > now - 8 && f.chroma) for (let i = 0; i < 12; i++) w[i] += f.chroma[i];
+      const order = [...w.keys()].sort((a, b) => w[b] - w[a]);
+      const root = order[0], lanes = this.chart.lanes;
+      const top = order.slice(0, Math.max(lanes, 5)).filter(pc => w[pc] > 0).sort((a, b) => ((a - root + 12) % 12) - ((b - root + 12) % 12));
+      return pc => {
+        const r = top.indexOf(pc);
+        if (r < 0 || !top.length) return null;
+        return top.length <= lanes ? r : Math.floor(r * lanes / top.length);
+      };
+    }
+    // Notes from just after what is already planned up to `until`, on the beat `b` ({ beat, period }). `now`: the newest heard moment.
+    plan(b, until, now) {
+      const out = [], half = b.period / 2, cfg = this.cfg, gap = this.chart.cfg.gapS;
+      if (!(b.period > 0.2 && b.period < 1.2)) return out;
+      if (this.anchor === undefined) this.anchor = b.beat; // beats are counted from here, so "every other beat" stays the same beats
+      const from = Math.max(this.planned, now + 0.25);
+      const scales = { flux: this.scale('flux', now), low: this.scale('low', now), mid: this.scale('mid', now), high: this.scale('high', now) };
+      if (!(scales.flux > 0)) return out;
+      const laneOf = this.part === 'drums' ? null : this.pcLanes(now);
+      for (let k = Math.ceil((from - b.beat) / half - 1e-9); ; k++) {
+        const t = b.beat + k * half;
+        if (t <= from + 1e-9) continue;
+        if (t > until) break;
+        this.planned = t;
+        const onBeat = k % 2 === 0, beatNo = Math.round((t - this.anchor) / b.period);
+        if (!onBeat && !cfg.eighths) continue;
+        if (onBeat && cfg.every === 2 && beatNo % 2) continue;
+        // the same spot a bar (or two, or three) ago, fully heard
+        let ref = t, bars = 0;
+        while (ref + half / 2 > now - 0.03 && bars < 4) { ref -= 4 * b.period; bars++; }
+        if (ref + half / 2 > now - 0.03 || ref - half / 2 < (this.frames[0] ? this.frames[0].t : Infinity)) continue;
+        const w = this.window(ref - half / 2, ref + half / 2);
+        if (!w.n) continue;
+        const v = key => Math.min(1, w[key] / (scales[key] || 1));
+        if (t - this.lastNote < gap - 1e-9) continue;
+        const lanes = [];
+        if (this.part === 'drums') {
+          const kick = v('low'), snare = v('mid'), cym = v('high'), max = this.chart.cfg.max;
+          const want = onBeat ? 0.4 : 0.6;
+          const cand = [];
+          if (kick >= want && kick >= snare * 0.8) cand.push([kick, 0]);
+          if (snare >= want && snare > kick * 0.8) cand.push([snare, 1]);
+          if (!onBeat && snare >= 0.75 && kick < 0.4) cand.push([snare, 2]);
+          if (this.diff !== 'easy' && cym >= (onBeat ? 0.35 : cfg.eighths)) cand.push([cym * 0.9, 3]);
+          if (!cand.length && onBeat && v('flux') >= 0.3) cand.push([1, 1]);
+          cand.sort((a, c) => c[0] - a[0]);
+          for (const [, l] of cand.slice(0, max)) if (!lanes.includes(l)) lanes.push(l);
+        } else {
+          const strength = v('flux');
+          if (strength < (onBeat ? cfg.beat : cfg.eighths)) continue;
+          let best = -1;
+          for (let i = 0; i < 12; i++) if (best < 0 || w.chroma[i] > w.chroma[best]) best = i;
+          let lane = w.chroma[best] > 0 ? laneOf(best) : null;
+          if (lane === null) lane = Math.min(this.chart.lanes - 1, Math.floor(v('mid') * this.chart.lanes));
+          lanes.push(lane);
+        }
+        if (!lanes.length) continue;
+        this.lastNote = t;
+        for (const lane of lanes.sort((a, c) => a - c)) out.push({ t, d: 0, lane, glow: false });
+      }
+      return out;
+    }
+  }
+
   function makePlay(ch, opts) {
     if (ch.part === 'vocals') return new VoxPlay(ch, opts);
     if (ch.input === 'real') return new RealPlay(ch, opts);
@@ -714,6 +832,7 @@
     };
   }
   const songById = id => SONGS.find(s => s.id === id) || null;
+  const validSong = id => id === LIVE || !!songById(id);
 
   // ---------- saved on this device ----------
 
@@ -738,7 +857,7 @@
       v: 1,
       name: typeof o.name === 'string' ? cleanName(o.name) : '',
       pick: cleanPick(o.pick),
-      song: songById(o.song) ? o.song : SONGS[0].id,
+      song: validSong(o.song) ? o.song : SONGS[0].id,
       tapOffset: num(o.tapOffset, -0.4, 0.4, 0), micOffset: num(o.micOffset, -0.2, 0.6, 0.06),
       speed: num(o.speed, 0.6, 1.6, 1), volume: num(o.volume, 0, 1, 0.8), noFail: o.noFail === true, best,
     };
@@ -748,7 +867,7 @@
   const api = {
     SONGS, PARTS, DIFFS, INPUTS, PART_NAME, TAP, REAL, DRUM, VOX, TUNING, STRING_NAMES, GROOVES, BOOST_BEATS, PHRASE_RATINGS, SAVE_KEY,
     parsePitch, parseTokens, parseChord, noteName, hz, midiOf, lyricText, arrange, chart, tier, finger, stars,
-    Play, TapPlay, RealPlay, VoxPlay, makePlay, partGains, pcDist, foldDist,
+    Play, TapPlay, RealPlay, VoxPlay, makePlay, partGains, pcDist, foldDist, LIVE, JAM, Jam, validSong,
     cleanName, cleanPick, cleanStatus, cleanSaved, songById, bestKey,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
